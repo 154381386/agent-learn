@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IT Ticket Agent Console</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <h1>Robert Console</h1>
+        <p class="sidebar-desc">工单诊断与审批控制台</p>
+        <label>
+          <span>用户 ID</span>
+          <input id="userId" type="text" value="zhangsan" />
+        </label>
+        <label>
+          <span>服务名</span>
+          <input id="serviceName" type="text" placeholder="order-service" />
+        </label>
+        <label>
+          <span>集群</span>
+          <input id="clusterName" type="text" value="prod-shanghai-1" />
+        </label>
+        <label>
+          <span>命名空间</span>
+          <input id="namespaceName" type="text" value="default" />
+        </label>
+        <div class="sidebar-tip">
+          <strong>示例：</strong>
+          <button class="quick-fill" data-message="order-service Pod 频繁重启，2小时前发版过">Pod 重启</button>
+          <button class="quick-fill" data-message="支付服务网络超时，怀疑 DNS 有问题">网络超时</button>
+          <button class="quick-fill" data-message="order-service 怎么接入？">接入问题</button>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <h2>Agent 对话</h2>
+            <p>在这里发起工单，审批请求会自动弹出。</p>
+          </div>
+          <button id="clearChatBtn" class="ghost-btn">清空</button>
+        </header>
+
+        <section id="chatMessages" class="chat-messages"></section>
+
+        <form id="messageForm" class="composer">
+          <input
+            id="messageInput"
+            class="composer-input"
+            type="text"
+            placeholder="输入工单问题，例如：order-service Pod 频繁重启，2小时前发版过"
+            required
+          />
+          <button id="sendBtn" class="primary-btn" type="submit">发送</button>
+        </form>
+      </main>
+    </div>
+
+    <div id="approvalModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>高风险操作审批</h3>
+          <button id="closeModalBtn" class="icon-btn" type="button">×</button>
+        </div>
+        <div id="approvalContent" class="approval-content"></div>
+        <div class="approval-form">
+          <label>
+            <span>审批人</span>
+            <input id="approverId" type="text" value="lisi" />
+          </label>
+          <label>
+            <span>备注</span>
+            <textarea id="approvalComment" rows="3" placeholder="同意执行 / 拒绝原因"></textarea>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button id="rejectBtn" class="danger-btn" type="button">拒绝</button>
+          <button id="approveBtn" class="primary-btn" type="button">批准执行</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

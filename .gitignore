@@ -5,3 +5,8 @@ __pycache__/
 *.pyc
 dist/
 build/
+.idea/
+.venv/
+*.egg-info/
+*.db
+projects/it-ticket-agent/data/rag/

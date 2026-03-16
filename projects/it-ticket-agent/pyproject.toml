@@ -1,0 +1,32 @@
+[project]
+name = "it-ticket-agent"
+version = "0.1.0"
+description = "Production-oriented IT ticket multi-agent system built with LangGraph"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "pydantic>=2.7.0",
+  "httpx>=0.27.0",
+  "python-dotenv>=1.0.1",
+  "aiosqlite>=0.20.0",
+  "langgraph>=0.2.0",
+  "langchain-core>=0.3.0",
+  "langgraph-checkpoint-sqlite>=2.0.0",
+  "psycopg[binary]>=3.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+it_ticket_agent = ["static/*.html", "static/*.css", "static/*.js"]
