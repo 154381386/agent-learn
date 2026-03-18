@@ -44,6 +44,10 @@ make reindex-kb
 make pgvector-up
 ```
 
+## 部署
+
+部署说明见 `docs/deployment.md:1`。
+
 ## API
 
 ```bash

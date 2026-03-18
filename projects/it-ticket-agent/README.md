@@ -68,6 +68,10 @@ RAG_SERVICE_BASE_URL=http://localhost:8200
 RAG_SERVICE_TIMEOUT_SEC=30
 ```
 
+## 部署
+
+部署说明见 `docs/deployment.md:1`。
+
 ## API
 
 ```bash
