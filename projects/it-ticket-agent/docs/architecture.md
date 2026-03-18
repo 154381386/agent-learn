@@ -1,43 +1,36 @@
 # Architecture
 
-## 生产方案选择
+## 服务拆分
 
-### 编排层
-- 采用 `LangGraph` 作为中心化 orchestrator
-- 每张工单使用一个 `thread_id`
-- 通过 checkpointer 保证中断审批后可恢复
+当前已经拆成两个独立项目：
 
-### 外部向量数据库
-- 推荐：`PostgreSQL + pgvector`
-- Dense recall 存储在 PostgreSQL 外部库中
-- Sparse recall 继续由应用层 BM25-like 检索完成
-- Rerank 使用 DashScope `qwen3-rerank`
-- Final ranking 使用 `MMR`
+- `projects/it-ticket-agent`：编排服务 / Agent 主体
+- `projects/it-ticket-rag-service`：RAG 微服务
 
-### 增量索引策略
-- 文档按 `path + checksum + chunking_signature + embedding_model` 判断是否需要重建
-- 未变更文档跳过
-- 变更文档只覆盖自己的 chunks
-- 已删除文档从向量库删除
-- 其它文档完全不动
+## Orchestrator 职责
 
-### 模型职责分离
-- `LLM_*`：继续负责聊天、路由与最终回复
-- `EMBEDDING_*`：负责向量召回
-- `RERANK_*`：负责候选重排
+- `LangGraph` 编排
+- 工单归一化
+- 调用 RAG 服务
+- Agent 路由与并行诊断
+- 审批中断与恢复
+- 动作执行与最终回复
 
-## LangGraph 节点
+## RAG Service 职责
+
+- 文档扫描与切块
+- 增量索引
+- sparse + dense hybrid retrieval
+- rerank + MMR
+- 对外提供 `/api/v1/rag/*`
+
+## 调用链
 
 ```text
-START
-  → normalize_ticket
-  → retrieve_knowledge
-  → [direct_answer?] yes → finalize_response → END
-  → route_agents
-  → diagnose_parallel
-  → fuse_diagnosis
-  → [needs_approval?] yes → approval_gate (interrupt)
-  → execute_action
-  → finalize_response
-  → END
+User
+  -> orchestrator (:8000)
+  -> rag-service (:8200)
+  -> sample-agents (:8101)
+  -> orchestrator
+  -> User
 ```

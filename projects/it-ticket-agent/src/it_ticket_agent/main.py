@@ -12,9 +12,6 @@ from .approval_store import ApprovalStore
 from .graph import TicketGraphFactory
 from .schemas import (
     ApprovalDecisionRequest,
-    RAGIndexResponse,
-    RAGSearchRequest,
-    RAGSearchResponse,
     TicketRequest,
     TicketResponse,
 )
@@ -38,10 +35,8 @@ async def lifespan(app: FastAPI):
     checkpointer_cm = AsyncSqliteSaver.from_conn_string(settings.langgraph_checkpoint_db)
     checkpointer = await checkpointer_cm.__aenter__()
     app.state.checkpointer_cm = checkpointer_cm
-    await graph_factory.knowledge.ensure_ready()
     app.state.ticket_graph = graph_factory.build(checkpointer=checkpointer)
     app.state.approval_store = ApprovalStore(settings.approval_db_path)
-    app.state.knowledge = graph_factory.knowledge
     yield
     await checkpointer_cm.__aexit__(None, None, None)
 
@@ -58,37 +53,6 @@ async def index():
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
-
-
-@app.get("/api/v1/rag/status")
-async def rag_status(http_request: Request):
-    knowledge = http_request.app.state.knowledge
-    return knowledge.status()
-
-
-@app.post("/api/v1/rag/search", response_model=RAGSearchResponse)
-async def rag_search(request: RAGSearchRequest, http_request: Request):
-    knowledge = http_request.app.state.knowledge
-    result = await knowledge.search(
-        query=request.query,
-        service=request.service or "",
-        top_k=request.top_k,
-    )
-    return RAGSearchResponse(**result)
-
-
-@app.post("/api/v1/rag/sync", response_model=RAGIndexResponse)
-async def rag_sync(http_request: Request):
-    knowledge = http_request.app.state.knowledge
-    result = await knowledge.reindex(force=False)
-    return RAGIndexResponse(status="ok", **{key: result.get(key, 0) for key in RAGIndexResponse.model_fields if key != "status"})
-
-
-@app.post("/api/v1/rag/reindex", response_model=RAGIndexResponse)
-async def rag_reindex(http_request: Request):
-    knowledge = http_request.app.state.knowledge
-    result = await knowledge.reindex(force=True)
-    return RAGIndexResponse(status="ok", **{key: result.get(key, 0) for key in RAGIndexResponse.model_fields if key != "status"})
 
 
 @app.post("/api/v1/tickets", response_model=TicketResponse)

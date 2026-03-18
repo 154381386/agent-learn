@@ -7,8 +7,8 @@ from langgraph.types import interrupt
 from .agent_clients import AgentClient
 from .approval_store import ApprovalStore
 from .executor import ActionExecutor
-from .knowledge import KnowledgeBase
 from .llm import OpenAICompatLLM
+from .rag_client import RAGServiceClient
 from .registry import build_registry
 from .schemas import RoutingDecision, TaskConstraints, TaskPackage, TicketState, model_to_dict
 from .settings import Settings
@@ -17,7 +17,7 @@ from .settings import Settings
 class TicketGraphFactory:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.knowledge = KnowledgeBase(settings)
+        self.knowledge = RAGServiceClient(settings)
         self.llm = OpenAICompatLLM(settings)
         self.registry = build_registry(settings)
         self.agent_client = AgentClient()
@@ -71,10 +71,19 @@ class TicketGraphFactory:
         return {"service": service, "summary": message, "known_facts": known_facts}
 
     async def retrieve_knowledge(self, state: TicketState) -> TicketState:
-        result = await self.knowledge.search(
-            query=state["raw_message"],
-            service=state.get("service", ""),
-        )
+        try:
+            result = await self.knowledge.search(
+                query=state["raw_message"],
+                service=state.get("service", ""),
+            )
+        except Exception:
+            return {
+                "rag_hit": False,
+                "rag_answer": "",
+                "rag_query_type": "unavailable",
+                "rag_context": [],
+                "rag_sources": [],
+            }
         known_facts = list(state.get("known_facts", []))
         for fact in result.get("facts", []):
             if fact not in known_facts:
