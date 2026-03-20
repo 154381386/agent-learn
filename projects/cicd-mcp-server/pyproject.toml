@@ -1,0 +1,20 @@
+[project]
+name = "cicd-mcp-server"
+version = "0.1.0"
+description = "Standalone mock MCP server for CICD Agent capabilities"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+cicd-mcp-server = "cicd_mcp_server.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

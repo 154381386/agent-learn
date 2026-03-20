@@ -1,0 +1,5 @@
+agents:
+  cicd_agent:
+    mcp_servers: [http://127.0.0.1:8900]
+  general_sre_agent:
+    mcp_servers: []

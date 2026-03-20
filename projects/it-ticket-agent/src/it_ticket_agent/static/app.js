@@ -41,8 +41,34 @@ function addMessage(role, title, body) {
 function formatDiagnosis(diagnosis) {
   if (!diagnosis) return '';
   const lines = [];
+  if (diagnosis.routing) {
+    lines.push(`路由 Agent：${diagnosis.routing.agent_name || '-'}`);
+    if (diagnosis.routing.reason) lines.push(`路由原因：${diagnosis.routing.reason}`);
+  }
+  if (diagnosis.summary) lines.push(`摘要：${diagnosis.summary}`);
   if (diagnosis.conclusion) lines.push(`结论：${diagnosis.conclusion}`);
   if (typeof diagnosis.confidence === 'number') lines.push(`置信度：${diagnosis.confidence}`);
+
+  if (Array.isArray(diagnosis.findings) && diagnosis.findings.length > 0) {
+    lines.push('关键发现：');
+    diagnosis.findings.forEach((finding) => {
+      lines.push(`- ${finding.title}: ${finding.detail}`);
+    });
+  }
+
+  if (Array.isArray(diagnosis.tool_results) && diagnosis.tool_results.length > 0) {
+    lines.push('工具执行：');
+    diagnosis.tool_results.forEach((toolResult) => {
+      lines.push(`- ${toolResult.tool_name} [${toolResult.status}]`);
+      if (toolResult.summary) {
+        lines.push(`  · ${toolResult.summary}`);
+      }
+      if (Array.isArray(toolResult.evidence)) {
+        toolResult.evidence.slice(0, 2).forEach((item) => lines.push(`  · ${item}`));
+      }
+    });
+  }
+
   if (Array.isArray(diagnosis.sources) && diagnosis.sources.length > 0) {
     lines.push('证据来源：');
     diagnosis.sources.forEach((source) => {
@@ -51,6 +77,47 @@ function formatDiagnosis(diagnosis) {
         source.evidence.forEach((evidence) => lines.push(`  · ${evidence}`));
       }
     });
+  }
+
+  if (Array.isArray(diagnosis.recommended_actions) && diagnosis.recommended_actions.length > 0) {
+    lines.push('建议动作：');
+    diagnosis.recommended_actions.forEach((action) => {
+      lines.push(`- ${action.action} [${action.risk}]`);
+      if (action.reason) lines.push(`  · ${action.reason}`);
+    });
+  }
+
+  if (diagnosis.approval) {
+    lines.push('审批状态：');
+    lines.push(`- ${diagnosis.approval.action}: ${diagnosis.approval.status}`);
+  }
+
+  if (diagnosis.execution) {
+    lines.push('执行结果：');
+    Object.entries(diagnosis.execution).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        lines.push(`- ${key}: ${value.join(', ')}`);
+      } else if (value && typeof value === 'object') {
+        lines.push(`- ${key}: ${JSON.stringify(value)}`);
+      } else {
+        lines.push(`- ${key}: ${value}`);
+      }
+    });
+  }
+
+  return lines.join('\n');
+}
+
+function formatApprovalRequest(approvalRequest) {
+  if (!approvalRequest) return '';
+  const lines = [
+    `审批单：${approvalRequest.approval_id}`,
+    `动作：${approvalRequest.action}`,
+    `风险：${approvalRequest.risk}`,
+    `原因：${approvalRequest.reason}`,
+  ];
+  if (approvalRequest.params) {
+    lines.push(`参数：${JSON.stringify(approvalRequest.params, null, 2)}`);
   }
   return lines.join('\n');
 }
@@ -81,8 +148,8 @@ function openApprovalModal(approvalRequest, diagnosis) {
   appendApprovalRow('风险', approvalRequest.risk, true);
   appendApprovalRow('原因', approvalRequest.reason);
   appendApprovalRow('参数', JSON.stringify(approvalRequest.params || {}, null, 2));
-  if (diagnosis && diagnosis.conclusion) {
-    appendApprovalRow('诊断', diagnosis.conclusion);
+  if (diagnosis && (diagnosis.summary || diagnosis.conclusion)) {
+    appendApprovalRow('诊断', diagnosis.summary || diagnosis.conclusion);
   }
   approvalModal.classList.remove('hidden');
   approvalModal.setAttribute('aria-hidden', 'false');
@@ -123,7 +190,7 @@ async function submitDecision(approved) {
     addMessage(
       'approval',
       '审批结果',
-      `${approved ? '已批准' : '已拒绝'}：${pendingApproval.action}\n审批人：${approverId}`
+      `${approved ? '已批准' : '已拒绝'}：${pendingApproval.action}\n审批人：${approverId}\n备注：${approvalCommentInput.value.trim() || '无'}`
     );
     addMessage('agent', '罗伯特🤖', `${data.message}\n\n${formatDiagnosis(data.diagnosis)}`.trim());
     pendingApproval = null;
@@ -167,7 +234,11 @@ messageForm.addEventListener('submit', async (event) => {
 
     addMessage('agent', '罗伯特🤖', `${data.message}\n\n${formatDiagnosis(data.diagnosis)}`.trim());
     if (data.status === 'awaiting_approval' && data.approval_request) {
-      addMessage('approval', '系统提示', '检测到高风险动作，需要人工审批。');
+      addMessage(
+        'approval',
+        '审批请求',
+        `检测到高风险动作，需要人工审批。\n\n${formatApprovalRequest(data.approval_request)}`
+      );
       openApprovalModal(data.approval_request, data.diagnosis);
     }
   } catch (error) {

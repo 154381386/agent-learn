@@ -10,6 +10,7 @@ from langgraph.types import Command
 
 from .approval_store import ApprovalStore
 from .graph import TicketGraphFactory
+from .runtime import SupervisorOrchestrator
 from .schemas import (
     ApprovalDecisionRequest,
     TicketRequest,
@@ -34,9 +35,11 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
 async def lifespan(app: FastAPI):
     checkpointer_cm = AsyncSqliteSaver.from_conn_string(settings.langgraph_checkpoint_db)
     checkpointer = await checkpointer_cm.__aenter__()
+    approval_store = ApprovalStore(settings.approval_db_path)
     app.state.checkpointer_cm = checkpointer_cm
     app.state.ticket_graph = graph_factory.build(checkpointer=checkpointer)
-    app.state.approval_store = ApprovalStore(settings.approval_db_path)
+    app.state.supervisor_orchestrator = SupervisorOrchestrator(settings, approval_store)
+    app.state.approval_store = approval_store
     yield
     await checkpointer_cm.__aexit__(None, None, None)
 
@@ -57,6 +60,17 @@ async def healthz():
 
 @app.post("/api/v1/tickets", response_model=TicketResponse)
 async def create_ticket(request: TicketRequest, http_request: Request):
+    if settings.orchestration_mode == "supervisor":
+        supervisor_orchestrator = http_request.app.state.supervisor_orchestrator
+        result = await supervisor_orchestrator.handle_ticket(request)
+        return TicketResponse(
+            ticket_id=request.ticket_id,
+            status=result["status"],
+            message=result["message"],
+            approval_request=result.get("approval_request"),
+            diagnosis=result.get("diagnosis"),
+        )
+
     ticket_graph = http_request.app.state.ticket_graph
     config = {"configurable": {"thread_id": request.ticket_id}}
     initial_state = {
@@ -92,12 +106,22 @@ async def create_ticket(request: TicketRequest, http_request: Request):
 @app.post("/api/v1/approvals/{approval_id}/decision", response_model=TicketResponse)
 async def decide_approval(approval_id: str, request: ApprovalDecisionRequest, http_request: Request):
     approval_store = http_request.app.state.approval_store
-    ticket_graph = http_request.app.state.ticket_graph
     approval = approval_store.get(approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="approval not found")
 
     approval_store.decide(approval_id, request.approved, request.approver_id, request.comment)
+    if approval.get("params", {}).get("orchestration_mode") == "supervisor":
+        supervisor_orchestrator = http_request.app.state.supervisor_orchestrator
+        result = await supervisor_orchestrator.handle_approval_decision(approval, request)
+        return TicketResponse(
+            ticket_id=approval["ticket_id"],
+            status=result["status"],
+            message=result["message"],
+            diagnosis=result.get("diagnosis"),
+        )
+
+    ticket_graph = http_request.app.state.ticket_graph
     config = {"configurable": {"thread_id": approval["thread_id"]}}
     result = await ticket_graph.ainvoke(
         Command(

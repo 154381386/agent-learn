@@ -1,3 +1,5 @@
+import ast
+import json
 import os
 import sqlite3
 import uuid
@@ -39,6 +41,7 @@ class ApprovalStore:
         approval_id = str(uuid.uuid4())
         record = dict(payload)
         record["approval_id"] = approval_id
+        params_json = json.dumps(record.get("params", {}), ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -53,7 +56,7 @@ class ApprovalStore:
                     record["action"],
                     record["risk"],
                     record["reason"],
-                    str(record.get("params", {})),
+                    params_json,
                     "pending",
                 ),
             )
@@ -80,7 +83,7 @@ class ApprovalStore:
             "action": row[3],
             "risk": row[4],
             "reason": row[5],
-            "params": row[6],
+            "params": self._load_params(row[6]),
             "status": row[7],
             "approver_id": row[8],
             "comment": row[9],
@@ -102,3 +105,16 @@ class ApprovalStore:
         if record is None:
             raise KeyError("approval not found")
         return record
+
+    @staticmethod
+    def _load_params(params_json: str) -> Dict[str, Any]:
+        if not params_json:
+            return {}
+        try:
+            return json.loads(params_json)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(params_json)
+            except (ValueError, SyntaxError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}

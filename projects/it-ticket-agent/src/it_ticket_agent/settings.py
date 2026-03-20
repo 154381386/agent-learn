@@ -14,6 +14,8 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "dev")
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
+    orchestration_mode: str = os.getenv("ORCHESTRATION_MODE", "legacy")
+    mcp_connections_path: str = os.getenv("MCP_CONNECTIONS_PATH", "./mcp_connections.yaml")
     approval_db_path: str = os.getenv("APPROVAL_DB_PATH", "./data/approvals.db")
     langgraph_checkpoint_db: str = os.getenv("LANGGRAPH_CHECKPOINT_DB", "./data/langgraph.db")
 
