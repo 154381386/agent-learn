@@ -43,8 +43,10 @@ function formatDiagnosis(diagnosis) {
   const lines = [];
   if (diagnosis.routing) {
     lines.push(`路由 Agent：${diagnosis.routing.agent_name || '-'}`);
+    if (diagnosis.routing.route_source) lines.push(`路由路径：${diagnosis.routing.route_source}`);
     if (diagnosis.routing.reason) lines.push(`路由原因：${diagnosis.routing.reason}`);
   }
+  if (diagnosis.execution_path) lines.push(`Agent 执行路径：${diagnosis.execution_path}`);
   if (diagnosis.summary) lines.push(`摘要：${diagnosis.summary}`);
   if (diagnosis.conclusion) lines.push(`结论：${diagnosis.conclusion}`);
   if (typeof diagnosis.confidence === 'number') lines.push(`置信度：${diagnosis.confidence}`);

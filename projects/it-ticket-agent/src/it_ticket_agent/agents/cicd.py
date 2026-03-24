@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
 from typing import List
 
+from ..llm_client import OpenAICompatToolLLM
 from ..mcp import MCPClient, MCPConnectionManager
 from ..rag_client import RAGServiceClient
 from ..runtime.contracts import AgentAction, AgentFinding, AgentResult, TaskEnvelope
+from ..settings import Settings
 from ..tools import (
     CheckPipelineStatusTool,
     CheckRecentDeploymentsTool,
@@ -15,13 +19,22 @@ from ..tools.contracts import ToolExecutionResult
 from .base import BaseDomainAgent
 
 
+logger = logging.getLogger(__name__)
+
+
 class CICDAgent(BaseDomainAgent):
     name = "cicd_agent"
     domain = "cicd"
 
-    def __init__(self, knowledge_client: RAGServiceClient, connection_manager: MCPConnectionManager) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        knowledge_client: RAGServiceClient,
+        connection_manager: MCPConnectionManager,
+    ) -> None:
         self.knowledge_client = knowledge_client
         self.connection_manager = connection_manager
+        self.llm = OpenAICompatToolLLM(settings)
         servers = self.connection_manager.servers_for_agent(self.name)
         self.mcp_client = MCPClient(servers[0]) if servers else None
         self.tools = [
@@ -32,6 +45,22 @@ class CICDAgent(BaseDomainAgent):
         ]
 
     async def run(self, task: TaskEnvelope) -> AgentResult:
+        if self.llm.enabled:
+            try:
+                logger.info("cicd.run path=llm_loop ticket_id=%s", task.ticket_id)
+                return await self._run_llm_loop(task)
+            except Exception as exc:
+                logger.warning(
+                    "cicd.run llm_loop_failed ticket_id=%s error=%s",
+                    task.ticket_id,
+                    exc,
+                )
+                pass
+
+        logger.info("cicd.run path=fallback ticket_id=%s", task.ticket_id)
+        return await self._run_fallback(task)
+
+    async def _run_fallback(self, task: TaskEnvelope) -> AgentResult:
         message = task.shared_context.get("message", "")
         service = task.shared_context.get("service", "unknown-service")
         mcp_servers = self.connection_manager.servers_for_agent(self.name)
@@ -44,6 +73,12 @@ class CICDAgent(BaseDomainAgent):
         for tool in self.tools:
             try:
                 tool_result = await tool.run(task)
+                logger.info(
+                    "cicd.fallback tool=%s ticket_id=%s status=%s",
+                    tool.name,
+                    task.ticket_id,
+                    tool_result.status,
+                )
             except Exception as exc:
                 tool_result = ToolExecutionResult(
                     tool_name=tool.name,
@@ -156,6 +191,7 @@ class CICDAgent(BaseDomainAgent):
             domain=self.domain,
             status="completed",
             summary=summary,
+            execution_path="fallback",
             findings=findings,
             evidence=evidence,
             tool_results=[tool_result.model_dump() for tool_result in tool_results],
@@ -164,6 +200,181 @@ class CICDAgent(BaseDomainAgent):
             confidence=0.72,
             open_questions=["最近一次部署是否与故障时间重合？"],
             needs_handoff=False,
+            raw_refs=raw_refs,
+        )
+
+    async def _run_llm_loop(self, task: TaskEnvelope) -> AgentResult:
+        message = task.shared_context.get("message", "")
+        service = task.shared_context.get("service", "unknown-service")
+        cluster = task.shared_context.get("cluster", "prod-shanghai-1")
+        mcp_servers = self.connection_manager.servers_for_agent(self.name)
+        tools_by_name = {tool.name: tool for tool in self.tools}
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是企业内部的 CICD Agent。"
+                    "你要诊断构建、流水线、发版和回滚相关问题。"
+                    "请优先通过工具获取事实，再给出结论。"
+                    "如果需要高风险动作，只能提出建议，不能直接声称已执行。"
+                    "当信息足够时，请输出纯 JSON，字段必须包含："
+                    "summary, findings, recommended_actions, risk_level, confidence, open_questions。"
+                    "findings 是对象数组，recommended_actions 是对象数组。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "message": message,
+                        "service": service,
+                        "cluster": cluster,
+                        "mcp_servers": mcp_servers,
+                        "goal": task.goal,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        tool_results: List[ToolExecutionResult] = []
+        for step in range(4):
+            assistant_message = await self.llm.chat(
+                messages=messages,
+                tools=[tool.as_openai_tool() for tool in self.tools],
+            )
+            tool_calls = assistant_message.get("tool_calls") or []
+            content = assistant_message.get("content") or ""
+            logger.info(
+                "cicd.llm_loop step=%s ticket_id=%s tool_calls=%s has_content=%s",
+                step + 1,
+                task.ticket_id,
+                len(tool_calls),
+                bool(content),
+            )
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
+            )
+
+            if tool_calls:
+                for tool_call in tool_calls:
+                    function = tool_call.get("function", {})
+                    tool_name = function.get("name")
+                    tool = tools_by_name.get(tool_name)
+                    if tool is None:
+                        continue
+                    raw_arguments = function.get("arguments") or "{}"
+                    arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                    try:
+                        tool_result = await tool.run(task, arguments=arguments)
+                        logger.info(
+                            "cicd.llm_loop tool=%s ticket_id=%s status=%s",
+                            tool.name,
+                            task.ticket_id,
+                            tool_result.status,
+                        )
+                    except Exception as exc:
+                        tool_result = ToolExecutionResult(
+                            tool_name=tool.name,
+                            status="failed",
+                            summary=f"工具调用失败：{tool.name}",
+                            payload={"error": str(exc)},
+                            evidence=[str(exc)],
+                        )
+                        logger.warning(
+                            "cicd.llm_loop tool_failed=%s ticket_id=%s error=%s",
+                            tool.name,
+                            task.ticket_id,
+                            exc,
+                        )
+                    tool_results.append(tool_result)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id"),
+                            "content": json.dumps(tool_result.model_dump(), ensure_ascii=False),
+                        }
+                    )
+                continue
+
+            payload = self.llm.extract_json(content)
+            logger.info(
+                "cicd.llm_loop completed ticket_id=%s tool_count=%s confidence=%s",
+                task.ticket_id,
+                len(tool_results),
+                payload.get("confidence"),
+            )
+            return self._build_agent_result_from_llm(task, payload, tool_results, mcp_servers)
+
+        raise ValueError("LLM tool loop exceeded max steps")
+
+    def _build_agent_result_from_llm(
+        self,
+        task: TaskEnvelope,
+        payload: dict,
+        tool_results: List[ToolExecutionResult],
+        mcp_servers: List[str],
+    ) -> AgentResult:
+        service = task.shared_context.get("service", "unknown-service")
+        findings = [
+            AgentFinding(
+                title=item.get("title", "未命名发现"),
+                detail=item.get("detail", ""),
+                severity=item.get("severity", "info"),
+            )
+            for item in payload.get("findings", [])
+            if isinstance(item, dict)
+        ]
+        actions = [
+            AgentAction(
+                action=item.get("action", "unknown_action"),
+                risk=item.get("risk", "low"),
+                reason=item.get("reason", ""),
+                params=item.get("params", {}),
+            )
+            for item in payload.get("recommended_actions", [])
+            if isinstance(item, dict)
+        ]
+        raw_refs = []
+        evidence = []
+        for tool_result in tool_results:
+            evidence.extend(tool_result.evidence)
+            for hit in tool_result.payload.get("hits", []):
+                title = hit.get("title")
+                if title:
+                    raw_refs.append(title)
+        raw_refs.extend(mcp_servers)
+
+        if mcp_servers:
+            findings.append(
+                AgentFinding(
+                    title="已发现 CICD MCP 连接",
+                    detail=f"当前 CICD Agent 已绑定 MCP Servers：{', '.join(mcp_servers)}",
+                    severity="info",
+                )
+            )
+
+        return AgentResult(
+            agent_name=self.name,
+            domain=self.domain,
+            status="completed",
+            summary=payload.get(
+                "summary",
+                f"{service} 工单已进入 CICD 诊断，建议先检查最近部署、流水线状态和相关变更记录。",
+            ),
+            execution_path="llm_loop",
+            findings=findings,
+            evidence=evidence,
+            tool_results=[tool_result.model_dump() for tool_result in tool_results],
+            recommended_actions=actions,
+            risk_level=payload.get("risk_level", "low"),
+            confidence=float(payload.get("confidence", 0.65)),
+            open_questions=payload.get("open_questions", []),
+            needs_handoff=bool(payload.get("needs_handoff", False)),
             raw_refs=raw_refs,
         )
 

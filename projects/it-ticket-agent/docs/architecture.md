@@ -9,12 +9,12 @@
 
 ## Orchestrator 职责
 
-- `LangGraph` 编排
-- 工单归一化
+- `Supervisor` 路由与结果汇总
+- 工单归一化与任务封装
 - 调用 RAG 服务
-- Agent 路由与并行诊断
-- 审批中断与恢复
-- 动作执行与最终回复
+- 调用领域 SubAgent
+- 调用 MCP 工具
+- HITL 审批与最终回复
 
 ## RAG Service 职责
 
@@ -30,7 +30,7 @@
 User
   -> orchestrator (:8000)
   -> rag-service (:8200)
-  -> sample-agents (:8101)
+  -> cicd-mcp-server (:8900)
   -> orchestrator
   -> User
 ```

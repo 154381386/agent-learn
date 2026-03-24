@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -11,47 +11,6 @@ class TicketRequest(BaseModel):
     cluster: str = "prod-shanghai-1"
     namespace: str = "default"
     channel: str = "feishu"
-
-
-class TaskConstraints(BaseModel):
-    timeout_sec: int = 8
-    allowed_tools: List[str] = Field(default_factory=list)
-
-
-class TaskPackage(BaseModel):
-    ticket_id: str
-    service: str
-    cluster: str
-    namespace: str
-    symptom: str
-    summary: str
-    known_facts: List[str] = Field(default_factory=list)
-    knowledge_context: List[Dict[str, Any]] = Field(default_factory=list)
-    questions: List[str] = Field(default_factory=list)
-    constraints: TaskConstraints = Field(default_factory=TaskConstraints)
-
-
-class SuggestedAction(BaseModel):
-    action: str
-    risk: str
-    reason: str
-    params: Dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentResult(BaseModel):
-    agent: str
-    conclusion: str
-    confidence: float
-    evidence: List[str] = Field(default_factory=list)
-    suggested_actions: List[SuggestedAction] = Field(default_factory=list)
-
-
-class RoutingDecision(BaseModel):
-    intent: str
-    confidence: float
-    complexity_score: float
-    recommended_mode: str
-    candidate_agents: List[str] = Field(default_factory=list)
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -113,31 +72,6 @@ class RAGIndexResponse(BaseModel):
     updated_documents: int = 0
     removed_documents: int = 0
     skipped_documents: int = 0
-
-
-class TicketState(TypedDict, total=False):
-    ticket_id: str
-    thread_id: str
-    user_id: str
-    raw_message: str
-    service: str
-    cluster: str
-    namespace: str
-    summary: str
-    known_facts: List[str]
-    rag_answer: str
-    rag_hit: bool
-    rag_query_type: str
-    rag_context: List[Dict[str, Any]]
-    rag_sources: List[Dict[str, Any]]
-    routing: Dict[str, Any]
-    task_package: Dict[str, Any]
-    agent_results: List[Dict[str, Any]]
-    fused_diagnosis: Dict[str, Any]
-    approval_request: Dict[str, Any]
-    approval_decision: Dict[str, Any]
-    action_result: Dict[str, Any]
-    final_response: str
 
 
 def model_to_dict(model: Any) -> Dict[str, Any]:

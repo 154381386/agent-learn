@@ -16,6 +16,7 @@ class GeneralSREAgent(BaseDomainAgent):
             domain=self.domain,
             status="completed",
             summary=f"{service} 工单进入通用 SRE 诊断路径，当前建议先做基础现象确认与上下文补齐。",
+            execution_path="general_direct",
             findings=[
                 AgentFinding(
                     title="进入通用兜底诊断",

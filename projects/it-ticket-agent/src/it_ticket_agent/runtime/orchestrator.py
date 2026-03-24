@@ -21,10 +21,11 @@ class SupervisorOrchestrator:
     def __init__(self, settings: Settings, approval_store: ApprovalStore) -> None:
         self.settings = settings
         self.approval_store = approval_store
-        self.supervisor = RuleBasedSupervisor()
+        self.supervisor = RuleBasedSupervisor(settings)
         self.connection_manager = MCPConnectionManager(settings.mcp_connections_path)
         self.agents: Dict[str, object] = {
             "cicd_agent": CICDAgent(
+                settings,
                 self.supervisor.knowledge_client(settings),
                 self.connection_manager,
             ),
@@ -32,7 +33,7 @@ class SupervisorOrchestrator:
         }
 
     async def handle_ticket(self, request: TicketRequest) -> Dict[str, object]:
-        decision = self.supervisor.route(request)
+        decision = await self.supervisor.route(request)
         task = self.supervisor.build_task(request, decision)
         agent = self.agents[decision.agent_name]
         result = await agent.run(task)

@@ -129,27 +129,27 @@ SubAgent 返回给 Supervisor 的标准结果结构建议包含：
 
 任务：
 
-- [ ] 将现有 `SREAgent` 重命名为 `General SRE Agent`
-- [ ] 新增 `Supervisor`，仅负责路由与任务分发，不直接持有工具
-- [ ] 从现有能力中拆出 `CICD Agent`
-- [ ] 给 `CICD Agent` 配置专属 system prompt 与工具集合
-- [ ] 实现 `TaskEnvelope -> SubAgent -> AgentResult` 基础调用链
-- [ ] 实现 Router 模式的 LangGraph 节点或等价运行时流程
-- [ ] 保持现有对外 API 兼容
-- [ ] 补充基础 tracing / logging，让一次请求能串起 Supervisor 与 SubAgent
+- [x] 将现有 `SREAgent` 重命名为 `General SRE Agent`
+- [x] 新增 `Supervisor`，仅负责路由与任务分发，不直接持有工具
+- [x] 从现有能力中拆出 `CICD Agent`
+- [x] 给 `CICD Agent` 配置专属工具集合
+- [x] 实现 `TaskEnvelope -> SubAgent -> AgentResult` 基础调用链
+- [x] 实现 Router 模式的等价运行时流程
+- [x] 保持现有对外 API 兼容
+- [x] 补充基础 logging，让一次请求能串起 Supervisor 与 SubAgent
 
 交付物：
 
-- [ ] `Supervisor` 基础实现
-- [ ] `CICD Agent` 基础实现
-- [ ] Router 模式调用链
-- [ ] 首版结构化 `AgentResult`
+- [x] `Supervisor` 基础实现
+- [x] `CICD Agent` 基础实现
+- [x] Router 模式调用链
+- [x] 首版结构化 `AgentResult`
 
 验收标准：
 
-- [ ] 单领域问题可以由 Supervisor 正确路由到 `CICD Agent`
-- [ ] 每个 Agent 只绑定自己的少量工具，不再全量加载
-- [ ] 对外工单入口与结果格式保持兼容或可平滑兼容
+- [x] 单领域问题可以由 Supervisor 正确路由到 `CICD Agent`
+- [x] 每个 Agent 只绑定自己的少量工具，不再全量加载
+- [x] 对外工单入口与结果格式保持兼容或可平滑兼容
 
 ### Phase 2：平台治理层与 MCP 连接层
 

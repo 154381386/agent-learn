@@ -12,8 +12,8 @@ cleanup() {
   if [[ -n "${ORCH_PID:-}" ]]; then
     kill "$ORCH_PID" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${AGENT_PID:-}" ]]; then
-    kill "$AGENT_PID" >/dev/null 2>&1 || true
+  if [[ -n "${MCP_PID:-}" ]]; then
+    kill "$MCP_PID" >/dev/null 2>&1 || true
   fi
 }
 
@@ -26,13 +26,16 @@ echo "[1/3] Starting RAG service on :8200"
 ) &
 RAG_PID=$!
 
-echo "[2/3] Starting sample agent runtime on :8101"
-uv run uvicorn it_ticket_agent.sample_agents:app --reload --port 8101 &
-AGENT_PID=$!
+echo "[2/3] Starting CICD MCP server on :8900"
+(
+  cd "$ROOT_DIR/../cicd-mcp-server"
+  PYTHONPATH=src python3 -m cicd_mcp_server --host 127.0.0.1 --port 8900
+) &
+MCP_PID=$!
 
 echo "[3/3] Starting orchestrator on :8000"
 uv run uvicorn it_ticket_agent.main:app --reload --port 8000 &
 ORCH_PID=$!
 
 echo "Open http://localhost:8000"
-wait "$ORCH_PID" "$AGENT_PID" "$RAG_PID"
+wait "$ORCH_PID" "$MCP_PID" "$RAG_PID"

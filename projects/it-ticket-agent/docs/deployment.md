@@ -3,14 +3,14 @@
 这份文档说明 `projects/it-ticket-agent` 的部署方式。
 当前项目是 **编排服务（orchestrator）**，依赖外部：
 - `projects/it-ticket-rag-service` 提供的 RAG HTTP 服务
-- 诊断 Agent Runtime（默认 `:8101`）
+- 领域 MCP Server（当前首个为 `projects/cicd-mcp-server`，默认 `:8900`）
 
 ## 1. 部署目标
 
 默认部署结果：
 - Orchestrator：`http://<host>:8000`
 - RAG Service：`http://<host>:8200`
-- Agent Runtime：`http://<host>:8101`
+- CICD MCP Server：`http://<host>:8900`
 
 ## 2. 前置依赖
 
@@ -18,7 +18,7 @@
 - `uv` 或可用的 `pip`
 - 可访问的 LLM API
 - 已部署好的 RAG 服务
-- 已部署好的 Agent Runtime
+- 已部署好的 MCP Server
 
 ## 3. 目录准备
 
@@ -36,13 +36,8 @@ python3 -m venv .venv
 APP_ENV=prod
 HOST=0.0.0.0
 PORT=8000
+MCP_CONNECTIONS_PATH=./mcp_connections.yaml
 APPROVAL_DB_PATH=./data/approvals.db
-LANGGRAPH_CHECKPOINT_DB=./data/langgraph.db
-
-AGENT_TRANSPORT=http
-POD_AGENT_URL=http://127.0.0.1:8101/api/v1/agents/pod-analysis/run
-RCA_AGENT_URL=http://127.0.0.1:8101/api/v1/agents/root-cause/run
-NETWORK_AGENT_URL=http://127.0.0.1:8101/api/v1/agents/network-diagnosis/run
 
 LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_API_KEY=your-chat-api-key
@@ -99,7 +94,7 @@ sudo systemctl status it-ticket-orchestrator
 ```bash
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8200/healthz
-curl http://127.0.0.1:8101/healthz
+curl http://127.0.0.1:8900/healthz
 ```
 
 工单链路验证：
@@ -135,4 +130,4 @@ sudo systemctl restart it-ticket-orchestrator
 
 如果需要对外暴露，建议使用 Nginx/Ingress：
 - 对用户开放 `:8000`
-- `:8200` 和 `:8101` 建议仅内网开放
+- `:8200` 和 `:8900` 建议仅内网开放

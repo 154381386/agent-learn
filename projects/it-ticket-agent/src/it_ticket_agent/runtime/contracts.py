@@ -36,6 +36,7 @@ class AgentResult(BaseModel):
     domain: str
     status: str
     summary: str
+    execution_path: str = "fallback"
     findings: List[AgentFinding] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
     tool_results: List[Dict[str, Any]] = Field(default_factory=list)
@@ -50,6 +51,7 @@ class AgentResult(BaseModel):
 class RoutingDecision(BaseModel):
     agent_name: str
     mode: Literal["router", "fan_out", "pipeline"] = "router"
+    route_source: str = "rule"
     reason: str
     confidence: float = 0.0
     candidate_agents: List[str] = Field(default_factory=list)

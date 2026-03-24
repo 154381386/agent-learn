@@ -14,24 +14,8 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "dev")
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
-    orchestration_mode: str = os.getenv("ORCHESTRATION_MODE", "legacy")
     mcp_connections_path: str = os.getenv("MCP_CONNECTIONS_PATH", "./mcp_connections.yaml")
     approval_db_path: str = os.getenv("APPROVAL_DB_PATH", "./data/approvals.db")
-    langgraph_checkpoint_db: str = os.getenv("LANGGRAPH_CHECKPOINT_DB", "./data/langgraph.db")
-
-    agent_transport: str = os.getenv("AGENT_TRANSPORT", "local")
-    pod_agent_url: str = os.getenv(
-        "POD_AGENT_URL",
-        "http://localhost:8101/api/v1/agents/pod-analysis/run",
-    )
-    rca_agent_url: str = os.getenv(
-        "RCA_AGENT_URL",
-        "http://localhost:8101/api/v1/agents/root-cause/run",
-    )
-    network_agent_url: str = os.getenv(
-        "NETWORK_AGENT_URL",
-        "http://localhost:8101/api/v1/agents/network-diagnosis/run",
-    )
 
     llm_base_url: str = os.getenv("LLM_BASE_URL", "")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")

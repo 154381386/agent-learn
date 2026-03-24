@@ -1,13 +1,14 @@
 # IT Ticket Orchestrator
 
-当前项目现在只负责 **编排与 Agent 主流程**，RAG 已拆到兄弟项目 `projects/it-ticket-rag-service`。
+当前项目现在只负责 **Supervisor 编排、SubAgent 路由、MCP 工具接入与 HITL 审批主流程**，RAG 已拆到兄弟项目 `projects/it-ticket-rag-service`。
 
 ## 当前职责
 
 - 接收用户工单请求
 - 调用 RAG 服务做知识检索
-- 根据结果路由诊断 Agent
-- 处理审批与执行动作
+- 路由到领域 SubAgent
+- 调用领域 MCP 工具
+- 处理 HITL 审批与执行动作
 - 汇总最终回复
 
 ## 兄弟项目
@@ -26,14 +27,12 @@ projects/it-ticket-agent/
 │   └── dev.sh
 └── src/it_ticket_agent/
     ├── main.py
-    ├── graph.py
-    ├── rag_client.py
-    ├── llm.py
-    ├── agent_clients.py
     ├── approval_store.py
-    ├── executor.py
-    ├── registry.py
-    ├── sample_agents.py
+    ├── rag_client.py
+    ├── agents/
+    ├── runtime/
+    ├── tools/
+    ├── mcp/
     └── schemas.py
 ```
 
@@ -48,7 +47,7 @@ uv pip install -e . --python .venv/bin/python
 
 ```bash
 make run-rag-service
-make run-agent
+make run-cicd-mcp
 make run-orchestrator
 ```
 
@@ -63,6 +62,7 @@ make dev
 `.env` 里主要保留：
 
 ```bash
+MCP_CONNECTIONS_PATH=./mcp_connections.yaml
 RAG_ENABLED=true
 RAG_SERVICE_BASE_URL=http://localhost:8200
 RAG_SERVICE_TIMEOUT_SEC=30

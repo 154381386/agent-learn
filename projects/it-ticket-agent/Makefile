@@ -1,6 +1,7 @@
-.PHONY: install run-agent run-rag-service run-orchestrator dev sync-kb reindex-kb pgvector-up pgvector-down pgvector-ps pgvector-logs
+.PHONY: install run-cicd-mcp run-rag-service run-orchestrator dev sync-kb reindex-kb pgvector-up pgvector-down pgvector-ps pgvector-logs
 
 RAG_DIR=../it-ticket-rag-service
+MCP_DIR=../cicd-mcp-server
 
 install:
 	uv pip install -e .
@@ -11,8 +12,8 @@ run-rag-service:
 run-orchestrator:
 	uv run uvicorn it_ticket_agent.main:app --reload --port 8000
 
-run-agent:
-	uv run uvicorn it_ticket_agent.sample_agents:app --reload --port 8101
+run-cicd-mcp:
+	cd $(MCP_DIR) && PYTHONPATH=src python3 -m cicd_mcp_server --host 0.0.0.0 --port 8900
 
 dev:
 	./scripts/dev.sh

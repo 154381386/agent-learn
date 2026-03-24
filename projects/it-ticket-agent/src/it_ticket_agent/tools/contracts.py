@@ -20,7 +20,18 @@ class ToolExecutionResult(BaseModel):
 class BaseTool(ABC):
     name: str
     summary: str
+    input_schema: Dict[str, Any] = {"type": "object", "properties": {}}
 
     @abstractmethod
-    async def run(self, task: TaskEnvelope) -> ToolExecutionResult:
+    async def run(self, task: TaskEnvelope, arguments: Dict[str, Any] | None = None) -> ToolExecutionResult:
         raise NotImplementedError
+
+    def as_openai_tool(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.summary,
+                "parameters": self.input_schema,
+            },
+        }
