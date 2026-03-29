@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from .adapters.rag_adapter import disabled_rag_search_payload, normalize_rag_search_payload
 from .settings import Settings
 
 
@@ -19,22 +20,13 @@ class RAGServiceClient:
         top_k: Optional[int] = None,
     ) -> Dict[str, Any]:
         if not self.settings.rag_enabled:
-            return {
-                "query": query,
-                "query_type": "disabled",
-                "should_respond_directly": False,
-                "direct_answer": None,
-                "hits": [],
-                "context": [],
-                "citations": [],
-                "facts": [],
-                "index_info": {"ready": False, "vector_backend": "remote-http", "disabled": True},
-            }
+            return disabled_rag_search_payload(query)
 
         payload: Dict[str, Any] = {"query": query, "service": service or ""}
         if top_k is not None:
             payload["top_k"] = top_k
-        return await self._request("POST", "/api/v1/rag/search", json=payload)
+        response = await self._request("POST", "/api/v1/rag/search", json=payload)
+        return normalize_rag_search_payload(response, query=query)
 
     async def status(self) -> Dict[str, Any]:
         return await self._request("GET", "/api/v1/rag/status")
