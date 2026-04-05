@@ -70,15 +70,15 @@ RAG_SERVICE_TIMEOUT_SEC=30
 
 ## 部署
 
-部署说明见 `docs/deployment.md:1`。
+部署说明见 `docs/部署说明.md:1`。
 
 ## API
 
 ```bash
 curl http://localhost:8000/healthz
-curl -X POST http://localhost:8000/api/v1/tickets \
+curl -X POST http://localhost:8000/api/v1/conversations \
   -H 'Content-Type: application/json' \
-  -d '{"ticket_id":"INC-1","user_id":"u1","message":"服务一直重启","service":"order-service"}'
+  -d '{"user_id":"u1","message":"服务一直重启","service":"order-service"}'
 ```
 
 ## RAG 相关操作

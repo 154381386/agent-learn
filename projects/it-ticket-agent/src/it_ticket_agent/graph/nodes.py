@@ -11,10 +11,13 @@ from ..approval.adapters import (
     legacy_payload_to_approval_request,
 )
 from ..approval_store import ApprovalStore
+from ..interrupt_store import InterruptStore
+from ..checkpoint_store import CheckpointStore
 from ..mcp import MCPClient, MCPConnectionManager
 from ..runtime.contracts import AgentResult
 from ..runtime.supervisor import RuleBasedSupervisor
 from ..schemas import ApprovalDecisionRequest, TicketRequest
+from ..session_store import SessionStore
 from ..state.approval_transformers import (
     apply_approval_gate_result_to_state,
     apply_approval_resume_result_to_state,
@@ -35,15 +38,20 @@ class OrchestratorGraphNodes:
         self,
         supervisor: RuleBasedSupervisor,
         approval_store: ApprovalStore,
+        session_store: SessionStore,
+        interrupt_store: InterruptStore,
         connection_manager: MCPConnectionManager,
         agents: Mapping[str, BaseDomainAgent],
         approval_coordinator: ApprovalCoordinator | None = None,
     ) -> None:
         self.supervisor = supervisor
         self.approval_store = approval_store
+        self.session_store = session_store
+        self.interrupt_store = interrupt_store
         self.connection_manager = connection_manager
         self.agents = agents
         self.approval_coordinator = approval_coordinator or ApprovalCoordinator()
+        self.checkpoint_store = CheckpointStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None
 
     async def ingest(self, state: TicketGraphState) -> Dict[str, Any]:
         request = state["request"]
@@ -122,8 +130,29 @@ class OrchestratorGraphNodes:
                     proposal.setdefault("params", {})
                     proposal["params"]["incident_state"] = snapshot
             approval_request = self.approval_store.create(approval_request)
+            interrupt_record = self.interrupt_store.create_approval_interrupt(
+                session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+                ticket_id=incident_state.ticket_id,
+                reason=str(approval_request.get("reason") or approval_request.get("action") or "需要审批后继续执行"),
+                question="是否批准执行该高风险动作？",
+                expected_input_schema={
+                    "type": "object",
+                    "properties": {
+                        "approved": {"type": "boolean"},
+                        "approver_id": {"type": "string"},
+                        "comment": {"type": "string"},
+                    },
+                    "required": ["approved", "approver_id"],
+                },
+                metadata={
+                    "approval_id": approval_request.get("approval_id"),
+                    "thread_id": approval_request.get("thread_id"),
+                },
+            )
+            approval_request["interrupt_id"] = interrupt_record["interrupt_id"]
             next_incident_state.metadata["approval_request"] = approval_request
             transition_notes.append("approval request is persisted through ApprovalStore facade backed by ApprovalStoreV2")
+            transition_notes.append("approval wait is materialized as a persisted approval interrupt")
         else:
             transition_notes.append("approval gate completed without pending approval request")
 
@@ -185,7 +214,11 @@ class OrchestratorGraphNodes:
     async def ingest_approval_decision(self, state: ApprovalGraphState) -> Dict[str, Any]:
         approval = state["approval_record"]
         approval_request = legacy_payload_to_approval_request(approval)
-        incident_state, restore_note = self._restore_incident_state_for_resume(approval, approval_request)
+        incident_state, restore_note = self._restore_incident_state_for_resume(
+            approval,
+            approval_request,
+            thread_id=str(state.get("thread_id") or approval_request.thread_id),
+        )
         transition_notes = list(state.get("transition_notes") or [])
         transition_notes.append(restore_note)
         logger.info("graph.resume approval_id=%s", approval["approval_id"])
@@ -367,7 +400,42 @@ class OrchestratorGraphNodes:
             proposals.append(proposal.model_copy(update={"params": params}))
         return gate_input.model_copy(update={"proposals": proposals})
 
-    def _restore_incident_state_for_resume(self, approval: Dict[str, Any], approval_request) -> tuple[IncidentState, str]:
+    def _restore_incident_state_for_resume(
+        self,
+        approval: Dict[str, Any],
+        approval_request,
+        *,
+        thread_id: str,
+    ) -> tuple[IncidentState, str]:
+        if thread_id:
+            session = self.session_store.get_by_thread_id(thread_id)
+            if session is not None:
+                last_checkpoint_id = session.get("last_checkpoint_id")
+                if self.checkpoint_store is not None and last_checkpoint_id:
+                    checkpoint = self.checkpoint_store.get(str(last_checkpoint_id))
+                    if checkpoint is not None:
+                        snapshot = checkpoint.get("state_snapshot")
+                        if isinstance(snapshot, dict):
+                            restored = IncidentState.model_validate(snapshot)
+                            restored.metadata.setdefault("graph", {})
+                            restored.metadata["graph"]["resume_restore_mode"] = "checkpoint"
+                            return restored, "incident_state restored from latest session checkpoint"
+                if self.checkpoint_store is not None:
+                    checkpoint = self.checkpoint_store.get_latest(str(session.get("session_id") or ""))
+                    if checkpoint is not None:
+                        snapshot = checkpoint.get("state_snapshot")
+                        if isinstance(snapshot, dict):
+                            restored = IncidentState.model_validate(snapshot)
+                            restored.metadata.setdefault("graph", {})
+                            restored.metadata["graph"]["resume_restore_mode"] = "checkpoint"
+                            return restored, "incident_state restored from latest checkpoint lookup"
+                snapshot = session.get("incident_state")
+                if isinstance(snapshot, dict):
+                    restored = IncidentState.model_validate(snapshot)
+                    restored.metadata.setdefault("graph", {})
+                    restored.metadata["graph"]["resume_restore_mode"] = "session_snapshot"
+                    return restored, "incident_state restored from session snapshot"
+
         params = dict(approval.get("params") or {})
         snapshot = params.get("incident_state")
         if isinstance(snapshot, dict):

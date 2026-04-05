@@ -16,9 +16,24 @@ const clearChatBtn = document.getElementById('clearChatBtn');
 const modalBackdrop = document.querySelector('.modal-backdrop');
 
 let pendingApproval = null;
+let currentSessionId = null;
+let currentTicketId = null;
 
 function genTicketId() {
   return `INC-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function getOrCreateTicketId() {
+  if (!currentTicketId) {
+    currentTicketId = genTicketId();
+  }
+  return currentTicketId;
+}
+
+function resetConversationSession() {
+  currentSessionId = null;
+  currentTicketId = null;
+  pendingApproval = null;
 }
 
 function addMessage(role, title, body) {
@@ -163,7 +178,7 @@ function closeApprovalModal() {
 }
 
 async function submitDecision(approved) {
-  if (!pendingApproval) return;
+  if (!pendingApproval || !currentSessionId) return;
 
   const approverId = approverIdInput.value.trim();
   if (!approverId) {
@@ -175,13 +190,14 @@ async function submitDecision(approved) {
   rejectBtn.disabled = true;
 
   try {
-    const response = await fetch(`/api/v1/approvals/${pendingApproval.approval_id}/decision`, {
+    const response = await fetch(`/api/v1/conversations/${currentSessionId}/resume`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         approved,
         approver_id: approverId,
         comment: approvalCommentInput.value.trim() || null,
+        approval_id: pendingApproval.approval_id,
       }),
     });
     const data = await response.json();
@@ -211,8 +227,7 @@ messageForm.addEventListener('submit', async (event) => {
   const message = messageInput.value.trim();
   if (!message) return;
 
-  const payload = {
-    ticket_id: genTicketId(),
+  const basePayload = {
     user_id: userIdInput.value.trim() || 'zhangsan',
     message,
     service: serviceNameInput.value.trim() || null,
@@ -220,20 +235,25 @@ messageForm.addEventListener('submit', async (event) => {
     namespace: namespaceNameInput.value.trim() || 'default',
   };
 
-  addMessage('user', payload.user_id, message);
+  addMessage('user', basePayload.user_id, message);
   messageInput.value = '';
 
   try {
-    const response = await fetch('/api/v1/tickets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const response = await fetch(
+      currentSessionId ? `/api/v1/conversations/${currentSessionId}/messages` : '/api/v1/conversations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(currentSessionId ? { message } : { ...basePayload, ticket_id: getOrCreateTicketId() }),
+      }
+    );
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.detail || '请求失败');
     }
 
+    currentSessionId = data.session?.session_id || currentSessionId;
+    currentTicketId = data.session?.ticket_id || currentTicketId;
     addMessage('agent', '罗伯特🤖', `${data.message}\n\n${formatDiagnosis(data.diagnosis)}`.trim());
     if (data.status === 'awaiting_approval' && data.approval_request) {
       addMessage(
@@ -254,6 +274,7 @@ closeModalBtn.addEventListener('click', closeApprovalModal);
 modalBackdrop.addEventListener('click', closeApprovalModal);
 clearChatBtn.addEventListener('click', () => {
   chatMessages.innerHTML = '';
+  resetConversationSession();
   addMessage('agent', '罗伯特🤖', '你好，我是 IT 工单机器人。请输入你的问题；如果涉及高风险操作，我会弹出审批卡片。');
 });
 

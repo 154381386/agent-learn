@@ -12,6 +12,8 @@ from ..state.transformers import build_initial_incident_state
 
 class TicketGraphState(TypedDict, total=False):
     request: TicketRequest
+    session_id: str
+    thread_id: str
     incident_state: IncidentState
     routing_decision: RoutingDecision
     task: TaskEnvelope
@@ -25,6 +27,8 @@ class TicketGraphState(TypedDict, total=False):
 
 class ApprovalGraphState(TypedDict, total=False):
     approval_record: Dict[str, Any]
+    session_id: str
+    thread_id: str
     approval_request_domain: Dict[str, Any]
     approval_decision_request: ApprovalDecisionRequest
     approval_decision_record: Dict[str, Any]
@@ -40,10 +44,22 @@ class ApprovalGraphState(TypedDict, total=False):
 GraphResponse = Dict[str, Any]
 
 
-def build_ticket_graph_input(request: TicketRequest) -> TicketGraphState:
+def build_ticket_graph_input(
+    request: TicketRequest,
+    *,
+    session_id: str | None = None,
+    thread_id: str | None = None,
+    incident_state: IncidentState | None = None,
+) -> TicketGraphState:
+    next_incident_state = incident_state or build_initial_incident_state(request)
+    resolved_session_id = session_id or next_incident_state.thread_id or request.ticket_id
+    resolved_thread_id = thread_id or next_incident_state.thread_id or request.ticket_id
+    next_incident_state.thread_id = resolved_thread_id
     return {
         "request": request,
-        "incident_state": build_initial_incident_state(request),
+        "session_id": resolved_session_id,
+        "thread_id": resolved_thread_id,
+        "incident_state": next_incident_state,
         "pending_node": "ingest",
         "resume_kind": "ticket",
         "transition_notes": [],
@@ -54,8 +70,11 @@ def build_approval_graph_input(
     approval_record: Dict[str, Any],
     approval_decision_request: ApprovalDecisionRequest,
 ) -> ApprovalGraphState:
+    thread_id = str(approval_record.get("thread_id") or approval_record.get("ticket_id") or "")
     return {
         "approval_record": approval_record,
+        "session_id": thread_id,
+        "thread_id": thread_id,
         "approval_decision_request": approval_decision_request,
         "pending_node": "ingest_approval_decision",
         "resume_kind": "approval_decision",

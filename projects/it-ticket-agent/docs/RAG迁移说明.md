@@ -1,4 +1,4 @@
-# RAG Production Plan
+# RAG 迁移说明
 
 RAG 方案与实现已经迁移到独立项目：
 - `projects/it-ticket-rag-service/README.md:1`
