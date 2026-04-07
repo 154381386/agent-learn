@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Literal
 
 from typing_extensions import TypedDict
 
+from ..context.models import ExecutionContext
 from ..runtime.contracts import AgentResult, RoutingDecision, TaskEnvelope
 from ..schemas import ApprovalDecisionRequest, TicketRequest
 from ..state.incident_state import IncidentState
@@ -14,6 +15,7 @@ class TicketGraphState(TypedDict, total=False):
     request: TicketRequest
     session_id: str
     thread_id: str
+    execution_context: ExecutionContext
     incident_state: IncidentState
     routing_decision: RoutingDecision
     task: TaskEnvelope
@@ -69,12 +71,20 @@ def build_ticket_graph_input(
 def build_approval_graph_input(
     approval_record: Dict[str, Any],
     approval_decision_request: ApprovalDecisionRequest,
+    *,
+    approval_request_domain: Dict[str, Any] | None = None,
 ) -> ApprovalGraphState:
-    thread_id = str(approval_record.get("thread_id") or approval_record.get("ticket_id") or "")
+    thread_id = str(
+        (approval_request_domain or {}).get("thread_id")
+        or approval_record.get("thread_id")
+        or approval_record.get("ticket_id")
+        or ""
+    )
     return {
         "approval_record": approval_record,
         "session_id": thread_id,
         "thread_id": thread_id,
+        "approval_request_domain": approval_request_domain,
         "approval_decision_request": approval_decision_request,
         "pending_node": "ingest_approval_decision",
         "resume_kind": "approval_decision",

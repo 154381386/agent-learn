@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from .approval_store import ApprovalStore
 from .checkpoint_store import CheckpointStore
 from .interrupt_store import InterruptStore
+from .memory_store import IncidentCaseStore, ProcessMemoryStore
 from .runtime.orchestrator import SupervisorOrchestrator
 from .schemas import (
     ApprovalDecisionRequest,
@@ -16,11 +17,13 @@ from .schemas import (
     ConversationMessageRequest,
     ConversationMutationResponse,
     ConversationResumeRequest,
+    IncidentCaseResponse,
     InterruptResponse,
     SessionResponse,
     TicketRequest,
     TicketResponse,
 )
+from .session import SessionService
 from .session_store import SessionStore
 from .settings import get_settings
 
@@ -33,13 +36,19 @@ static_dir = Path(__file__).parent / "static"
 async def lifespan(app: FastAPI):
     approval_store = ApprovalStore(settings.approval_db_path)
     session_store = SessionStore(settings.approval_db_path)
+    session_service = SessionService(session_store)
     interrupt_store = InterruptStore(settings.approval_db_path)
     checkpoint_store = CheckpointStore(settings.approval_db_path)
-    app.state.supervisor_orchestrator = SupervisorOrchestrator(settings, approval_store, session_store, interrupt_store, checkpoint_store)
+    process_memory_store = ProcessMemoryStore(settings.approval_db_path)
+    incident_case_store = IncidentCaseStore(settings.approval_db_path)
+    app.state.supervisor_orchestrator = SupervisorOrchestrator(settings, approval_store, session_store, interrupt_store, checkpoint_store, process_memory_store, session_service=session_service, incident_case_store=incident_case_store)
     app.state.approval_store = approval_store
     app.state.session_store = session_store
+    app.state.session_service = session_service
     app.state.interrupt_store = interrupt_store
     app.state.checkpoint_store = checkpoint_store
+    app.state.process_memory_store = process_memory_store
+    app.state.incident_case_store = incident_case_store
     yield
 
 
@@ -117,7 +126,6 @@ async def decide_approval(approval_id: str, request: ApprovalDecisionRequest, ht
     if approval is None:
         raise HTTPException(status_code=404, detail="approval not found")
 
-    approval_store.decide(approval_id, request.approved, request.approver_id, request.comment)
     supervisor_orchestrator = http_request.app.state.supervisor_orchestrator
     result = await supervisor_orchestrator.handle_approval_decision(approval, request)
     return TicketResponse(
@@ -130,8 +138,8 @@ async def decide_approval(approval_id: str, request: ApprovalDecisionRequest, ht
 
 @app.get("/api/v1/sessions/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str, http_request: Request):
-    session_store = http_request.app.state.session_store
-    session = session_store.get(session_id)
+    session_service = http_request.app.state.session_service
+    session = session_service.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     return SessionResponse(**session)
@@ -139,8 +147,8 @@ async def get_session(session_id: str, http_request: Request):
 
 @app.get("/api/v1/sessions/by-thread/{thread_id}", response_model=SessionResponse)
 async def get_session_by_thread(thread_id: str, http_request: Request):
-    session_store = http_request.app.state.session_store
-    session = session_store.get_by_thread_id(thread_id)
+    session_service = http_request.app.state.session_service
+    session = session_service.get_session_by_thread_id(thread_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     return SessionResponse(**session)
@@ -162,3 +170,34 @@ async def get_interrupt(interrupt_id: str, http_request: Request):
     if interrupt is None:
         raise HTTPException(status_code=404, detail="interrupt not found")
     return InterruptResponse(**interrupt)
+
+
+@app.get("/api/v1/cases", response_model=list[IncidentCaseResponse])
+async def list_cases(
+    http_request: Request,
+    service: str | None = None,
+    final_action: str | None = None,
+    approval_required: bool | None = None,
+    verification_passed: bool | None = None,
+    keyword: str | None = None,
+    limit: int = 20,
+):
+    incident_case_store = http_request.app.state.incident_case_store
+    cases = incident_case_store.list_cases(
+        service=service,
+        final_action=final_action,
+        approval_required=approval_required,
+        verification_passed=verification_passed,
+        keyword=keyword,
+        limit=limit,
+    )
+    return [IncidentCaseResponse(**case) for case in cases]
+
+
+@app.get("/api/v1/cases/{case_id}", response_model=IncidentCaseResponse)
+async def get_case(case_id: str, http_request: Request):
+    incident_case_store = http_request.app.state.incident_case_store
+    case = incident_case_store.get(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    return IncidentCaseResponse(**case)

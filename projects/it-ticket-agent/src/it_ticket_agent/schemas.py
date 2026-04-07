@@ -44,11 +44,12 @@ class ConversationMessageRequest(BaseModel):
 
 
 class ConversationResumeRequest(BaseModel):
-    approved: bool
-    approver_id: str
-    comment: Optional[str] = None
-    approval_id: Optional[str] = None
     interrupt_id: Optional[str] = None
+    answer_payload: Dict[str, Any] = Field(default_factory=dict)
+    approved: Optional[bool] = None
+    approver_id: Optional[str] = None
+    comment: Optional[str] = None
+    approval_id: Optional[str] = None  # compatibility-only; cannot select a different approval target
 
 
 class ConversationTurnResponse(BaseModel):
@@ -91,14 +92,17 @@ class SessionResponse(BaseModel):
     user_id: str
     status: str
     current_stage: str
+    current_agent: Optional[str] = None
     incident_state: Dict[str, Any]
     latest_approval_id: Optional[str] = None
     pending_interrupt_id: Optional[str] = None
     last_checkpoint_id: Optional[str] = None
+    session_memory: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
     last_active_at: str
+    closed_at: Optional[str] = None
 
 
 class InterruptResponse(BaseModel):
@@ -117,6 +121,27 @@ class InterruptResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str
     resolved_at: Optional[str] = None
+
+
+class IncidentCaseResponse(BaseModel):
+    case_id: str
+    session_id: str
+    thread_id: str
+    ticket_id: str
+    service: str = ""
+    cluster: str = ""
+    namespace: str = ""
+    current_agent: str = ""
+    symptom: str = ""
+    root_cause: str = ""
+    key_evidence: List[str] = Field(default_factory=list)
+    final_action: str = ""
+    approval_required: bool = False
+    verification_passed: Optional[bool] = None
+    final_conclusion: str = ""
+    created_at: str
+    updated_at: str
+    closed_at: Optional[str] = None
 
 
 class RAGSearchRequest(BaseModel):

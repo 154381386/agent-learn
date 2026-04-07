@@ -8,13 +8,14 @@ from pydantic import BaseModel, Field
 
 from ..state.incident_state import IncidentState
 
-SessionStatus = Literal["active", "awaiting_approval", "completed", "failed"]
+SessionStatus = Literal["active", "awaiting_approval", "awaiting_clarification", "completed", "failed"]
 SessionStage = Literal[
     "ingest",
     "routing",
     "domain_agent",
     "approval_gate",
     "awaiting_approval",
+    "awaiting_clarification",
     "approval_resume",
     "finalize",
 ]
@@ -32,14 +33,17 @@ class ConversationSession(BaseModel):
     user_id: str
     status: SessionStatus = "active"
     current_stage: SessionStage = "ingest"
+    current_agent: Optional[str] = None
     incident_state: IncidentState
     latest_approval_id: Optional[str] = None
     pending_interrupt_id: Optional[str] = None
     last_checkpoint_id: Optional[str] = None
+    session_memory: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     last_active_at: str = Field(default_factory=utc_now)
+    closed_at: Optional[str] = None
 
 
 class ConversationTurn(BaseModel):

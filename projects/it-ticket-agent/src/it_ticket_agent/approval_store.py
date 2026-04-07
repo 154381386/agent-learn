@@ -7,6 +7,7 @@ from .approval.adapters import (
     legacy_decision_to_record,
     legacy_payload_to_approval_request,
 )
+from .approval.models import ApprovalDecisionRecord, ApprovalRequest
 from .approval.store import ApprovalStoreV2
 
 
@@ -20,11 +21,18 @@ class ApprovalStore:
         saved = self.v2_store.create_request(request)
         return approval_request_to_legacy_payload(saved)
 
+    def create_request(self, request: ApprovalRequest | Dict[str, Any]) -> ApprovalRequest:
+        record = request if isinstance(request, ApprovalRequest) else ApprovalRequest.model_validate(request)
+        return self.v2_store.create_request(record)
+
     def get(self, approval_id: str) -> Optional[Dict[str, Any]]:
         record = self.v2_store.get_request(approval_id)
         if record is None:
             return None
         return approval_request_to_legacy_payload(record)
+
+    def get_request(self, approval_id: str) -> Optional[ApprovalRequest]:
+        return self.v2_store.get_request(approval_id)
 
     def decide(self, approval_id: str, approved: bool, approver_id: str, comment: Optional[str]) -> Dict[str, Any]:
         decision = legacy_decision_to_record(
@@ -37,6 +45,10 @@ class ApprovalStore:
         )
         saved = self.v2_store.record_decision(decision)
         return approval_request_to_legacy_payload(saved)
+
+    def record_decision(self, decision: ApprovalDecisionRecord | Dict[str, Any]) -> ApprovalRequest:
+        record = decision if isinstance(decision, ApprovalDecisionRecord) else ApprovalDecisionRecord.model_validate(decision)
+        return self.v2_store.record_decision(record)
 
     def list_events(self, approval_id: str) -> list[dict[str, Any]]:
         return self.v2_store.list_events(approval_id)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .session import ConversationSession, ConversationTurn
-from .session.store import SessionStoreV2
+from .session.store import SessionStoreV2, _UNSET
 
 
 class SessionStore:
@@ -31,9 +31,11 @@ class SessionStore:
         incident_state: dict[str, Any],
         status: str,
         current_stage: str,
+        current_agent: Optional[str] | object = _UNSET,
         latest_approval_id: Optional[str] = None,
         pending_interrupt_id: Optional[str] = None,
         last_checkpoint_id: Optional[str] = None,
+        session_memory: Optional[dict[str, Any]] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         record = self.v2_store.update_session_state(
@@ -41,9 +43,11 @@ class SessionStore:
             incident_state=incident_state,
             status=status,
             current_stage=current_stage,
+            current_agent=current_agent,
             latest_approval_id=latest_approval_id,
             pending_interrupt_id=pending_interrupt_id,
             last_checkpoint_id=last_checkpoint_id,
+            session_memory=session_memory,
             metadata=metadata,
         )
         return None if record is None else record.model_dump()
@@ -54,6 +58,7 @@ class SessionStore:
         *,
         status: str,
         current_stage: str,
+        current_agent: Optional[str] | object = _UNSET,
         latest_approval_id: Optional[str] = None,
         pending_interrupt_id: Optional[str] = None,
         last_checkpoint_id: Optional[str] = None,
@@ -62,6 +67,7 @@ class SessionStore:
             session_id,
             status=status,
             current_stage=current_stage,
+            current_agent=current_agent,
             latest_approval_id=latest_approval_id,
             pending_interrupt_id=pending_interrupt_id,
             last_checkpoint_id=last_checkpoint_id,

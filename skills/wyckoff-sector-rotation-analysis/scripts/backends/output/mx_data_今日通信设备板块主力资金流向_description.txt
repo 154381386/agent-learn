@@ -1,0 +1,9 @@
+金融数据查询结果说明
+========================================
+查询内容: 今日通信设备板块主力资金流向
+数据文件路径: /Users/lyb/workspace/agent-learn/skills/wyckoff-sector-rotation-analysis/scripts/backends/output/mx_data_今日通信设备板块主力资金流向.json
+描述文件路径: /Users/lyb/workspace/agent-learn/skills/wyckoff-sector-rotation-analysis/scripts/backends/output/mx_data_今日通信设备板块主力资金流向_description.txt
+数据行数: 2
+表数量: 2
+Sheet/表 列表: 通信设备当前的超大单净额、超大单流出等, 通信设备当前的主力流出(元)、主力流入(元)
+导出格式: json

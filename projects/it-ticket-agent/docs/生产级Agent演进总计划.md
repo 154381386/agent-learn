@@ -205,6 +205,16 @@ orchestration/   # 面向中断与恢复的流程内核
 - `approval/`：从当前审批 gate 演进为正式工作流。
 - `rag_client.py`：继续存在，但作为上下文来源之一，而不是系统中心。
 
+### 5.1 实施红线：禁止 legacy contract 继续扩散
+
+为避免“兼容层反客为主”，当前阶段必须额外遵守以下硬约束：
+
+1. legacy DTO / payload 只能存在于 **API 层、facade 层、compatibility adapter 层**。
+2. `graph/`、`runtime/orchestrator.py`、`approval/` 内部主链路必须以正式 domain contract 为准，不能把 legacy payload 当作 canonical model。
+3. 不允许继续通过向 legacy `params` 追加字段的方式承载新语义；新增字段必须先进入正式 domain model，再按需投影到兼容层。
+4. domain -> legacy 转换只用于对外兼容，不得在核心流程里来回往返，避免把过渡结构重新变成系统中心。
+5. 在 A/B 收口和 smoke 护栏补齐前，不继续推进后续阶段实现，尤其不继续扩写 `C` 阶段主链路。
+
 ---
 
 ## 6. 生产级记忆设计
@@ -216,6 +226,12 @@ orchestration/   # 面向中断与恢复的流程内核
 ## 6.1 会话记忆（Session Memory）
 
 作用：保存当前会话中，后续继续执行必须依赖的信息。
+
+当前代码状态补充：
+
+- session memory 已作为 `ConversationSession` 的结构化字段落地
+- 当前 `ExecutionContext.memory_summary` 已优先读取 session memory
+- 第一版主要覆盖 key entities、clarification answers、pending approval、pending interrupt、current stage
 
 包括：
 
@@ -253,6 +269,14 @@ orchestration/   # 面向中断与恢复的流程内核
 - 是“过程账本”，不是“对话历史全文”
 - 恢复时用于决定下一步，而不是全量喂模型
 - 必须可审计、可回放
+
+当前代码状态补充：
+
+- 已新增独立 `memory/` 模块与 `ProcessMemoryStore`
+- 已落地 `process_memory_entry` 账本表，支持 append / list / summarize
+- 第一版已覆盖 routing、clarification、approval、run summary 四类关键轨迹
+- `ExecutionContext.memory_summary` 现已同时承载 session memory 与 process memory summary
+- 当前过程记忆仍聚焦恢复与解释，尚未扩展为 execution plan 或 system event stream
 
 ## 6.3 事件记忆（Incident / Case Memory）
 
@@ -359,6 +383,12 @@ ExecutionContext
 
 由 `context/assembler.py` 统一构造，而不是让各 Agent 自己拼。
 
+当前代码状态补充：
+
+- `ExecutionContext` 与 `ContextAssembler` 已落地
+- 当前先作为 runtime 内部 canonical context 使用
+- 现有 agent/tool contract 仍保持兼容，先通过 projection 回填到 `TaskEnvelope.shared_context`
+
 ---
 
 ## 8. 会话保存与恢复：必须作为第一优先级
@@ -464,7 +494,9 @@ ExecutionCheckpoint
 当前代码状态补充：
 
 - approval 恢复已优先读取 checkpoint，再回退到 session snapshot / approval payload snapshot
-- clarification / external_event 的通用恢复仍未实现，留待 A6
+- clarification resume 已落地，采用 checkpoint-first + ticket flow re-entry
+- `/resume` 当前已支持 approval + clarification 两类 interrupt
+- external_event 的通用恢复仍未实现，留待后续扩展
 - `/events` 与执行层细粒度 checkpoint 仍未实现
 
 ---

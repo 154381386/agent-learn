@@ -177,6 +177,39 @@ function closeApprovalModal() {
   approvalModal.setAttribute('aria-hidden', 'true');
 }
 
+function openClarificationPrompt(pendingInterrupt) {
+  const answer = window.prompt(pendingInterrupt?.question || '请补充需要的澄清信息');
+  if (!answer || !currentSessionId) return;
+
+  fetch(`/api/v1/conversations/${currentSessionId}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      interrupt_id: pendingInterrupt.interrupt_id,
+      answer_payload: { text: answer },
+    }),
+  })
+    .then(async (response) => {
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || '补充信息失败');
+      }
+      addMessage('user', userIdInput.value.trim() || 'zhangsan', answer);
+      addMessage('agent', '罗伯特🤖', `${data.message}\n\n${formatDiagnosis(data.diagnosis)}`.trim());
+      if (data.status === 'awaiting_approval' && data.approval_request) {
+        addMessage(
+          'approval',
+          '审批请求',
+          `检测到高风险动作，需要人工审批。\n\n${formatApprovalRequest(data.approval_request)}`
+        );
+        openApprovalModal(data.approval_request, data.diagnosis);
+      }
+    })
+    .catch((error) => {
+      addMessage('agent', '系统错误', error.message);
+    });
+}
+
 async function submitDecision(approved) {
   if (!pendingApproval || !currentSessionId) return;
 
@@ -194,10 +227,10 @@ async function submitDecision(approved) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        interrupt_id: pendingApproval.interrupt_id,
         approved,
         approver_id: approverId,
         comment: approvalCommentInput.value.trim() || null,
-        approval_id: pendingApproval.approval_id,
       }),
     });
     const data = await response.json();
@@ -262,6 +295,9 @@ messageForm.addEventListener('submit', async (event) => {
         `检测到高风险动作，需要人工审批。\n\n${formatApprovalRequest(data.approval_request)}`
       );
       openApprovalModal(data.approval_request, data.diagnosis);
+    } else if (data.status === 'awaiting_clarification' && data.pending_interrupt) {
+      addMessage('agent', '澄清请求', data.pending_interrupt.question || data.message);
+      openClarificationPrompt(data.pending_interrupt);
     }
   } catch (error) {
     addMessage('agent', '系统错误', error.message);

@@ -9,8 +9,10 @@ class GeneralSREAgent(BaseDomainAgent):
     domain = "general"
 
     async def run(self, task: TaskEnvelope) -> AgentResult:
-        message = task.shared_context.get("message", "")
-        service = task.shared_context.get("service", "unknown-service")
+        execution_context = task.shared_context.get("execution_context") or {}
+        request_context = execution_context.get("request_context") or {}
+        message = task.shared_context.get("message") or request_context.get("message", "")
+        service = task.shared_context.get("service") or request_context.get("service", "unknown-service")
         return AgentResult(
             agent_name=self.name,
             domain=self.domain,

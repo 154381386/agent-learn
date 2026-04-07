@@ -15,13 +15,22 @@ class OrchestratorGraphBuilder:
         graph.add_node("ingest", self.nodes.ingest)
         graph.add_node("supervisor_route", self.nodes.supervisor_route)
         graph.add_node("domain_agent", self.nodes.domain_agent)
+        graph.add_node("clarification_gate", self.nodes.clarification_gate)
         graph.add_node("approval_gate", self.nodes.approval_gate)
         graph.add_node("finalize", self.nodes.finalize)
 
         graph.add_edge(START, "ingest")
         graph.add_edge("ingest", "supervisor_route")
         graph.add_edge("supervisor_route", "domain_agent")
-        graph.add_edge("domain_agent", "approval_gate")
+        graph.add_edge("domain_agent", "clarification_gate")
+        graph.add_conditional_edges(
+            "clarification_gate",
+            self.nodes.route_after_clarification_gate,
+            {
+                "approval_gate": "approval_gate",
+                "end": END,
+            },
+        )
         graph.add_edge("approval_gate", "finalize")
         graph.add_edge("finalize", END)
         return graph.compile(name="it_ticket_router_graph")

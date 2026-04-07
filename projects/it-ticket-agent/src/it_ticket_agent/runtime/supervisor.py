@@ -4,6 +4,7 @@ import json
 import logging
 from uuid import uuid4
 
+from ..context import ContextAssembler, ExecutionContext
 from ..llm_client import OpenAICompatToolLLM
 from ..rag_client import RAGServiceClient
 from ..schemas import TicketRequest
@@ -31,6 +32,7 @@ class RuleBasedSupervisor:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.llm = OpenAICompatToolLLM(settings)
+        self.context_assembler = ContextAssembler()
 
     async def route(self, request: TicketRequest) -> RoutingDecision:
         message = request.message.lower()
@@ -146,13 +148,17 @@ class RuleBasedSupervisor:
             decision.route_source = "llm"
         return decision
 
-    def build_task(self, request: TicketRequest, decision: RoutingDecision) -> TaskEnvelope:
-        return TaskEnvelope(
-            task_id=f"task-{uuid4()}",
-            ticket_id=request.ticket_id,
-            goal="诊断并给出下一步建议",
-            mode=decision.mode,
-            shared_context={
+    def build_task(
+        self,
+        request: TicketRequest,
+        decision: RoutingDecision,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> TaskEnvelope:
+        shared_context = (
+            self.context_assembler.to_shared_context(execution_context)
+            if execution_context is not None
+            else {
                 "ticket_id": request.ticket_id,
                 "user_id": request.user_id,
                 "message": request.message,
@@ -160,7 +166,14 @@ class RuleBasedSupervisor:
                 "cluster": request.cluster,
                 "namespace": request.namespace,
                 "channel": request.channel,
-            },
+            }
+        )
+        return TaskEnvelope(
+            task_id=f"task-{uuid4()}",
+            ticket_id=request.ticket_id,
+            goal="诊断并给出下一步建议",
+            mode=decision.mode,
+            shared_context=shared_context,
             upstream_findings=[],
             constraints={"timeout_sec": 15},
             priority="normal",

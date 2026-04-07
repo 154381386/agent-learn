@@ -23,6 +23,28 @@ class InterruptStore:
     ) -> list[dict[str, Any]]:
         return [record.model_dump() for record in self.service.get_pending_interrupts(session_id=session_id, ticket_id=ticket_id)]
 
+    def create_clarification_interrupt(
+        self,
+        *,
+        session_id: str,
+        ticket_id: str,
+        reason: str,
+        question: str,
+        expected_input_schema: dict[str, Any],
+        timeout_at: str | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        record = self.service.create_clarification_interrupt(
+            session_id=session_id,
+            ticket_id=ticket_id,
+            reason=reason,
+            question=question,
+            expected_input_schema=expected_input_schema,
+            timeout_at=timeout_at,
+            metadata=metadata,
+        )
+        return record.model_dump()
+
     def create_approval_interrupt(
         self,
         *,

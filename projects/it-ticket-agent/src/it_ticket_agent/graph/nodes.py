@@ -10,10 +10,13 @@ from ..approval.adapters import (
     legacy_decision_to_record,
     legacy_payload_to_approval_request,
 )
+from ..approval.models import ApprovalRequest
 from ..approval_store import ApprovalStore
 from ..interrupt_store import InterruptStore
 from ..checkpoint_store import CheckpointStore
+from ..memory_store import ProcessMemoryStore
 from ..mcp import MCPClient, MCPConnectionManager
+from ..context.models import ExecutionContext
 from ..runtime.contracts import AgentResult
 from ..runtime.supervisor import RuleBasedSupervisor
 from ..schemas import ApprovalDecisionRequest, TicketRequest
@@ -40,6 +43,7 @@ class OrchestratorGraphNodes:
         approval_store: ApprovalStore,
         session_store: SessionStore,
         interrupt_store: InterruptStore,
+        process_memory_store: ProcessMemoryStore,
         connection_manager: MCPConnectionManager,
         agents: Mapping[str, BaseDomainAgent],
         approval_coordinator: ApprovalCoordinator | None = None,
@@ -48,6 +52,7 @@ class OrchestratorGraphNodes:
         self.approval_store = approval_store
         self.session_store = session_store
         self.interrupt_store = interrupt_store
+        self.process_memory_store = process_memory_store
         self.connection_manager = connection_manager
         self.agents = agents
         self.approval_coordinator = approval_coordinator or ApprovalCoordinator()
@@ -62,13 +67,58 @@ class OrchestratorGraphNodes:
             "pending_node": "supervisor_route",
         }
 
+    def _append_process_entry(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        ticket_id: str,
+        event_type: str,
+        stage: str,
+        source: str,
+        summary: str,
+        payload: dict[str, Any] | None = None,
+        refs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.process_memory_store.append(
+            {
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "ticket_id": ticket_id,
+                "event_type": event_type,
+                "stage": stage,
+                "source": source,
+                "summary": summary,
+                "payload": dict(payload or {}),
+                "refs": dict(refs or {}),
+            }
+        )
+
     async def supervisor_route(self, state: TicketGraphState) -> Dict[str, Any]:
         request = state["request"]
         decision = await self.supervisor.route(request)
-        task = self.supervisor.build_task(request, decision)
+        execution_context = state.get("execution_context")
+        task = self.supervisor.build_task(request, decision, execution_context=execution_context)
         incident_state = state.get("incident_state") or build_initial_incident_state(request)
         incident_state.routing = decision.model_dump()
         incident_state.status = "routed"
+        self._append_process_entry(
+            session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
+            thread_id=str(state.get("thread_id") or request.ticket_id),
+            ticket_id=request.ticket_id,
+            event_type="routing_decision",
+            stage="routing",
+            source="graph.supervisor_route",
+            summary=f"路由已选择 {decision.agent_name}，模式 {decision.mode}，来源 {decision.route_source}",
+            payload={
+                "agent_name": decision.agent_name,
+                "mode": decision.mode,
+                "route_source": decision.route_source,
+                "reason": decision.reason,
+                "confidence": decision.confidence,
+            },
+            refs={},
+        )
         return {
             "incident_state": incident_state,
             "routing_decision": decision,
@@ -109,6 +159,75 @@ class OrchestratorGraphNodes:
             "pending_node": "approval_gate",
         }
 
+    async def clarification_gate(self, state: TicketGraphState) -> Dict[str, Any]:
+        incident_state = state["incident_state"]
+        request = state["request"]
+        transition_notes = list(state.get("transition_notes") or [])
+        service = (request.service or incident_state.service or "").strip()
+        if service:
+            transition_notes.append("clarification gate passed without blocking interrupt")
+            return {
+                "incident_state": incident_state,
+                "transition_notes": transition_notes,
+                "pending_node": "approval_gate",
+            }
+
+        interrupt_record = self.interrupt_store.create_clarification_interrupt(
+            session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+            ticket_id=incident_state.ticket_id,
+            reason="缺少明确的 service 信息，无法继续诊断",
+            question="请补充需要排查的 service 名称。",
+            expected_input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                },
+                "required": ["text"],
+            },
+            metadata={
+                "thread_id": str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+                "field_name": "service",
+                "resume_kind": "clarification",
+            },
+        )
+        incident_state.status = "awaiting_clarification"
+        incident_state.open_questions = ["请补充需要排查的 service 名称。"]
+        incident_state.metadata["clarification_interrupt"] = interrupt_record
+        self._append_process_entry(
+            session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+            thread_id=str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+            ticket_id=incident_state.ticket_id,
+            event_type="clarification_created",
+            stage="awaiting_clarification",
+            source="graph.clarification_gate",
+            summary="由于缺少 service 信息，已创建 clarification interrupt",
+            payload={
+                "reason": "缺少明确的 service 信息，无法继续诊断",
+                "question": "请补充需要排查的 service 名称。",
+                "field_name": "service",
+            },
+            refs={
+                "interrupt_id": interrupt_record.get("interrupt_id"),
+            },
+        )
+        transition_notes.append("clarification gate materialized a persisted clarification interrupt")
+        return {
+            "incident_state": incident_state,
+            "transition_notes": transition_notes,
+            "approval_request": None,
+            "response": {
+                "ticket_id": request.ticket_id,
+                "status": "awaiting_clarification",
+                "message": "缺少关键信息，请先补充 service 名称后再继续。",
+                "diagnosis": {
+                    "summary": "当前诊断缺少 service 信息，已发起 clarification interrupt。",
+                    "incident_state": incident_state.model_dump(),
+                    "graph": {"transition_notes": transition_notes},
+                },
+            },
+            "pending_node": None,
+        }
+
     async def approval_gate(self, state: TicketGraphState) -> Dict[str, Any]:
         incident_state = state["incident_state"]
         routing_decision = state["routing_decision"]
@@ -121,15 +240,17 @@ class OrchestratorGraphNodes:
         transition_notes.append("approval gate is routed through ApprovalCoordinator")
 
         if gate_result.approval_request is not None:
-            approval_request = approval_request_to_legacy_payload(gate_result.approval_request)
-            approval_request.setdefault("params", {})
             snapshot = next_incident_state.model_dump()
-            approval_request["params"]["incident_state"] = snapshot
-            for proposal in approval_request["params"].get("proposals", []):
-                if isinstance(proposal, dict):
-                    proposal.setdefault("params", {})
-                    proposal["params"]["incident_state"] = snapshot
-            approval_request = self.approval_store.create(approval_request)
+            domain_request = gate_result.approval_request.model_copy(
+                update={
+                    "context": {
+                        **dict(gate_result.approval_request.context),
+                        "incident_state": snapshot,
+                    }
+                }
+            )
+            saved_request = self.approval_store.create_request(domain_request)
+            approval_request = approval_request_to_legacy_payload(saved_request)
             interrupt_record = self.interrupt_store.create_approval_interrupt(
                 session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
                 ticket_id=incident_state.ticket_id,
@@ -151,6 +272,24 @@ class OrchestratorGraphNodes:
             )
             approval_request["interrupt_id"] = interrupt_record["interrupt_id"]
             next_incident_state.metadata["approval_request"] = approval_request
+            self._append_process_entry(
+                session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+                thread_id=str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+                ticket_id=incident_state.ticket_id,
+                event_type="approval_requested",
+                stage="awaiting_approval",
+                source="graph.approval_gate",
+                summary=f"高风险动作 {approval_request.get('action') or 'unknown'} 已进入审批",
+                payload={
+                    "action": approval_request.get("action"),
+                    "risk": approval_request.get("risk"),
+                    "reason": approval_request.get("reason"),
+                },
+                refs={
+                    "approval_id": approval_request.get("approval_id"),
+                    "interrupt_id": interrupt_record.get("interrupt_id"),
+                },
+            )
             transition_notes.append("approval request is persisted through ApprovalStore facade backed by ApprovalStoreV2")
             transition_notes.append("approval wait is materialized as a persisted approval interrupt")
         else:
@@ -213,17 +352,22 @@ class OrchestratorGraphNodes:
 
     async def ingest_approval_decision(self, state: ApprovalGraphState) -> Dict[str, Any]:
         approval = state["approval_record"]
-        approval_request = legacy_payload_to_approval_request(approval)
+        approval_request = state.get("approval_request_domain") or legacy_payload_to_approval_request(approval).model_dump()
+        approval_request_model = (
+            approval_request
+            if isinstance(approval_request, ApprovalRequest)
+            else ApprovalRequest.model_validate(approval_request)
+        )
         incident_state, restore_note = self._restore_incident_state_for_resume(
             approval,
-            approval_request,
-            thread_id=str(state.get("thread_id") or approval_request.thread_id),
+            approval_request_model,
+            thread_id=str(state.get("thread_id") or approval_request_model.thread_id),
         )
         transition_notes = list(state.get("transition_notes") or [])
         transition_notes.append(restore_note)
         logger.info("graph.resume approval_id=%s", approval["approval_id"])
         return {
-            "approval_request_domain": approval_request if isinstance(approval_request, dict) else approval_request.model_dump(),
+            "approval_request_domain": approval_request_model.model_dump(),
             "incident_state": incident_state,
             "transition_notes": transition_notes,
             "pending_node": "approval_decision",
@@ -247,7 +391,7 @@ class OrchestratorGraphNodes:
                 "approval_request_domain": approval_request if isinstance(approval_request, dict) else approval_request.model_dump(),
                 "approval_decision_record": decision_record.model_dump(),
                 "incident_state": next_incident_state,
-                "approval_result": self._build_rejection_response(approval),
+                "approval_result": self._build_rejection_response(approval, approval_request),
                 "resume_action": "finalize",
                 "pending_node": "finalize_approval_decision",
             }
@@ -276,7 +420,7 @@ class OrchestratorGraphNodes:
         proposals = list(approval_request_domain.get("proposals") or [])
         primary_proposal = proposals[0] if proposals else {}
 
-        result = await self._execute_approved_action_transition(approval, request)
+        result = await self._execute_approved_action_transition(approval_request_domain, request)
         transition_notes = list(state.get("transition_notes") or [])
         transition_notes.append(
             "approved action execution is still handled by the transitional graph node and should move to AI-4 executor later"
@@ -285,10 +429,10 @@ class OrchestratorGraphNodes:
         execution_results: list[dict[str, Any]] = []
         primary_execution_state = execution_result_to_state(
             result,
-            action=approval.get("action"),
-            risk=approval.get("risk"),
+            action=primary_proposal.get("action") or approval.get("action"),
+            risk=primary_proposal.get("risk") or approval.get("risk"),
             metadata={
-                "approval_id": approval.get("approval_id"),
+                "approval_id": approval_request_domain.get("approval_id") or approval.get("approval_id"),
                 "proposal_id": primary_proposal.get("proposal_id"),
                 "executor": "execute_approved_action_transition",
             },
@@ -309,7 +453,7 @@ class OrchestratorGraphNodes:
                 action=proposal.get("action"),
                 risk=proposal.get("risk"),
                 metadata={
-                    "approval_id": approval.get("approval_id"),
+                    "approval_id": approval_request_domain.get("approval_id") or approval.get("approval_id"),
                     "proposal_id": proposal.get("proposal_id"),
                     "executor": "execute_approved_action_transition",
                     "skip_reason": "transitional_executor_single_proposal_limit",
@@ -353,6 +497,13 @@ class OrchestratorGraphNodes:
             "response": response,
             "pending_node": None,
         }
+
+    @staticmethod
+    def route_after_clarification_gate(state: TicketGraphState) -> str:
+        pending_node = state.get("pending_node")
+        if pending_node == "approval_gate":
+            return "approval_gate"
+        return "end"
 
     @staticmethod
     def route_after_approval_decision(state: ApprovalGraphState) -> str:
@@ -436,14 +587,18 @@ class OrchestratorGraphNodes:
                     restored.metadata["graph"]["resume_restore_mode"] = "session_snapshot"
                     return restored, "incident_state restored from session snapshot"
 
-        params = dict(approval.get("params") or {})
-        snapshot = params.get("incident_state")
+        approval_context = approval_request.context if isinstance(approval_request, ApprovalRequest) else approval_request.get("context", {})
+        snapshot = dict(approval_context.get("incident_state") or {}) if isinstance(approval_context, dict) else {}
+        if not snapshot:
+            params = dict(approval.get("params") or {})
+            snapshot = params.get("incident_state")
         if isinstance(snapshot, dict):
             restored = IncidentState.model_validate(snapshot)
             restored.metadata.setdefault("graph", {})
             restored.metadata["graph"]["resume_restore_mode"] = "approval_payload_snapshot"
             return restored, "incident_state restored from approval payload snapshot"
 
+        params = dict(approval.get("params") or {})
         proposals = approval_request.get("proposals", []) if isinstance(approval_request, dict) else approval_request.proposals
         primary = proposals[0] if proposals else None
         service = ""
@@ -476,8 +631,10 @@ class OrchestratorGraphNodes:
         return incident_state, "incident_state reconstructed from approval record because no original snapshot was available"
 
     @staticmethod
-    def _build_rejection_response(approval: Dict[str, Any]) -> Dict[str, Any]:
-        action = approval.get("action", "")
+    def _build_rejection_response(approval: Dict[str, Any], approval_request: Dict[str, Any] | ApprovalRequest | None = None) -> Dict[str, Any]:
+        proposals = approval_request.get("proposals", []) if isinstance(approval_request, dict) else approval_request.proposals if approval_request is not None else []
+        primary = proposals[0] if proposals else None
+        action = primary.get("action", "") if isinstance(primary, dict) else getattr(primary, "action", "") or approval.get("action", "")
         return {
             "ticket_id": approval["ticket_id"],
             "status": "completed",
@@ -493,13 +650,15 @@ class OrchestratorGraphNodes:
 
     @staticmethod
     async def _execute_approved_action_transition(
-        approval: Dict[str, Any],
+        approval_request: Dict[str, Any],
         request: ApprovalDecisionRequest,
     ) -> Dict[str, Any]:
-        params = approval.get("params", {})
-        action = approval.get("action", "")
+        proposals = list(approval_request.get("proposals") or [])
+        primary_proposal = proposals[0] if proposals else {}
+        params = dict(primary_proposal.get("params") or {})
+        action = str(primary_proposal.get("action") or "")
         if not request.approved:
-            return OrchestratorGraphNodes._build_rejection_response(approval)
+            return OrchestratorGraphNodes._build_rejection_response(approval_request, approval_request)
 
         tool_params = {
             key: value
@@ -517,12 +676,12 @@ class OrchestratorGraphNodes:
         if execution_payload.get("status") == "pending_approval":
             summary = "已向执行系统提交高风险动作，请继续跟踪执行状态。"
         return {
-            "ticket_id": approval["ticket_id"],
+            "ticket_id": approval_request["ticket_id"],
             "status": "completed",
             "message": f"审批已通过；{summary}",
             "diagnosis": {
                 "approval": {
-                    "approval_id": approval["approval_id"],
+                    "approval_id": approval_request["approval_id"],
                     "action": action,
                     "status": "approved",
                 },

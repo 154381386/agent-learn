@@ -26,6 +26,20 @@ class CICDAgent(BaseDomainAgent):
     name = "cicd_agent"
     domain = "cicd"
 
+    @staticmethod
+    def _ctx(task: TaskEnvelope) -> dict:
+        execution_context = task.shared_context.get("execution_context")
+        if isinstance(execution_context, dict):
+            request_context = execution_context.get("request_context") or {}
+            merged = dict(task.shared_context)
+            merged.setdefault("message", request_context.get("message", ""))
+            merged.setdefault("service", request_context.get("service", ""))
+            merged.setdefault("cluster", request_context.get("cluster", "prod-shanghai-1"))
+            merged.setdefault("namespace", request_context.get("namespace", "default"))
+            merged.setdefault("channel", request_context.get("channel", "feishu"))
+            return merged
+        return task.shared_context
+
     def __init__(
         self,
         settings: Settings,
@@ -61,8 +75,9 @@ class CICDAgent(BaseDomainAgent):
         return await self._run_fallback(task)
 
     async def _run_fallback(self, task: TaskEnvelope) -> AgentResult:
-        message = task.shared_context.get("message", "")
-        service = task.shared_context.get("service", "unknown-service")
+        context = self._ctx(task)
+        message = context.get("message", "")
+        service = context.get("service", "unknown-service")
         mcp_servers = self.connection_manager.servers_for_agent(self.name)
         findings: List[AgentFinding] = []
         evidence: List[str] = []
@@ -138,7 +153,7 @@ class CICDAgent(BaseDomainAgent):
                     reason="发布后流水线失败且部署状态降级，建议审批后执行回滚止血。",
                     params={
                         "service": service,
-                        "environment": task.shared_context.get("cluster", "prod-shanghai-1"),
+                        "environment": context.get("cluster", "prod-shanghai-1"),
                         "target_revision": previous_revision,
                         "reason": "发布后故障，需要回滚止血",
                     },
@@ -204,9 +219,10 @@ class CICDAgent(BaseDomainAgent):
         )
 
     async def _run_llm_loop(self, task: TaskEnvelope) -> AgentResult:
-        message = task.shared_context.get("message", "")
-        service = task.shared_context.get("service", "unknown-service")
-        cluster = task.shared_context.get("cluster", "prod-shanghai-1")
+        context = self._ctx(task)
+        message = context.get("message", "")
+        service = context.get("service", "unknown-service")
+        cluster = context.get("cluster", "prod-shanghai-1")
         mcp_servers = self.connection_manager.servers_for_agent(self.name)
         tools_by_name = {tool.name: tool for tool in self.tools}
         messages = [
