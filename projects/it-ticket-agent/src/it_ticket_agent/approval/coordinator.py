@@ -15,6 +15,7 @@ from .models import (
     utc_now,
 )
 from .policy import ApprovalPolicy, RISK_PRIORITY
+from ..execution.security import split_registered_proposals
 
 
 class ApprovalCoordinator:
@@ -24,11 +25,23 @@ class ApprovalCoordinator:
     def build_gate_result(self, gate_input: ApprovalGateInput) -> ApprovalGateResult:
         proposals = self.collect_proposals(gate_input.proposals)
         proposals = self.dedupe_proposals(proposals)
+        proposals, invalid_proposals = split_registered_proposals(proposals)
         policy_results = self.evaluate_policies(proposals)
+        policy_results.extend(
+            [
+                ApprovalPolicyResult(
+                    proposal_id=proposal.proposal_id,
+                    decision="reject",
+                    reasons=[str(proposal.metadata.get("registration_error") or "unregistered action")],
+                    normalized_risk=proposal.risk,
+                )
+                for proposal in invalid_proposals
+            ]
+        )
 
         requires_approval: list[ApprovalProposal] = []
         approved_actions: list[ApprovedAction] = []
-        rejected_proposals: list[ApprovalProposal] = []
+        rejected_proposals: list[ApprovalProposal] = list(invalid_proposals)
         auto_approved_proposals: list[ApprovalProposal] = []
         policy_map = {result.proposal_id: result for result in policy_results}
 

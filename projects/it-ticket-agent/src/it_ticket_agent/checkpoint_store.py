@@ -22,3 +22,7 @@ class CheckpointStore:
     def get_latest(self, session_id: str) -> Optional[dict[str, Any]]:
         record = self.v2_store.get_latest_checkpoint(session_id)
         return None if record is None else record.model_dump()
+
+
+    def list_for_session(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        return [record.model_dump() for record in self.v2_store.list_checkpoints(session_id, limit=limit)]

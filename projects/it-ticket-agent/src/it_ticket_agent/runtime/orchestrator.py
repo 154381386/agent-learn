@@ -8,6 +8,7 @@ from ..agents import CICDAgent, GeneralSREAgent
 from ..agents.base import BaseDomainAgent
 from ..approval_store import ApprovalStore
 from ..checkpoint_store import CheckpointStore
+from ..execution_store import ExecutionStore
 from ..context import ContextAssembler
 from ..graph import (
     OrchestratorGraphBuilder,
@@ -18,6 +19,7 @@ from ..graph import (
 )
 from ..interrupt_store import InterruptStore
 from ..mcp import MCPConnectionManager
+from ..system_event_store import SystemEventStore
 from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..schemas import (
     ApprovalDecisionRequest,
@@ -46,6 +48,8 @@ class SupervisorOrchestrator:
         interrupt_store: InterruptStore,
         checkpoint_store: CheckpointStore | None = None,
         process_memory_store: ProcessMemoryStore | None = None,
+        execution_store: ExecutionStore | None = None,
+        system_event_store: SystemEventStore | None = None,
         session_service: SessionService | None = None,
         incident_case_store: IncidentCaseStore | None = None,
     ) -> None:
@@ -56,7 +60,9 @@ class SupervisorOrchestrator:
         self.session_service = session_service or SessionService(session_store)
         self.checkpoint_store = checkpoint_store or CheckpointStore(settings.approval_db_path)
         self.process_memory_store = process_memory_store or ProcessMemoryStore(settings.approval_db_path)
+        self.execution_store = execution_store or ExecutionStore(settings.approval_db_path)
         self.incident_case_store = incident_case_store or IncidentCaseStore(settings.approval_db_path)
+        self.system_event_store = system_event_store or SystemEventStore(settings.approval_db_path)
         self.context_assembler = ContextAssembler()
         self.supervisor = RuleBasedSupervisor(settings)
         self.connection_manager = MCPConnectionManager(settings.mcp_connections_path)
@@ -76,6 +82,8 @@ class SupervisorOrchestrator:
             process_memory_store=self.process_memory_store,
             connection_manager=self.connection_manager,
             agents=self.agents,
+            execution_store=self.execution_store,
+            system_event_store=self.system_event_store,
         )
         self.graph_builder = OrchestratorGraphBuilder(self.graph_nodes)
         self.ticket_graph = self.graph_builder.build_ticket_graph()
@@ -105,6 +113,27 @@ class SupervisorOrchestrator:
                 "summary": summary,
                 "payload": dict(payload or {}),
                 "refs": dict(refs or {}),
+            }
+        )
+
+    def _append_system_event(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        ticket_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.system_event_store.create(
+            {
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "ticket_id": ticket_id,
+                "event_type": event_type,
+                "payload": dict(payload or {}),
+                "metadata": dict(metadata or {}),
             }
         )
 
@@ -486,6 +515,18 @@ class SupervisorOrchestrator:
                     "pending_interrupt": None,
                 },
             )
+            self._append_system_event(
+                session_id=session_id,
+                thread_id=thread_id,
+                ticket_id=request.ticket_id,
+                event_type="conversation.created",
+                payload={
+                    "entrypoint": entrypoint,
+                    "user_id": request.user_id,
+                    "message": request.message,
+                },
+                metadata={"source": "orchestrator"},
+            )
         current_session = self.session_service.get_session(session_id)
         if current_session is None:
             raise ValueError("session not found during context assembly")
@@ -507,6 +548,18 @@ class SupervisorOrchestrator:
                 "namespace": request.namespace,
                 "channel": request.channel,
             },
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=thread_id,
+            ticket_id=request.ticket_id,
+            event_type="message.received",
+            payload={
+                "entrypoint": entrypoint,
+                "message": request.message,
+                "service": request.service,
+            },
+            metadata={"source": "orchestrator"},
         )
         try:
             state = await self.ticket_graph.ainvoke(graph_input)
@@ -669,6 +722,20 @@ class SupervisorOrchestrator:
                     response=response,
                     incident_state=final_incident_state.model_dump(),
                 )
+                self._append_system_event(
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    ticket_id=request.ticket_id,
+                    event_type="conversation.closed",
+                    payload={
+                        "status": final_status,
+                        "message": response.get("message"),
+                    },
+                    metadata={
+                        "source": "orchestrator",
+                        "checkpoint_id": checkpoint.get("checkpoint_id") if checkpoint is not None else None,
+                    },
+                )
         assistant_turn = self._append_assistant_turn(session_id, response=response)
         return {
             "session": session,
@@ -739,6 +806,17 @@ class SupervisorOrchestrator:
             raise RuntimeError("resume interrupt does not match the current pending interrupt")
         answer_payload = self._normalize_resume_answer(request)
         interrupt_type = pending_interrupt.get("type")
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=str(session.get("thread_id") or session_id),
+            ticket_id=str(session.get("ticket_id") or session_id),
+            event_type="conversation.resumed",
+            payload={
+                "interrupt_id": expected_interrupt_id,
+                "interrupt_type": interrupt_type,
+            },
+            metadata={"source": "orchestrator"},
+        )
         if interrupt_type == "approval":
             approval_id = pending_interrupt.get("metadata", {}).get("approval_id")
             if not approval_id:
@@ -775,6 +853,69 @@ class SupervisorOrchestrator:
 
     def get_conversation(self, session_id: str) -> dict[str, Any] | None:
         return self._build_conversation_detail(session_id)
+
+    def list_approval_events(self, approval_id: str) -> list[dict[str, Any]]:
+        return self.approval_store.list_events(approval_id)
+
+    def list_system_events(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        return self.system_event_store.list_for_session(session_id, limit=limit)
+
+    def list_execution_plans(self, session_id: str) -> list[dict[str, Any]]:
+        plans = self.execution_store.list_plans(session_id)
+        for plan in plans:
+            plan["steps"] = self.execution_store.list_steps(str(plan["plan_id"]))
+        return plans
+
+    def get_execution_plan(self, plan_id: str) -> dict[str, Any] | None:
+        plan = self.execution_store.get_plan(plan_id)
+        if plan is None:
+            return None
+        plan["steps"] = self.execution_store.list_steps(plan_id)
+        return plan
+
+    def get_execution_recovery(self, session_id: str) -> dict[str, Any] | None:
+        session = self.session_service.get_session(session_id)
+        if session is None:
+            return None
+        checkpoints = self.checkpoint_store.list_for_session(session_id, limit=20)
+        latest_checkpoint = checkpoints[0] if checkpoints else None
+        last_success_checkpoint = None
+        for checkpoint in checkpoints:
+            metadata = dict(checkpoint.get("metadata") or {})
+            response_status = str(metadata.get("response_status") or "")
+            step_status = str(metadata.get("step_status") or "")
+            if response_status == "failed" or step_status == "failed" or checkpoint.get("stage") == "execution_failed":
+                continue
+            last_success_checkpoint = checkpoint
+            break
+
+        recovery_action = "none"
+        reason = "当前会话没有执行恢复需求。"
+        plan = None
+        if latest_checkpoint is not None:
+            metadata = dict(latest_checkpoint.get("metadata") or {})
+            plan_id = metadata.get("plan_id")
+            if plan_id:
+                plan = self.get_execution_plan(str(plan_id))
+            stage = str(latest_checkpoint.get("stage") or "")
+            next_action = str(latest_checkpoint.get("next_action") or "")
+            response_status = str(metadata.get("response_status") or "")
+            step_status = str(metadata.get("step_status") or "")
+            if stage == "execution_started" or stage == "execution_failed" or response_status == "failed" or step_status == "failed" or next_action == "retry_execution_step":
+                recovery_action = "retry_execution_step"
+                reason = "最近一次执行在步骤内失败或中断，可基于最新 checkpoint 重试当前 step。"
+            elif stage == "execution_step_finished" or next_action == "finalize_execution":
+                recovery_action = "finalize_execution"
+                reason = "执行步骤已完成，若会话尚未闭环，可从最近 checkpoint 继续完成收尾。"
+
+        return {
+            "session_id": session_id,
+            "recovery_action": recovery_action,
+            "reason": reason,
+            "latest_checkpoint": latest_checkpoint,
+            "last_success_checkpoint": last_success_checkpoint,
+            "execution_plan": plan,
+        }
 
     async def handle_ticket(self, request: TicketRequest) -> Dict[str, object]:
         return await self._run_ticket_message(
@@ -837,10 +978,185 @@ class SupervisorOrchestrator:
             else dict(session.get("incident_state") or {})
         )
 
+        decision_label = "批准" if request.approved else "拒绝"
+        decision_content = f"{decision_label}审批动作"
+        if request.comment:
+            decision_content = f"{decision_content}：{request.comment}"
+        return self._finalize_approval_resolution(
+            session=session,
+            approval=approval,
+            approval_id=approval_id,
+            pending_interrupt_id=str(pending_interrupt_id),
+            response=response,
+            next_incident_state=next_incident_state,
+            actor_id=request.approver_id,
+            process_summary=(
+                "审批已通过，但执行失败，可基于 checkpoint 决定是否重试"
+                if request.approved and str(response.get("status") or "") == "failed"
+                else "审批已通过，流程继续执行"
+                if request.approved
+                else "审批已拒绝，流程进入确定性结束状态"
+            ),
+            user_turn_content=decision_content,
+            user_turn_payload={
+                "approved": request.approved,
+                "approver_id": request.approver_id,
+                "comment": request.comment,
+                "approval_id": approval_id,
+                "interrupt_id": pending_interrupt_id,
+                "approval_status": approval.get("status"),
+            },
+            process_payload={
+                "approved": request.approved,
+                "approver_id": request.approver_id,
+                "comment": request.comment,
+                "approval_status": approval.get("status"),
+                "response_status": response.get("status"),
+                "recovery_action": ((response.get("diagnosis") or {}).get("execution_limit") or {}).get("recovery_action") if isinstance(response.get("diagnosis"), dict) else None,
+            },
+        )
+
+    async def expire_approval(
+        self,
+        approval: Dict[str, object],
+        *,
+        actor_id: str = "system",
+        comment: str | None = None,
+    ) -> Dict[str, object]:
+        return await self._resolve_terminal_approval(
+            approval,
+            resolution_status="expired",
+            actor_id=actor_id,
+            comment=comment,
+        )
+
+    async def cancel_approval(
+        self,
+        approval: Dict[str, object],
+        *,
+        actor_id: str = "system",
+        comment: str | None = None,
+    ) -> Dict[str, object]:
+        return await self._resolve_terminal_approval(
+            approval,
+            resolution_status="cancelled",
+            actor_id=actor_id,
+            comment=comment,
+        )
+
+    async def _resolve_terminal_approval(
+        self,
+        approval: Dict[str, object],
+        *,
+        resolution_status: str,
+        actor_id: str,
+        comment: str | None,
+    ) -> Dict[str, object]:
+        approval_id = str(approval.get("approval_id") or "") or None
+        if approval_id is None:
+            raise ValueError("approval id not found")
+        thread_id = str(approval.get("thread_id") or approval.get("ticket_id") or "")
+        session = self.session_service.get_session_by_thread_id(thread_id) if thread_id else None
+        if session is None:
+            raise ValueError("session not found for approval")
+        pending_interrupt_id = session.get("pending_interrupt_id")
+        if not pending_interrupt_id:
+            raise RuntimeError(f"approval {resolution_status} requires a pending interrupt")
+
+        if resolution_status == "expired":
+            self.approval_store.expire(approval_id, actor_id=actor_id, comment=comment)
+            self.interrupt_store.expire(
+                str(pending_interrupt_id),
+                answer_payload={"approval_id": approval_id, "status": resolution_status, "actor_id": actor_id, "comment": comment},
+            )
+            message = "审批已超时，未执行任何高风险动作。"
+            summary = "审批已超时，流程进入确定性结束状态"
+            turn_content = "审批已超时"
+        elif resolution_status == "cancelled":
+            self.approval_store.cancel(approval_id, actor_id=actor_id, comment=comment)
+            self.interrupt_store.cancel(
+                str(pending_interrupt_id),
+                answer_payload={"approval_id": approval_id, "status": resolution_status, "actor_id": actor_id, "comment": comment},
+            )
+            message = "审批已取消，未执行任何高风险动作。"
+            summary = "审批已取消，流程进入确定性结束状态"
+            turn_content = "审批已取消"
+        else:
+            raise ValueError(f"unsupported approval resolution status: {resolution_status}")
+
+        updated_approval = self.approval_store.get(approval_id)
+        if updated_approval is not None:
+            approval = updated_approval
+        approval_request = self.approval_store.get_request(approval_id)
+        action = approval.get("action")
+        if approval_request is not None and approval_request.proposals:
+            action = approval_request.proposals[0].action
+        response = {
+            "ticket_id": str(approval.get("ticket_id") or session.get("ticket_id") or session.get("session_id") or ""),
+            "status": "completed",
+            "message": message,
+            "diagnosis": {
+                "approval": {
+                    "approval_id": approval_id,
+                    "action": action,
+                    "status": resolution_status,
+                    "comment": comment,
+                }
+            },
+        }
+        if comment:
+            turn_content = f"{turn_content}：{comment}"
+        next_incident_state = self._restore_incident_state_for_session(session)
+        return self._finalize_approval_resolution(
+            session=session,
+            approval=approval,
+            approval_id=approval_id,
+            pending_interrupt_id=str(pending_interrupt_id),
+            response=response,
+            next_incident_state=next_incident_state,
+            actor_id=actor_id,
+            process_summary=summary,
+            user_turn_content=turn_content,
+            user_turn_payload={
+                "approval_id": approval_id,
+                "interrupt_id": pending_interrupt_id,
+                "approval_status": resolution_status,
+                "actor_id": actor_id,
+                "comment": comment,
+            },
+            process_payload={
+                "approval_status": resolution_status,
+                "actor_id": actor_id,
+                "comment": comment,
+            },
+        )
+
+    def _finalize_approval_resolution(
+        self,
+        *,
+        session: dict[str, Any],
+        approval: dict[str, Any] | Dict[str, object],
+        approval_id: str,
+        pending_interrupt_id: str,
+        response: dict[str, Any],
+        next_incident_state: dict[str, Any],
+        actor_id: str,
+        process_summary: str,
+        user_turn_content: str,
+        user_turn_payload: dict[str, Any],
+        process_payload: dict[str, Any],
+    ) -> Dict[str, object]:
+        session_id = str(session["session_id"])
+        thread_id = str(approval.get("thread_id") or approval.get("ticket_id") or session.get("thread_id") or session_id)
+
+        response_status = str(response.get("status") or "completed")
+        session_status = "failed" if response_status == "failed" else "completed"
+        checkpoint_next_action = "retry_execution_step" if response_status == "failed" else "complete"
+
         updated_session = self.session_service.update_session_state(
             session_id,
             incident_state=next_incident_state,
-            status="completed",
+            status=session_status,
             current_stage="finalize",
             current_agent=self._resolve_current_agent(session, incident_state=next_incident_state),
             latest_approval_id=approval_id,
@@ -858,19 +1174,22 @@ class SupervisorOrchestrator:
         checkpoint = self._create_checkpoint(
             session=updated_session,
             stage="approval_resume_finalize",
-            next_action="complete",
+            next_action=checkpoint_next_action,
             incident_state=next_incident_state,
             metadata={
                 "source": "approval_resume",
                 "response_status": response.get("status"),
                 "approval_id": approval_id,
                 "interrupt_id": pending_interrupt_id,
+                "recovery_action": checkpoint_next_action,
+                "plan_id": (((response.get("diagnosis") or {}).get("execution_limit") or {}).get("plan_id") if isinstance(response.get("diagnosis"), dict) else None),
+                "step_ids": (((response.get("diagnosis") or {}).get("execution_limit") or {}).get("step_ids") if isinstance(response.get("diagnosis"), dict) else None),
             },
         )
         updated_session = self.session_service.update_session_state(
             session_id,
             incident_state=next_incident_state,
-            status="completed",
+            status=session_status,
             current_stage="finalize",
             current_agent=self._resolve_current_agent(updated_session, incident_state=next_incident_state),
             latest_approval_id=approval_id,
@@ -884,21 +1203,10 @@ class SupervisorOrchestrator:
             response=response,
             incident_state=next_incident_state,
         )
-
-        decision_label = "批准" if request.approved else "拒绝"
-        decision_content = f"{decision_label}审批动作"
-        if request.comment:
-            decision_content = f"{decision_content}：{request.comment}"
         self._append_user_turn(
             session_id,
-            content=decision_content,
-            structured_payload={
-                "approved": request.approved,
-                "approver_id": request.approver_id,
-                "comment": request.comment,
-                "approval_id": approval_id,
-                "interrupt_id": pending_interrupt_id,
-            },
+            content=user_turn_content,
+            structured_payload=dict(user_turn_payload),
         )
         self._append_process_entry(
             session_id=session_id,
@@ -907,20 +1215,31 @@ class SupervisorOrchestrator:
             event_type="approval_decided",
             stage="approval_resume",
             source="orchestrator",
-            summary=(
-                "审批已通过，流程继续执行"
-                if request.approved
-                else "审批已拒绝，流程进入确定性结束状态"
-            ),
-            payload={
-                "approved": request.approved,
-                "approver_id": request.approver_id,
-                "comment": request.comment,
-            },
+            summary=process_summary,
+            payload=dict(process_payload),
             refs={
                 "approval_id": approval_id,
                 "interrupt_id": pending_interrupt_id,
             },
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=thread_id,
+            ticket_id=str(approval.get("ticket_id") or session.get("ticket_id") or session_id),
+            event_type=(
+                "approval.approved"
+                if process_payload.get("approved") is True
+                else "approval.rejected"
+                if process_payload.get("approved") is False
+                else f"approval.{str(process_payload.get('approval_status') or 'resolved')}"
+            ),
+            payload={
+                "approval_id": approval_id,
+                "approval_status": approval.get("status"),
+                "response_status": response.get("status"),
+                "comment": process_payload.get("comment"),
+            },
+            metadata={"source": "orchestrator", "interrupt_id": pending_interrupt_id},
         )
         self._append_process_entry(
             session_id=session_id,
@@ -933,13 +1252,36 @@ class SupervisorOrchestrator:
             payload={
                 "response_status": response.get("status"),
                 "message": response.get("message"),
-                "approved": request.approved,
+                "approved": process_payload.get("approved"),
+                "approval_status": approval.get("status"),
             },
             refs={
                 "checkpoint_id": checkpoint.get("checkpoint_id"),
                 "approval_id": approval_id,
                 "interrupt_id": pending_interrupt_id,
             },
+        )
+        self.approval_store.record_resumed(
+            approval_id,
+            actor_id=actor_id,
+            detail={
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "checkpoint_id": checkpoint.get("checkpoint_id"),
+                "response_status": response.get("status"),
+                "approval_status": approval.get("status"),
+            },
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=thread_id,
+            ticket_id=str(approval.get("ticket_id") or session.get("ticket_id") or session_id),
+            event_type="conversation.closed",
+            payload={
+                "status": session_status,
+                "message": response.get("message"),
+            },
+            metadata={"source": "orchestrator", "checkpoint_id": checkpoint.get("checkpoint_id")},
         )
         assistant_turn = self._append_assistant_turn(
             session_id,

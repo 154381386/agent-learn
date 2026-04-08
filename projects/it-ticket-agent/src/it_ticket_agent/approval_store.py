@@ -50,5 +50,22 @@ class ApprovalStore:
         record = decision if isinstance(decision, ApprovalDecisionRecord) else ApprovalDecisionRecord.model_validate(decision)
         return self.v2_store.record_decision(record)
 
+    def expire(self, approval_id: str, *, actor_id: str = "system", comment: Optional[str] = None) -> Dict[str, Any]:
+        saved = self.v2_store.expire_request(approval_id, actor_id=actor_id, comment=comment)
+        return approval_request_to_legacy_payload(saved)
+
+    def cancel(self, approval_id: str, *, actor_id: str = "system", comment: Optional[str] = None) -> Dict[str, Any]:
+        saved = self.v2_store.cancel_request(approval_id, actor_id=actor_id, comment=comment)
+        return approval_request_to_legacy_payload(saved)
+
+    def record_resumed(
+        self,
+        approval_id: str,
+        *,
+        actor_id: str = "system",
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.v2_store.record_resumed(approval_id, actor_id=actor_id, detail=detail)
+
     def list_events(self, approval_id: str) -> list[dict[str, Any]]:
         return self.v2_store.list_events(approval_id)

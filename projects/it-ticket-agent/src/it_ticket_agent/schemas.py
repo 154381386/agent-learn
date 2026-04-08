@@ -19,14 +19,78 @@ class ApprovalDecisionRequest(BaseModel):
     comment: Optional[str] = None
 
 
+class ApprovalResolutionRequest(BaseModel):
+    actor_id: str = "system"
+    comment: Optional[str] = None
+
+
 class ApprovalPayload(BaseModel):
     approval_id: str
     ticket_id: str
     thread_id: str
+    status: str = "pending"
     action: str
     risk: str
     reason: str
     params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalEventResponse(BaseModel):
+    approval_id: str
+    event_type: str
+    actor_id: str
+    detail: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class ExecutionStepResponse(BaseModel):
+    step_id: str
+    plan_id: str
+    session_id: str
+    action: str
+    tool_name: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    status: str
+    result_summary: str = ""
+    evidence: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class ExecutionPlanResponse(BaseModel):
+    plan_id: str
+    session_id: str
+    thread_id: str
+    ticket_id: str
+    status: str
+    steps: List[ExecutionStepResponse] = Field(default_factory=list)
+    summary: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class ExecutionRecoveryResponse(BaseModel):
+    session_id: str
+    recovery_action: str
+    reason: str
+    latest_checkpoint: Optional[Dict[str, Any]] = None
+    last_success_checkpoint: Optional[Dict[str, Any]] = None
+    execution_plan: Optional[ExecutionPlanResponse] = None
+
+
+class SystemEventResponse(BaseModel):
+    event_id: str
+    session_id: str
+    thread_id: str
+    ticket_id: str
+    event_type: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
 
 
 class ConversationCreateRequest(BaseModel):

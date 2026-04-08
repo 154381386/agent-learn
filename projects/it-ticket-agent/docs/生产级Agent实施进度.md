@@ -2,14 +2,15 @@
 
 ## 文档定位
 
-本文档是当前项目**唯一进度文档**。
+本文档是当前项目**当前收敛阶段的唯一进度文档**。
 
 配套文档仅保留：
 
 - 总计划：`projects/it-ticket-agent/docs/生产级Agent演进总计划.md`
 - 进度与验收：`projects/it-ticket-agent/docs/生产级Agent实施进度.md`
+- 下一阶段路线图：`projects/it-ticket-agent/docs/下一阶段多Agent演进计划.md`
 
-历史专项计划与阶段性进度笔记已并入上述两份文档，不再单独维护。
+历史专项计划与阶段性进度笔记已并入上述文档；当前收敛期仍以本文档为唯一进度基线，下一阶段单独参考路线图文档。
 
 ## 文档目的
 
@@ -77,15 +78,15 @@
 生产化方向文档已完成
 M1（session / interrupt）已进入代码落地
 M2（context / memory）已进入主体实现，B1~B4 已落地
-M3（approval workflow）已部分重构到正式子系统
-M4（execution / event ledger）尚未开始主体实现
+M3（approval workflow）已完成正式化收口
+M4（execution / event ledger）已完成 D1 ~ D4 收口
 ```
 
 因此，从实施角度看：
 
 - 设计输入：**已具备**
 - 当前代码已进入分阶段实现
-- 当前推荐继续推进点：**先收口 A/B 偏差并补齐 S1 ~ S4 smoke 验收**
+- 当前推荐继续推进点：**进入 D1 ~ D3，开始执行控制与系统事件账本落地**
 
 ---
 
@@ -136,7 +137,7 @@ M4（execution / event ledger）尚未开始主体实现
 - 审批通过/拒绝/超时均有确定性状态
 - 审批结果能驱动会话恢复
 
-状态：`[~]`
+状态：`[x]`
 
 ---
 
@@ -152,7 +153,7 @@ M4（execution / event ledger）尚未开始主体实现
 - 有统一系统事件日志
 - 可以按会话查看关键执行过程
 
-状态：`[ ]`
+状态：`[x]`
 
 ---
 
@@ -609,13 +610,13 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### C1. 审批状态机收敛
 
-状态：`[~]`
+状态：`[x]`
 
 实际实现说明：
 
-- 当前审批已具备 pending / approved / rejected 等核心流转语义
-- interrupt 侧也已具备 pending / answered / cancelled / expired
-- 但审批主模型与状态机约束还未完全统一到单一工作流实现
+- `approval/models.py` 已将审批状态扩展为 `pending / approved / rejected / expired / cancelled`
+- `approval/store.py` 已收口受控状态迁移，并显式拒绝非法状态转换
+- `tests/test_runtime_smoke.py` 已补齐最小非法流转验证，覆盖终态后二次决策被拒绝
 
 目标：把审批状态显式建模。
 
@@ -640,14 +641,14 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### C2. 审批工作流模型统一
 
-状态：`[~]`
+状态：`[x]`
 
 实际实现说明：
 
 - 已新增 `approval/coordinator.py` 并在 graph 中走 `ApprovalCoordinator`
 - 当前 `approval_gate` 持久化已优先走 domain `ApprovalRequest`，不再以 legacy payload 作为主流程 canonical contract
-- `runtime/orchestrator.py` 与 `graph/` 的 approval resume 主链已优先传递 domain request，legacy payload 主要收敛在 API / facade 兼容边界
-- 目前仍存在 approval facade / legacy payload / domain model 并存的过渡状态，但核心链路对 legacy 的主流程依赖已减少
+- `runtime/orchestrator.py` 与 `graph/` 的 approval resume 主链已统一要求显式传递 domain `ApprovalRequest`
+- `graph/nodes.py` 已移除 approval resume 对 legacy payload 的隐式回退，legacy 仅保留在 API / facade 兼容边界
 
 目标：统一当前 approval facade / legacy / store 的主模型。
 
@@ -669,12 +670,13 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### C3. 审批事件账本落地
 
-状态：`[ ]`
+状态：`[x]`
 
 实际实现说明：
 
-- 当前只有审批记录与部分链路日志，还没有正式的 approval event ledger
-- 该项尚未开始主体实现
+- `approval/store.py` 已将审批创建、批准、拒绝、超时、取消、恢复写入 `approval_audit_event`
+- `runtime/orchestrator.py` 在审批恢复收尾后会追加 `resumed` 事件，形成完整审批事件链
+- `main.py` 已新增 `GET /api/v1/approvals/{approval_id}/events` 查询接口
 
 目标：审批创建、通过、拒绝、恢复都要有事件。
 
@@ -691,13 +693,14 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### C4. 审批与 session/resume 打通
 
-状态：`[~]`
+状态：`[x]`
 
 实际实现说明：
 
 - approval interrupt 已写入 session.pending_interrupt_id
-- 审批决策后会回填 interrupt answered，并更新 session 状态
-- 当前恢复仍主要是 approval 专用链路，尚未升级为通用 interrupt-aware resume
+- 审批通过 / 拒绝后会回填 interrupt、更新 session、回写 checkpoint，并落审批恢复事件
+- 已新增审批超时 / 取消的正式收尾路径，均会生成确定性结束状态并清理 pending interrupt
+- `tests/test_runtime_smoke.py` 已覆盖 approve / reject / expire / cancel 的 session 终态与事件链验证
 
 目标：审批结果自动驱动会话恢复。
 
@@ -717,7 +720,14 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### D1. ExecutionPlan / ExecutionStep 模型落地
 
-状态：`[ ]`
+状态：`[x]`
+
+实际实现说明：
+
+- 已新增 `execution/models.py`、`execution/store.py`、`execution_store.py`，落地 `ExecutionPlan` / `ExecutionStep` 持久化模型
+- 审批通过后的 `graph/nodes.py` 执行节点已在 MCP 调用前后写入 execution plan / step 记录，并同步回填 `plan_id` / `step_id`
+- 已新增 `GET /api/v1/sessions/{session_id}/execution-plans` 与 `GET /api/v1/execution-plans/{plan_id}` 查询接口
+- `tests/test_runtime_smoke.py` 已验证高风险动作执行后可查到 completed plan 与 completed step，且 step 含结果摘要与证据
 
 目标：让执行过程从“调用工具”升级为“受控执行步骤”。
 
@@ -734,7 +744,14 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### D2. 执行 checkpoint 写入
 
-状态：`[ ]`
+状态：`[x]`
+
+实际实现说明：
+
+- 当前已在审批恢复后的执行节点前后补写 `execution_started` / `execution_step_finished` checkpoint
+- 已补齐执行失败分支的 `execution_failed` checkpoint、failed plan / failed step 回写，以及失败态 session 收口
+- 已新增 `GET /api/v1/sessions/{session_id}/execution-recovery`，可基于最新 checkpoint 与 execution plan 推导 `retry_execution_step / finalize_execution / none`
+- `tests/test_runtime_smoke.py` 已覆盖执行失败后的 checkpoint、恢复建议与 failed plan / step 验证
 
 目标：关键步骤执行前后写 checkpoint。
 
@@ -751,7 +768,14 @@ M4（execution / event ledger）尚未开始主体实现
 
 ### D3. System Event 日志落地
 
-状态：`[ ]`
+状态：`[x]`
+
+实际实现说明：
+
+- 已新增 `events/models.py`、`events/store.py`、`system_event_store.py`，落地独立 `system_event` 事件账本
+- 已新增 `GET /api/v1/sessions/{session_id}/events` 查询接口，支持按会话查看按时间排序的关键事件流
+- 当前已接入 `conversation.created`、`message.received`、`interrupt.created`、`approval.pending`、`approval.approved`、`approval.rejected`、`execution.started`、`execution.step_finished`、`conversation.resumed`、`conversation.closed`
+- `tests/test_runtime_smoke.py` 已覆盖审批恢复成功链路与执行失败链路上的关键 system events 验证
 
 目标：统一记录会话、审批、执行、恢复事件。
 
@@ -778,6 +802,39 @@ M4（execution / event ledger）尚未开始主体实现
 - 完成一条工单后能按时间顺序看到核心事件序列
 
 ---
+
+### D4. 执行安全收口（项目最后收尾前必须完成）
+
+状态：`[x]`
+
+实际实现说明：
+
+- 已新增 `execution/security.py`，落地代码级动作注册表、参数 schema 校验、审批快照构造与执行绑定校验
+- `approval/coordinator.py` 已在审批门口拒绝未注册动作；`approval/store.py` 持久化审批请求时会为 proposal 绑定审批快照
+- `graph/nodes.py` 的最终执行节点已在调用 MCP 前再次校验：动作是否注册、参数是否合规、风险是否匹配、审批快照是否与执行请求一致
+- 未注册动作与快照篡改都会在外部 tool 调用前失败，并落 failed step / checkpoint / system event / 审批恢复结果
+- `tests/test_runtime_smoke.py` 已覆盖未注册动作阻断与审批快照篡改阻断，验证 MCP tool 不会被调用
+
+目标：把‘有审批’升级为‘可证明的执行安全边界’。
+
+验收标准：
+
+- 只有代码注册表中的动作允许进入最终执行
+- 每个执行动作都有显式参数 schema，执行前完成校验
+- 审批通过后，恢复执行时校验动作快照与审批快照一致
+- 未注册动作、参数漂移动作、审批后被改写动作都会被拒绝执行
+- 审计中能同时看到审批人、审批快照、实际执行结果
+
+确认方式：
+
+- 增加一组安全 smoke / regression case：
+  - LLM 产出未注册 action -> 必须被拒绝
+  - 已注册 action 但参数不合法 -> 必须被拒绝
+  - 审批后篡改 action / params -> 恢复执行时必须失败
+  - 已授权审批人批准合法动作 -> 才允许正常执行
+
+---
+
 
 # 最小 smoke 验收集（非阻塞，但必须保留）
 
@@ -851,13 +908,7 @@ M4（execution / event ledger）尚未开始主体实现
 
 严格按下面顺序继续推进：
 
-1. `S1` ~ `S4` 为 A/B 现状补齐 smoke 验收
-2. 收口 A 阶段 conversation / resume / checkpoint 链路中的实现偏差
-3. 收口 B 阶段 context / session memory / process memory 与正式 contract 的边界
-4. 清理 A/B 主链路中继续扩散的 legacy contract
-5. 完成 A/B 收口后，再重新评估是否进入后续阶段
-6. `C1` ~ `C4` 审批正式化收口（暂缓，不作为当前开工项）
-7. `D1` ~ `D3` 执行与事件账本
+1. 当前计划内 `A` ~ `D` 已全部落地，可进入更高层的验收、联调与增强阶段
 
 ---
 
@@ -865,13 +916,13 @@ M4（execution / event ledger）尚未开始主体实现
 
 ## 当前推荐继续推进的第一项
 
-**`S1` ~ `S4`：先为已落地的 A/B 能力补齐 smoke 验收，并同步收口 legacy contract 偏差**
+**当前计划内 `A` ~ `D` 已完成，建议进入联调验收与增强智能阶段**
 
 原因：
 
-- `A1` ~ `A6`、`B1` ~ `B4` 已基本落地，当前主要问题不再是“缺功能”，而是“要和计划严格对齐”
-- 当前主链路仍存在 legacy contract 扩散，继续推进 `C` 会放大偏差
-- 先把 A/B 的 session、resume、context、memory 与 smoke 护栏收紧，才能保证后续阶段不建立在漂移实现之上
+- `A` ~ `D` 已完成，当前已具备 session / context / approval / execution / system event / execution safety 的最小生产级闭环
+- 当前后续工作可转向更高层的联调验收、接口稳定性、以及 Phase E 的增强智能能力
+- 若继续推进代码，优先建议补接口集成测试、真实 MCP 联调与上线前手册完善
 
 如果继续写代码，默认从这里开始。
 
@@ -886,6 +937,7 @@ M4（execution / event ledger）尚未开始主体实现
 3. 新能力不得继续通过向 `ApprovalPayload.params` 塞新字段来落地；如需新增语义，必须先进入正式 domain model。
 4. domain -> legacy 的转换只允许用于兼容现有外部接口，不能反向成为核心流程的 canonical contract。
 5. 在 `S1` ~ `S4` smoke 和 A/B 收口完成前，不继续推进 `C` 阶段实现。
+6. 即使后续补上审批鉴权，也不能将其视为执行安全已完成；项目收尾前必须完成 `D4` 动作注册表 / 参数校验 / 审批快照绑定 / 执行前二次校验。
 
 后续每完成一个工作项，都要同步更新以下内容：
 

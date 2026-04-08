@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
-ApprovalStatus = Literal["pending", "approved", "rejected"]
+ApprovalStatus = Literal["pending", "approved", "rejected", "expired", "cancelled"]
 PolicyDecision = Literal["requires_approval", "auto_approve", "reject"]
 
 
@@ -111,7 +111,7 @@ class ApprovalGateResult(BaseModel):
 
 class ApprovalAuditEvent(BaseModel):
     approval_id: str
-    event_type: Literal["created", "decision_recorded"]
+    event_type: Literal["created", "approved", "rejected", "expired", "cancelled", "resumed"]
     actor_id: str = "system"
     detail: Dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)

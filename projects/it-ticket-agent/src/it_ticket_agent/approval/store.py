@@ -6,10 +6,21 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 from .models import ApprovalAuditEvent, ApprovalDecisionRecord, ApprovalRequest, utc_now
+from ..execution.security import bind_request_snapshots
 
 
 class ApprovalStateError(RuntimeError):
     pass
+
+
+TERMINAL_APPROVAL_STATUSES = {"approved", "rejected", "expired", "cancelled"}
+ALLOWED_APPROVAL_TRANSITIONS = {
+    "pending": TERMINAL_APPROVAL_STATUSES,
+    "approved": set(),
+    "rejected": set(),
+    "expired": set(),
+    "cancelled": set(),
+}
 
 
 class ApprovalStoreV2:
@@ -63,7 +74,8 @@ class ApprovalStoreV2:
 
     def create_request(self, request: ApprovalRequest) -> ApprovalRequest:
         now = utc_now()
-        payload = request.model_copy(update={"created_at": now, "updated_at": now, "status": "pending"})
+        prepared = bind_request_snapshots(request)
+        payload = prepared.model_copy(update={"created_at": now, "updated_at": now, "status": "pending"})
         with self._connect() as conn:
             conn.execute(
                 """
@@ -139,17 +151,102 @@ class ApprovalStoreV2:
         )
 
     def record_decision(self, decision: ApprovalDecisionRecord) -> ApprovalRequest:
+        next_status = "approved" if decision.approved else "rejected"
+        return self._transition_request(
+            decision.approval_id,
+            next_status=next_status,
+            actor_id=decision.approver_id,
+            comment=decision.comment,
+            decided_at=decision.decided_at,
+            detail={
+                "approved": decision.approved,
+                "comment": decision.comment,
+                "decided_at": decision.decided_at,
+            },
+        )
+
+    def expire_request(
+        self,
+        approval_id: str,
+        *,
+        actor_id: str = "system",
+        comment: str | None = None,
+        decided_at: str | None = None,
+    ) -> ApprovalRequest:
+        return self._transition_request(
+            approval_id,
+            next_status="expired",
+            actor_id=actor_id,
+            comment=comment,
+            decided_at=decided_at or utc_now(),
+            detail={"comment": comment},
+        )
+
+    def cancel_request(
+        self,
+        approval_id: str,
+        *,
+        actor_id: str = "system",
+        comment: str | None = None,
+        decided_at: str | None = None,
+    ) -> ApprovalRequest:
+        return self._transition_request(
+            approval_id,
+            next_status="cancelled",
+            actor_id=actor_id,
+            comment=comment,
+            decided_at=decided_at or utc_now(),
+            detail={"comment": comment},
+        )
+
+    def record_resumed(
+        self,
+        approval_id: str,
+        *,
+        actor_id: str = "system",
+        detail: dict[str, Any] | None = None,
+        created_at: str | None = None,
+    ) -> None:
         with self._connect() as conn:
             row = conn.execute(
-                "select status from approval_request_v2 where approval_id = ?",
-                (decision.approval_id,),
+                "select approval_id from approval_request_v2 where approval_id = ?",
+                (approval_id,),
             ).fetchone()
             if row is None:
                 raise KeyError("approval not found")
-            if row["status"] != "pending":
-                raise ApprovalStateError("approval decision already recorded")
+            self._insert_event(
+                conn,
+                ApprovalAuditEvent(
+                    approval_id=approval_id,
+                    event_type="resumed",
+                    actor_id=actor_id,
+                    detail=dict(detail or {}),
+                    created_at=created_at or utc_now(),
+                ),
+            )
+            conn.commit()
 
-            next_status = "approved" if decision.approved else "rejected"
+    def _transition_request(
+        self,
+        approval_id: str,
+        *,
+        next_status: str,
+        actor_id: str,
+        comment: str | None,
+        decided_at: str,
+        detail: dict[str, Any] | None = None,
+    ) -> ApprovalRequest:
+        with self._connect() as conn:
+            row = conn.execute(
+                "select status from approval_request_v2 where approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("approval not found")
+            current_status = str(row["status"])
+            if next_status not in ALLOWED_APPROVAL_TRANSITIONS.get(current_status, set()):
+                raise ApprovalStateError(f"illegal approval state transition: {current_status} -> {next_status}")
+
             updated_at = utc_now()
             conn.execute(
                 """
@@ -160,28 +257,27 @@ class ApprovalStoreV2:
                 (
                     next_status,
                     updated_at,
-                    decision.decided_at,
-                    decision.approver_id,
-                    decision.comment,
-                    decision.approval_id,
+                    decided_at,
+                    actor_id,
+                    comment,
+                    approval_id,
                 ),
             )
             self._insert_event(
                 conn,
                 ApprovalAuditEvent(
-                    approval_id=decision.approval_id,
-                    event_type="decision_recorded",
-                    actor_id=decision.approver_id,
+                    approval_id=approval_id,
+                    event_type=next_status,
+                    actor_id=actor_id,
                     detail={
-                        "approved": decision.approved,
-                        "comment": decision.comment,
-                        "decided_at": decision.decided_at,
+                        **dict(detail or {}),
+                        "status": next_status,
                     },
-                    created_at=decision.decided_at,
+                    created_at=decided_at,
                 ),
             )
             conn.commit()
-        record = self.get_request(decision.approval_id)
+        record = self.get_request(approval_id)
         if record is None:
             raise KeyError("approval not found")
         return record

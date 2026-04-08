@@ -100,6 +100,21 @@ class CheckpointStoreV2:
             ).fetchone()
         return self._row_to_checkpoint(row)
 
+    def list_checkpoints(self, session_id: str, limit: int = 20) -> list[ExecutionCheckpoint]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select checkpoint_id, session_id, thread_id, ticket_id, stage,
+                       next_action, state_snapshot_json, metadata_json, created_at
+                from execution_checkpoint
+                where session_id = ?
+                order by created_at desc, checkpoint_id desc
+                limit ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [checkpoint for row in rows if (checkpoint := self._row_to_checkpoint(row)) is not None]
+
     @staticmethod
     def _row_to_checkpoint(row: sqlite3.Row | None) -> Optional[ExecutionCheckpoint]:
         if row is None:
