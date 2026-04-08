@@ -126,6 +126,13 @@ def build_approval_gate_input_from_state(
     gate_context = dict(state.shared_context)
     if context:
         gate_context.update(context)
+    aggregated_result = state.metadata.get("aggregated_result") if isinstance(state.metadata, dict) else None
+    if isinstance(aggregated_result, dict):
+        gate_context["aggregated_result"] = aggregated_result
+    if state.subagent_results:
+        gate_context["source_agents"] = [result.agent_name for result in state.subagent_results]
+    if state.routing:
+        gate_context["routing"] = dict(state.routing)
     return approval_models.ApprovalGateInput(
         ticket_id=state.ticket_id,
         thread_id=state.thread_id or state.ticket_id,

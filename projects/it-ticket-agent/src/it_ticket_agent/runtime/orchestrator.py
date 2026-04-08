@@ -4,7 +4,8 @@ import logging
 from typing import Any, Dict
 from uuid import uuid4
 
-from ..agents import CICDAgent, GeneralSREAgent
+from ..agent_registry.loader import AgentRegistryLoader
+from ..agents import AgentFactory
 from ..agents.base import BaseDomainAgent
 from ..approval_store import ApprovalStore
 from ..checkpoint_store import CheckpointStore
@@ -21,6 +22,7 @@ from ..interrupt_store import InterruptStore
 from ..mcp import MCPConnectionManager
 from ..system_event_store import SystemEventStore
 from ..memory_store import IncidentCaseStore, ProcessMemoryStore
+from ..observability import configure_observability
 from ..schemas import (
     ApprovalDecisionRequest,
     ConversationCreateRequest,
@@ -63,17 +65,17 @@ class SupervisorOrchestrator:
         self.execution_store = execution_store or ExecutionStore(settings.approval_db_path)
         self.incident_case_store = incident_case_store or IncidentCaseStore(settings.approval_db_path)
         self.system_event_store = system_event_store or SystemEventStore(settings.approval_db_path)
+        self.observability = configure_observability(settings)
         self.context_assembler = ContextAssembler()
-        self.supervisor = RuleBasedSupervisor(settings)
+        self.registry = AgentRegistryLoader(settings.agent_registry_path).load()
         self.connection_manager = MCPConnectionManager(settings.mcp_connections_path)
-        self.agents: Dict[str, BaseDomainAgent] = {
-            "cicd_agent": CICDAgent(
-                settings,
-                self.supervisor.knowledge_client(settings),
-                self.connection_manager,
-            ),
-            "general_sre_agent": GeneralSREAgent(),
-        }
+        self.supervisor = RuleBasedSupervisor(settings, self.registry)
+        self.agent_factory = AgentFactory(
+            settings=settings,
+            connection_manager=self.connection_manager,
+            knowledge_client=self.supervisor.knowledge_client(settings),
+        )
+        self.agents: Dict[str, BaseDomainAgent] = self.agent_factory.build_agents(self.registry)
         self.graph_nodes = OrchestratorGraphNodes(
             supervisor=self.supervisor,
             approval_store=self.approval_store,
@@ -157,10 +159,18 @@ class SupervisorOrchestrator:
     ) -> dict[str, Any]:
         diagnosis = response.get("diagnosis") if isinstance(response.get("diagnosis"), dict) else {}
         session_memory = dict(session.get("session_memory") or {})
+        aggregated_result = {}
+        incident_metadata = incident_state.get("metadata") if isinstance(incident_state.get("metadata"), dict) else {}
+        if isinstance(incident_metadata.get("aggregated_result"), dict):
+            aggregated_result = dict(incident_metadata.get("aggregated_result") or {})
         key_evidence = []
         if isinstance(diagnosis.get("evidence"), list):
             key_evidence.extend(str(item) for item in diagnosis.get("evidence", []) if item)
+        if not key_evidence and isinstance(aggregated_result.get("evidence"), list):
+            key_evidence.extend(str(item) for item in aggregated_result.get("evidence", []) if item)
         findings = diagnosis.get("findings") if isinstance(diagnosis.get("findings"), list) else []
+        if not findings and isinstance(aggregated_result.get("findings"), list):
+            findings = aggregated_result.get("findings")
         for item in findings[:3]:
             if isinstance(item, dict):
                 detail = str(item.get("detail") or item.get("title") or "")
@@ -195,6 +205,7 @@ class SupervisorOrchestrator:
         root_cause = str(
             diagnosis.get("root_cause")
             or diagnosis.get("summary")
+            or aggregated_result.get("summary")
             or incident_state.get("final_summary")
             or ""
         )
@@ -241,6 +252,22 @@ class SupervisorOrchestrator:
                 structured_payload=structured_payload,
             )
         )
+
+    def _attach_observability(self, payload: dict[str, Any] | None) -> dict[str, Any] | None:
+        if payload is None:
+            return None
+        observability_context = self.observability.current_trace_context()
+        if not observability_context:
+            return payload
+        updated = dict(payload)
+        diagnosis = updated.get("diagnosis")
+        if isinstance(diagnosis, dict):
+            diagnosis = dict(diagnosis)
+            diagnosis["observability"] = observability_context
+            updated["diagnosis"] = diagnosis
+        else:
+            updated["observability"] = observability_context
+        return updated
 
     def _append_assistant_turn(self, session_id: str, *, response: dict[str, Any]) -> dict[str, Any]:
         return self.session_store.append_turn(
@@ -318,18 +345,44 @@ class SupervisorOrchestrator:
     ) -> dict[str, Any]:
         session_id = str(session["session_id"])
         restored_state = self._restore_incident_state_for_session(session)
-        text = str(answer_payload.get("text") or "").strip()
-        field_name = str(interrupt.get("metadata", {}).get("field_name") or "")
-        if field_name == "service" and text:
-            restored_state["service"] = text
-            shared_context = dict(restored_state.get("shared_context") or {})
-            shared_context["service"] = text
-            restored_state["shared_context"] = shared_context
+        metadata_payload = dict(interrupt.get("metadata", {}) or {})
+        configured_fields = metadata_payload.get("clarification_fields")
+        normalized_answers: dict[str, Any] = {}
+        if isinstance(configured_fields, list) and configured_fields:
+            if len(configured_fields) == 1 and "text" in answer_payload:
+                first = configured_fields[0]
+                field_name = str(first.get("name") or "")
+                if field_name:
+                    normalized_answers[field_name] = answer_payload.get("text")
+            else:
+                for field in configured_fields:
+                    if not isinstance(field, dict):
+                        continue
+                    field_name = str(field.get("name") or "")
+                    if field_name and field_name in answer_payload:
+                        normalized_answers[field_name] = answer_payload.get(field_name)
+        else:
+            field_name = str(metadata_payload.get("field_name") or "")
+            text = str(answer_payload.get("text") or "").strip()
+            if field_name and text:
+                normalized_answers[field_name] = text
+
+        shared_context = dict(restored_state.get("shared_context") or {})
+        for field_name, value in normalized_answers.items():
+            if value in (None, ""):
+                continue
+            restored_state[field_name] = value
+            shared_context[field_name] = value
+        restored_state["shared_context"] = shared_context
         metadata = dict(restored_state.get("metadata") or {})
         clarification_answers = dict(metadata.get("clarification_answers") or {})
-        clarification_answers[str(interrupt.get("interrupt_id") or "")] = answer_payload
+        clarification_answers[str(interrupt.get("interrupt_id") or "")] = {
+            "raw_answer": answer_payload,
+            "normalized_answers": normalized_answers,
+        }
         metadata["clarification_answers"] = clarification_answers
         restored_state["metadata"] = metadata
+        answered_summary = ", ".join(f"{key}={value}" for key, value in normalized_answers.items() if value not in (None, ""))
         self._append_process_entry(
             session_id=session_id,
             thread_id=str(session.get("thread_id") or session_id),
@@ -337,10 +390,11 @@ class SupervisorOrchestrator:
             event_type="clarification_answered",
             stage="routing",
             source="orchestrator",
-            summary=(f"用户补充了澄清信息：service={text}" if field_name == "service" and text else "用户已回答澄清问题"),
+            summary=(f"用户补充了澄清信息：{answered_summary}" if answered_summary else "用户已回答澄清问题"),
             payload={
-                "field_name": field_name,
+                "field_names": list(normalized_answers.keys()),
                 "answer_payload": answer_payload,
+                "normalized_answers": normalized_answers,
             },
             refs={
                 "interrupt_id": interrupt.get("interrupt_id"),
@@ -363,7 +417,7 @@ class SupervisorOrchestrator:
                     "cluster": restored_state.get("cluster"),
                     "namespace": restored_state.get("namespace"),
                 },
-                clarification_answers={str(interrupt.get("interrupt_id") or ""): answer_payload},
+                clarification_answers={str(interrupt.get("interrupt_id") or ""): {"raw_answer": answer_payload, "normalized_answers": normalized_answers}},
                 current_stage="routing",
                 pending_interrupt=None,
             ),
@@ -371,7 +425,7 @@ class SupervisorOrchestrator:
         ticket_request = TicketRequest(
             ticket_id=str(session.get("ticket_id") or session_id),
             user_id=str(session.get("user_id") or ""),
-            message=text or str(restored_state.get("message") or "补充澄清信息"),
+            message=str(restored_state.get("message") or "补充澄清信息"),
             service=restored_state.get("service"),
             cluster=str(restored_state.get("cluster") or "prod-shanghai-1"),
             namespace=str(restored_state.get("namespace") or "default"),
@@ -485,6 +539,19 @@ class SupervisorOrchestrator:
         entrypoint: str = "ticket_message",
         user_turn_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self.observability.update_current_trace(
+            name=entrypoint,
+            user_id=request.user_id,
+            session_id=session_id,
+            input={
+                "ticket_id": request.ticket_id,
+                "message": request.message,
+                "service": request.service,
+                "cluster": request.cluster,
+                "namespace": request.namespace,
+            },
+            metadata={"thread_id": thread_id, "entrypoint": entrypoint},
+        )
         incident_state = None
         if incident_state_override is not None:
             incident_state = IncidentState.model_validate(incident_state_override)
@@ -578,9 +645,11 @@ class SupervisorOrchestrator:
         if isinstance(approval_request, dict):
             latest_approval_id = approval_request.get("approval_id")
         current_intent = {
-            "agent_name": state.get("routing_decision").agent_name if state.get("routing_decision") is not None else None,
+            "agent_name": state.get("agent_result").agent_name if state.get("agent_result") is not None else state.get("routing_decision").agent_name if state.get("routing_decision") is not None else None,
             "mode": state.get("routing_decision").mode if state.get("routing_decision") is not None else None,
             "route_source": state.get("routing_decision").route_source if state.get("routing_decision") is not None else None,
+            "candidate_agents": list(state.get("routing_decision").candidate_agents or []) if state.get("routing_decision") is not None else [],
+            "source_agents": [item.get("agent_name") for item in list((final_incident_state.model_dump().get("subagent_results") if final_incident_state is not None else []) or []) if isinstance(item, dict)],
         }
         current_agent = self._resolve_current_agent(
             current_session,
@@ -697,6 +766,8 @@ class SupervisorOrchestrator:
                     "response_status": response.get("status"),
                     "message": response.get("message"),
                     "diagnosis_summary": (response.get("diagnosis") or {}).get("summary") if isinstance(response.get("diagnosis"), dict) else None,
+                    "aggregated_summary": (((response.get("diagnosis") or {}).get("incident_state") or {}).get("metadata") or {}).get("aggregated_result", {}).get("summary") if isinstance(response.get("diagnosis"), dict) else None,
+                    "source_agents": [item.get("agent_name") for item in ((((response.get("diagnosis") or {}).get("incident_state") or {}).get("subagent_results") or [])) if isinstance(item, dict)],
                     "approval_request": approval_request if isinstance(approval_request, dict) else None,
                     "pending_interrupt": pending_interrupt_payload if isinstance(pending_interrupt_payload, dict) else None,
                 },
@@ -737,7 +808,7 @@ class SupervisorOrchestrator:
                     },
                 )
         assistant_turn = self._append_assistant_turn(session_id, response=response)
-        return {
+        payload = {
             "session": session,
             "status": response.get("status"),
             "message": response.get("message"),
@@ -750,6 +821,11 @@ class SupervisorOrchestrator:
             ),
             "assistant_turn": assistant_turn,
         }
+        self.observability.update_current_trace(
+            output={"status": payload.get("status"), "message": payload.get("message")},
+            metadata={"current_agent": current_agent, "final_stage": final_stage},
+        )
+        return self._attach_observability(payload) or payload
 
     async def start_conversation(self, request: ConversationCreateRequest) -> dict[str, Any]:
         ticket_id = request.ticket_id or f"CONV-{uuid4().hex[:12]}"
@@ -762,13 +838,19 @@ class SupervisorOrchestrator:
             namespace=request.namespace,
             channel=request.channel,
         )
-        return await self._run_ticket_message(
-            ticket_request,
-            session_id=ticket_id,
-            thread_id=ticket_id,
-            create_session=True,
-            entrypoint="conversation_create",
-        )
+        with self.observability.start_span(
+            name="orchestrator.start_conversation",
+            as_type="span",
+            input={"ticket_id": ticket_id, "message": request.message, "service": request.service},
+            metadata={"entrypoint": "conversation_create"},
+        ):
+            return await self._run_ticket_message(
+                ticket_request,
+                session_id=ticket_id,
+                thread_id=ticket_id,
+                create_session=True,
+                entrypoint="conversation_create",
+            )
 
     async def post_message(self, session_id: str, request: ConversationMessageRequest) -> dict[str, Any]:
         session = self.session_service.get_session(session_id)
@@ -786,13 +868,19 @@ class SupervisorOrchestrator:
             namespace=str(incident_state.get("namespace") or "default"),
             channel=str(incident_state.get("channel") or "feishu"),
         )
-        return await self._run_ticket_message(
-            ticket_request,
-            session_id=str(session["session_id"]),
-            thread_id=str(session.get("thread_id") or session["session_id"]),
-            create_session=False,
-            entrypoint="conversation_message",
-        )
+        with self.observability.start_span(
+            name="orchestrator.post_message",
+            as_type="span",
+            input={"session_id": session_id, "message": request.message},
+            metadata={"entrypoint": "conversation_message"},
+        ):
+            return await self._run_ticket_message(
+                ticket_request,
+                session_id=str(session["session_id"]),
+                thread_id=str(session.get("thread_id") or session["session_id"]),
+                create_session=False,
+                entrypoint="conversation_message",
+            )
 
     async def resume_conversation(self, session_id: str, request: ConversationResumeRequest) -> dict[str, Any]:
         session = self.session_service.get_session(session_id)
@@ -817,39 +905,52 @@ class SupervisorOrchestrator:
             },
             metadata={"source": "orchestrator"},
         )
-        if interrupt_type == "approval":
-            approval_id = pending_interrupt.get("metadata", {}).get("approval_id")
-            if not approval_id:
-                raise ValueError("approval id not found for pending approval interrupt")
-            requested_approval_id = answer_payload.get("approval_id")
-            if requested_approval_id is not None and str(requested_approval_id) != str(approval_id):
-                raise RuntimeError("resume approval id does not match the current pending interrupt")
-            if answer_payload.get("approved") is None or not answer_payload.get("approver_id"):
-                raise ValueError("approval resume requires approved and approver_id")
-            approval = self.approval_store.get(str(approval_id))
-            if approval is None:
-                raise ValueError("approval not found")
-            response = await self.handle_approval_decision(
-                approval,
-                ApprovalDecisionRequest(
-                    approved=bool(answer_payload.get("approved")),
-                    approver_id=str(answer_payload.get("approver_id")),
-                    comment=answer_payload.get("comment"),
-                ),
+        with self.observability.start_span(
+            name="orchestrator.resume_conversation",
+            as_type="span",
+            input={"session_id": session_id, "interrupt_type": interrupt_type, "answer_payload": answer_payload},
+            metadata={"interrupt_id": expected_interrupt_id},
+        ):
+            self.observability.update_current_trace(
+                session_id=session_id,
+                user_id=str(session.get("user_id") or ""),
+                metadata={"ticket_id": session.get("ticket_id"), "interrupt_type": interrupt_type},
             )
-            updated_session = self.session_service.get_session(session_id)
-            return {
-                "session": updated_session,
-                "status": response.get("status"),
-                "message": response.get("message"),
-                "diagnosis": response.get("diagnosis"),
-                "approval_request": response.get("approval_request"),
-                "pending_interrupt": self._get_pending_interrupt(updated_session),
-                "assistant_turn": response.get("assistant_turn"),
-            }
-        if interrupt_type == "clarification":
-            return await self._resume_clarification(session, pending_interrupt, answer_payload)
-        raise RuntimeError(f"unsupported interrupt type for resume: {interrupt_type}")
+            if interrupt_type == "approval":
+                approval_id = pending_interrupt.get("metadata", {}).get("approval_id")
+                if not approval_id:
+                    raise ValueError("approval id not found for pending approval interrupt")
+                requested_approval_id = answer_payload.get("approval_id")
+                if requested_approval_id is not None and str(requested_approval_id) != str(approval_id):
+                    raise RuntimeError("resume approval id does not match the current pending interrupt")
+                if answer_payload.get("approved") is None or not answer_payload.get("approver_id"):
+                    raise ValueError("approval resume requires approved and approver_id")
+                approval = self.approval_store.get(str(approval_id))
+                if approval is None:
+                    raise ValueError("approval not found")
+                response = await self.handle_approval_decision(
+                    approval,
+                    ApprovalDecisionRequest(
+                        approved=bool(answer_payload.get("approved")),
+                        approver_id=str(answer_payload.get("approver_id")),
+                        comment=answer_payload.get("comment"),
+                    ),
+                )
+                updated_session = self.session_service.get_session(session_id)
+                payload = {
+                    "session": updated_session,
+                    "status": response.get("status"),
+                    "message": response.get("message"),
+                    "diagnosis": response.get("diagnosis"),
+                    "approval_request": response.get("approval_request"),
+                    "pending_interrupt": self._get_pending_interrupt(updated_session),
+                    "assistant_turn": response.get("assistant_turn"),
+                }
+                return self._attach_observability(payload) or payload
+            if interrupt_type == "clarification":
+                payload = await self._resume_clarification(session, pending_interrupt, answer_payload)
+                return self._attach_observability(payload) or payload
+            raise RuntimeError(f"unsupported interrupt type for resume: {interrupt_type}")
 
     def get_conversation(self, session_id: str) -> dict[str, Any] | None:
         return self._build_conversation_detail(session_id)
@@ -892,16 +993,28 @@ class SupervisorOrchestrator:
         recovery_action = "none"
         reason = "当前会话没有执行恢复需求。"
         plan = None
+        resume_from_step_id = None
+        failed_step_id = None
+        last_completed_step_id = None
+        recovery_hints: list[str] = []
         if latest_checkpoint is not None:
             metadata = dict(latest_checkpoint.get("metadata") or {})
             plan_id = metadata.get("plan_id")
             if plan_id:
                 plan = self.get_execution_plan(str(plan_id))
+            plan_recovery = dict(plan.get("recovery") or {}) if isinstance(plan, dict) else {}
             stage = str(latest_checkpoint.get("stage") or "")
             next_action = str(latest_checkpoint.get("next_action") or "")
             response_status = str(metadata.get("response_status") or "")
             step_status = str(metadata.get("step_status") or "")
-            if stage == "execution_started" or stage == "execution_failed" or response_status == "failed" or step_status == "failed" or next_action == "retry_execution_step":
+            resume_from_step_id = plan_recovery.get("resume_from_step_id")
+            failed_step_id = plan_recovery.get("failed_step_id")
+            last_completed_step_id = plan_recovery.get("last_completed_step_id")
+            recovery_hints = list(plan_recovery.get("hints") or [])
+            if plan_recovery.get("recovery_action"):
+                recovery_action = str(plan_recovery.get("recovery_action") or "none")
+                reason = str(plan_recovery.get("recovery_reason") or reason)
+            elif stage == "execution_started" or stage == "execution_failed" or response_status == "failed" or step_status == "failed" or next_action == "retry_execution_step":
                 recovery_action = "retry_execution_step"
                 reason = "最近一次执行在步骤内失败或中断，可基于最新 checkpoint 重试当前 step。"
             elif stage == "execution_step_finished" or next_action == "finalize_execution":
@@ -915,16 +1028,26 @@ class SupervisorOrchestrator:
             "latest_checkpoint": latest_checkpoint,
             "last_success_checkpoint": last_success_checkpoint,
             "execution_plan": plan,
+            "resume_from_step_id": resume_from_step_id,
+            "failed_step_id": failed_step_id,
+            "last_completed_step_id": last_completed_step_id,
+            "recovery_hints": recovery_hints,
         }
 
     async def handle_ticket(self, request: TicketRequest) -> Dict[str, object]:
-        return await self._run_ticket_message(
-            request,
-            session_id=request.ticket_id,
-            thread_id=request.ticket_id,
-            create_session=True,
-            entrypoint="ticket_create_legacy",
-        )
+        with self.observability.start_span(
+            name="orchestrator.handle_ticket",
+            as_type="span",
+            input={"ticket_id": request.ticket_id, "message": request.message, "service": request.service},
+            metadata={"entrypoint": "ticket_create_legacy"},
+        ):
+            return await self._run_ticket_message(
+                request,
+                session_id=request.ticket_id,
+                thread_id=request.ticket_id,
+                create_session=True,
+                entrypoint="ticket_create_legacy",
+            )
 
     async def handle_approval_decision(
         self,
@@ -943,78 +1066,90 @@ class SupervisorOrchestrator:
         if not pending_interrupt_id:
             raise RuntimeError("approval decision requires a pending interrupt")
 
-        self.approval_store.decide(
-            approval_id,
-            request.approved,
-            request.approver_id,
-            request.comment,
-        )
-        updated_approval = self.approval_store.get(approval_id)
-        if updated_approval is not None:
-            approval = updated_approval
-        self.interrupt_store.answer(
-            str(pending_interrupt_id),
-            answer_payload={
-                "approved": request.approved,
-                "approver_id": request.approver_id,
-                "comment": request.comment,
-                "approval_id": approval_id,
-            },
-        )
-
-        approval_request_domain = self.approval_store.get_request(approval_id)
-        state = await self.approval_graph.ainvoke(
-            build_approval_graph_input(
-                approval,
-                request,
-                approval_request_domain=(approval_request_domain.model_dump() if approval_request_domain is not None else None),
+        with self.observability.start_span(
+            name="orchestrator.handle_approval_decision",
+            as_type="span",
+            input={"approval_id": approval_id, "approved": request.approved, "approver_id": request.approver_id},
+            metadata={"session_id": session_id},
+        ):
+            self.observability.update_current_trace(
+                session_id=session_id,
+                user_id=str(session.get("user_id") or ""),
+                metadata={"approval_id": approval_id, "ticket_id": session.get("ticket_id")},
             )
-        )
-        response = extract_graph_response(state)
-        final_incident_state = state.get("incident_state")
-        next_incident_state = (
-            final_incident_state.model_dump()
-            if final_incident_state is not None
-            else dict(session.get("incident_state") or {})
-        )
+            self.approval_store.decide(
+                approval_id,
+                request.approved,
+                request.approver_id,
+                request.comment,
+            )
+            updated_approval = self.approval_store.get(approval_id)
+            if updated_approval is not None:
+                approval = updated_approval
+            self.interrupt_store.answer(
+                str(pending_interrupt_id),
+                answer_payload={
+                    "approved": request.approved,
+                    "approver_id": request.approver_id,
+                    "comment": request.comment,
+                    "approval_id": approval_id,
+                },
+            )
 
-        decision_label = "批准" if request.approved else "拒绝"
-        decision_content = f"{decision_label}审批动作"
-        if request.comment:
-            decision_content = f"{decision_content}：{request.comment}"
-        return self._finalize_approval_resolution(
-            session=session,
-            approval=approval,
-            approval_id=approval_id,
-            pending_interrupt_id=str(pending_interrupt_id),
-            response=response,
-            next_incident_state=next_incident_state,
-            actor_id=request.approver_id,
-            process_summary=(
-                "审批已通过，但执行失败，可基于 checkpoint 决定是否重试"
-                if request.approved and str(response.get("status") or "") == "failed"
-                else "审批已通过，流程继续执行"
-                if request.approved
-                else "审批已拒绝，流程进入确定性结束状态"
-            ),
-            user_turn_content=decision_content,
-            user_turn_payload={
-                "approved": request.approved,
-                "approver_id": request.approver_id,
-                "comment": request.comment,
-                "approval_id": approval_id,
-                "interrupt_id": pending_interrupt_id,
-                "approval_status": approval.get("status"),
-            },
-            process_payload={
-                "approved": request.approved,
-                "approver_id": request.approver_id,
-                "comment": request.comment,
-                "approval_status": approval.get("status"),
-                "response_status": response.get("status"),
-                "recovery_action": ((response.get("diagnosis") or {}).get("execution_limit") or {}).get("recovery_action") if isinstance(response.get("diagnosis"), dict) else None,
-            },
-        )
+            approval_request_domain = self.approval_store.get_request(approval_id)
+            state = await self.approval_graph.ainvoke(
+                build_approval_graph_input(
+                    approval,
+                    request,
+                    approval_request_domain=(approval_request_domain.model_dump() if approval_request_domain is not None else None),
+                )
+            )
+            response = extract_graph_response(state)
+            final_incident_state = state.get("incident_state")
+            next_incident_state = (
+                final_incident_state.model_dump()
+                if final_incident_state is not None
+                else dict(session.get("incident_state") or {})
+            )
+
+            decision_label = "批准" if request.approved else "拒绝"
+            decision_content = f"{decision_label}审批动作"
+            if request.comment:
+                decision_content = f"{decision_content}：{request.comment}"
+            payload = self._finalize_approval_resolution(
+                session=session,
+                approval=approval,
+                approval_id=approval_id,
+                pending_interrupt_id=str(pending_interrupt_id),
+                response=response,
+                next_incident_state=next_incident_state,
+                actor_id=request.approver_id,
+                process_summary=(
+                    "审批已通过，但执行失败，可基于 checkpoint 决定是否重试"
+                    if request.approved and str(response.get("status") or "") == "failed"
+                    else "审批已通过，流程继续执行"
+                    if request.approved
+                    else "审批已拒绝，流程进入确定性结束状态"
+                ),
+                user_turn_content=decision_content,
+                user_turn_payload={
+                    "approved": request.approved,
+                    "approver_id": request.approver_id,
+                    "comment": request.comment,
+                    "approval_id": approval_id,
+                    "interrupt_id": pending_interrupt_id,
+                    "approval_status": approval.get("status"),
+                },
+                process_payload={
+                    "approved": request.approved,
+                    "approver_id": request.approver_id,
+                    "comment": request.comment,
+                    "approval_status": approval.get("status"),
+                    "response_status": response.get("status"),
+                    "recovery_action": ((response.get("diagnosis") or {}).get("execution_limit") or {}).get("recovery_action") if isinstance(response.get("diagnosis"), dict) else None,
+                },
+            )
+            return self._attach_observability(payload) or payload
 
     async def expire_approval(
         self,
@@ -1062,74 +1197,80 @@ class SupervisorOrchestrator:
         pending_interrupt_id = session.get("pending_interrupt_id")
         if not pending_interrupt_id:
             raise RuntimeError(f"approval {resolution_status} requires a pending interrupt")
+        with self.observability.start_span(
+            name=f"orchestrator.approval_{resolution_status}",
+            as_type="span",
+            input={"approval_id": approval_id, "actor_id": actor_id, "comment": comment},
+            metadata={"session_id": session.get("session_id")},
+        ):
+            if resolution_status == "expired":
+                self.approval_store.expire(approval_id, actor_id=actor_id, comment=comment)
+                self.interrupt_store.expire(
+                    str(pending_interrupt_id),
+                    answer_payload={"approval_id": approval_id, "status": resolution_status, "actor_id": actor_id, "comment": comment},
+                )
+                message = "审批已超时，未执行任何高风险动作。"
+                summary = "审批已超时，流程进入确定性结束状态"
+                turn_content = "审批已超时"
+            elif resolution_status == "cancelled":
+                self.approval_store.cancel(approval_id, actor_id=actor_id, comment=comment)
+                self.interrupt_store.cancel(
+                    str(pending_interrupt_id),
+                    answer_payload={"approval_id": approval_id, "status": resolution_status, "actor_id": actor_id, "comment": comment},
+                )
+                message = "审批已取消，未执行任何高风险动作。"
+                summary = "审批已取消，流程进入确定性结束状态"
+                turn_content = "审批已取消"
+            else:
+                raise ValueError(f"unsupported approval resolution status: {resolution_status}")
 
-        if resolution_status == "expired":
-            self.approval_store.expire(approval_id, actor_id=actor_id, comment=comment)
-            self.interrupt_store.expire(
-                str(pending_interrupt_id),
-                answer_payload={"approval_id": approval_id, "status": resolution_status, "actor_id": actor_id, "comment": comment},
-            )
-            message = "审批已超时，未执行任何高风险动作。"
-            summary = "审批已超时，流程进入确定性结束状态"
-            turn_content = "审批已超时"
-        elif resolution_status == "cancelled":
-            self.approval_store.cancel(approval_id, actor_id=actor_id, comment=comment)
-            self.interrupt_store.cancel(
-                str(pending_interrupt_id),
-                answer_payload={"approval_id": approval_id, "status": resolution_status, "actor_id": actor_id, "comment": comment},
-            )
-            message = "审批已取消，未执行任何高风险动作。"
-            summary = "审批已取消，流程进入确定性结束状态"
-            turn_content = "审批已取消"
-        else:
-            raise ValueError(f"unsupported approval resolution status: {resolution_status}")
-
-        updated_approval = self.approval_store.get(approval_id)
-        if updated_approval is not None:
-            approval = updated_approval
-        approval_request = self.approval_store.get_request(approval_id)
-        action = approval.get("action")
-        if approval_request is not None and approval_request.proposals:
-            action = approval_request.proposals[0].action
-        response = {
-            "ticket_id": str(approval.get("ticket_id") or session.get("ticket_id") or session.get("session_id") or ""),
-            "status": "completed",
-            "message": message,
-            "diagnosis": {
-                "approval": {
+            updated_approval = self.approval_store.get(approval_id)
+            if updated_approval is not None:
+                approval = updated_approval
+            approval_request = self.approval_store.get_request(approval_id)
+            action = approval.get("action")
+            if approval_request is not None and approval_request.proposals:
+                action = approval_request.proposals[0].action
+            response = {
+                "ticket_id": str(approval.get("ticket_id") or session.get("ticket_id") or session.get("session_id") or ""),
+                "status": "completed",
+                "message": message,
+                "diagnosis": {
+                    "approval": {
+                        "approval_id": approval_id,
+                        "action": action,
+                        "status": resolution_status,
+                        "comment": comment,
+                    }
+                },
+            }
+            if comment:
+                turn_content = f"{turn_content}：{comment}"
+            next_incident_state = self._restore_incident_state_for_session(session)
+            payload = self._finalize_approval_resolution(
+                session=session,
+                approval=approval,
+                approval_id=approval_id,
+                pending_interrupt_id=str(pending_interrupt_id),
+                response=response,
+                next_incident_state=next_incident_state,
+                actor_id=actor_id,
+                process_summary=summary,
+                user_turn_content=turn_content,
+                user_turn_payload={
                     "approval_id": approval_id,
-                    "action": action,
-                    "status": resolution_status,
+                    "interrupt_id": pending_interrupt_id,
+                    "approval_status": resolution_status,
+                    "actor_id": actor_id,
                     "comment": comment,
-                }
-            },
-        }
-        if comment:
-            turn_content = f"{turn_content}：{comment}"
-        next_incident_state = self._restore_incident_state_for_session(session)
-        return self._finalize_approval_resolution(
-            session=session,
-            approval=approval,
-            approval_id=approval_id,
-            pending_interrupt_id=str(pending_interrupt_id),
-            response=response,
-            next_incident_state=next_incident_state,
-            actor_id=actor_id,
-            process_summary=summary,
-            user_turn_content=turn_content,
-            user_turn_payload={
-                "approval_id": approval_id,
-                "interrupt_id": pending_interrupt_id,
-                "approval_status": resolution_status,
-                "actor_id": actor_id,
-                "comment": comment,
-            },
-            process_payload={
-                "approval_status": resolution_status,
-                "actor_id": actor_id,
-                "comment": comment,
-            },
-        )
+                },
+                process_payload={
+                    "approval_status": resolution_status,
+                    "actor_id": actor_id,
+                    "comment": comment,
+                },
+            )
+            return self._attach_observability(payload) or payload
 
     def _finalize_approval_resolution(
         self,

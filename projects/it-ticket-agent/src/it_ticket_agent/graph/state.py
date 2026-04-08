@@ -20,6 +20,8 @@ class TicketGraphState(TypedDict, total=False):
     routing_decision: RoutingDecision
     task: TaskEnvelope
     agent_result: AgentResult
+    agent_results: List[AgentResult]
+    dispatch_failures: List[Dict[str, Any]]
     approval_request: Dict[str, Any] | None
     response: Dict[str, Any]
     pending_node: str | None

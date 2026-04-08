@@ -14,6 +14,8 @@ class OrchestratorGraphBuilder:
         graph = StateGraph(TicketGraphState)
         graph.add_node("ingest", self.nodes.ingest)
         graph.add_node("supervisor_route", self.nodes.supervisor_route)
+        graph.add_node("dispatch_subagents", self.nodes.dispatch_subagents)
+        graph.add_node("aggregate_subagent_results", self.nodes.aggregate_subagent_results)
         graph.add_node("domain_agent", self.nodes.domain_agent)
         graph.add_node("clarification_gate", self.nodes.clarification_gate)
         graph.add_node("approval_gate", self.nodes.approval_gate)
@@ -21,7 +23,16 @@ class OrchestratorGraphBuilder:
 
         graph.add_edge(START, "ingest")
         graph.add_edge("ingest", "supervisor_route")
-        graph.add_edge("supervisor_route", "domain_agent")
+        graph.add_conditional_edges(
+            "supervisor_route",
+            self.nodes.route_after_supervisor_route,
+            {
+                "domain_agent": "domain_agent",
+                "dispatch_subagents": "dispatch_subagents",
+            },
+        )
+        graph.add_edge("dispatch_subagents", "aggregate_subagent_results")
+        graph.add_edge("aggregate_subagent_results", "clarification_gate")
         graph.add_edge("domain_agent", "clarification_gate")
         graph.add_conditional_edges(
             "clarification_gate",

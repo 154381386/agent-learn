@@ -92,6 +92,7 @@ def subagent_result_from_agent_result(result: AgentResult, *, ticket_id: str = "
         open_questions=list(result.open_questions),
         needs_handoff=result.needs_handoff,
         raw_refs=list(result.raw_refs),
+        clarification_request=model_to_dict(result.clarification_request) if result.clarification_request is not None else None,
         metadata={"legacy_contract": "AgentResult"},
     )
 
@@ -140,8 +141,70 @@ def incident_state_from_legacy(
     state.subagent_results.append(subagent_result)
     state.approval_proposals.extend(subagent_result.approval_proposals)
     state.open_questions.extend(subagent_result.open_questions)
-    state.status = "analyzed"
+    if subagent_result.clarification_request is not None:
+        state.clarification_requests.append(dict(subagent_result.clarification_request))
+        state.metadata["clarification_request"] = dict(subagent_result.clarification_request)
+        state.status = "awaiting_clarification"
+    else:
+        state.status = "analyzed"
     state.final_summary = subagent_result.summary
+    return state
+
+
+def incident_state_from_parallel_results(
+    request: TicketRequest,
+    *,
+    routing: RoutingDecision | Dict[str, Any] | None = None,
+    agent_results: Iterable[AgentResult] | None = None,
+    aggregated_result: AgentResult | None = None,
+    dispatch_failures: Iterable[Dict[str, Any]] | None = None,
+) -> IncidentState:
+    state = build_initial_incident_state(request, routing=routing)
+    subagent_results = [
+        subagent_result_from_agent_result(result, ticket_id=request.ticket_id)
+        for result in (agent_results or [])
+    ]
+    state.subagent_results.extend(subagent_results)
+
+    open_questions: list[str] = []
+    seen_questions: set[str] = set()
+    for subagent_result in subagent_results:
+        state.approval_proposals.extend(subagent_result.approval_proposals)
+        for question in subagent_result.open_questions:
+            normalized = str(question or "").strip()
+            if not normalized or normalized in seen_questions:
+                continue
+            open_questions.append(normalized)
+            seen_questions.add(normalized)
+        if subagent_result.clarification_request is not None:
+            state.clarification_requests.append(dict(subagent_result.clarification_request))
+
+    if aggregated_result is not None:
+        state.final_summary = aggregated_result.summary
+        state.metadata["aggregated_result"] = model_to_dict(aggregated_result)
+        for question in aggregated_result.open_questions:
+            normalized = str(question or "").strip()
+            if not normalized or normalized in seen_questions:
+                continue
+            open_questions.append(normalized)
+            seen_questions.add(normalized)
+        if aggregated_result.clarification_request is not None:
+            clarification_payload = model_to_dict(aggregated_result.clarification_request)
+            state.metadata["clarification_request"] = clarification_payload
+            if clarification_payload not in state.clarification_requests:
+                state.clarification_requests.append(clarification_payload)
+            state.status = "awaiting_clarification"
+        elif aggregated_result.status == "failed":
+            state.status = "failed"
+        else:
+            state.status = "analyzed"
+    elif subagent_results:
+        state.status = "analyzed"
+
+    state.open_questions = open_questions
+    failures = [dict(item) for item in (dispatch_failures or []) if isinstance(item, dict)]
+    if failures:
+        state.metadata["parallel_dispatch_failures"] = failures
     return state
 
 
