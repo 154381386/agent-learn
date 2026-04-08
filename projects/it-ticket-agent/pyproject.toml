@@ -10,7 +10,9 @@ dependencies = [
   "pydantic>=2.7.0",
   "httpx>=0.27.0",
   "langgraph>=0.2.0",
+  "langfuse>=3.0.0",
   "python-dotenv>=1.0.1",
+  "PyYAML>=6.0.0",
 ]
 
 [build-system]
@@ -25,4 +27,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-it_ticket_agent = ["static/*.html", "static/*.css", "static/*.js"]
+it_ticket_agent = ["agents/registry/*.yaml", "static/*.html", "static/*.css", "static/*.js"]

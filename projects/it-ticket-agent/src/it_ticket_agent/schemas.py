@@ -50,6 +50,12 @@ class ExecutionStepResponse(BaseModel):
     action: str
     tool_name: str
     params: Dict[str, Any] = Field(default_factory=dict)
+    sequence: int = 0
+    dependencies: List[str] = Field(default_factory=list)
+    retry_policy: Dict[str, Any] = Field(default_factory=dict)
+    compensation: Optional[Dict[str, Any]] = None
+    attempt: int = 0
+    last_error: Dict[str, Any] = Field(default_factory=dict)
     status: str
     result_summary: str = ""
     evidence: List[str] = Field(default_factory=list)
@@ -67,7 +73,9 @@ class ExecutionPlanResponse(BaseModel):
     ticket_id: str
     status: str
     steps: List[ExecutionStepResponse] = Field(default_factory=list)
+    current_step_id: Optional[str] = None
     summary: str = ""
+    recovery: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
@@ -80,6 +88,10 @@ class ExecutionRecoveryResponse(BaseModel):
     latest_checkpoint: Optional[Dict[str, Any]] = None
     last_success_checkpoint: Optional[Dict[str, Any]] = None
     execution_plan: Optional[ExecutionPlanResponse] = None
+    resume_from_step_id: Optional[str] = None
+    failed_step_id: Optional[str] = None
+    last_completed_step_id: Optional[str] = None
+    recovery_hints: List[str] = Field(default_factory=list)
 
 
 class SystemEventResponse(BaseModel):

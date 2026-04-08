@@ -11,6 +11,7 @@ from .execution_store import ExecutionStore
 from .interrupt_store import InterruptStore
 from .system_event_store import SystemEventStore
 from .memory_store import IncidentCaseStore, ProcessMemoryStore
+from .observability import configure_observability
 from .runtime.orchestrator import SupervisorOrchestrator
 from .schemas import (
     ApprovalDecisionRequest,
@@ -41,6 +42,7 @@ static_dir = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    observability = configure_observability(settings)
     approval_store = ApprovalStore(settings.approval_db_path)
     session_store = SessionStore(settings.approval_db_path)
     session_service = SessionService(session_store)
@@ -60,7 +62,12 @@ async def lifespan(app: FastAPI):
     app.state.execution_store = execution_store
     app.state.incident_case_store = incident_case_store
     app.state.system_event_store = system_event_store
-    yield
+    app.state.observability = observability
+    try:
+        yield
+    finally:
+        observability.flush()
+        observability.shutdown()
 
 
 app = FastAPI(title="IT Ticket Agent", lifespan=lifespan)
@@ -74,7 +81,7 @@ async def index():
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    return {"status": "ok", "observability": {"langfuse_enabled": bool(settings.langfuse_public_key and settings.langfuse_secret_key)}}
 
 
 @app.post("/api/v1/tickets", response_model=TicketResponse)

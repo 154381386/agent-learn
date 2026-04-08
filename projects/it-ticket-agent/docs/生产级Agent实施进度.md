@@ -80,13 +80,15 @@ M1（session / interrupt）已进入代码落地
 M2（context / memory）已进入主体实现，B1~B4 已落地
 M3（approval workflow）已完成正式化收口
 M4（execution / event ledger）已完成 D1 ~ D4 收口
+最小可观测性（system event + tracing spans）已完成第一版接入
+完整可观测性（metrics / alerts / 多 Agent 阶段覆盖）仍未完成
 ```
 
 因此，从实施角度看：
 
 - 设计输入：**已具备**
-- 当前代码已进入分阶段实现
-- 当前推荐继续推进点：**进入 D1 ~ D3，开始执行控制与系统事件账本落地**
+- 当前代码已完成当前收敛阶段主线能力，并补齐了最小可观测性与 tracing 第一版
+- 当前推荐继续推进点：**补齐完整可观测性缺口（metrics / alerts / 健康探针 / tracing 回归测试），并按下一阶段路线图继续推进多 Agent 主干**
 
 ---
 
@@ -774,7 +776,7 @@ M4（execution / event ledger）已完成 D1 ~ D4 收口
 
 - 已新增 `events/models.py`、`events/store.py`、`system_event_store.py`，落地独立 `system_event` 事件账本
 - 已新增 `GET /api/v1/sessions/{session_id}/events` 查询接口，支持按会话查看按时间排序的关键事件流
-- 当前已接入 `conversation.created`、`message.received`、`interrupt.created`、`approval.pending`、`approval.approved`、`approval.rejected`、`execution.started`、`execution.step_finished`、`conversation.resumed`、`conversation.closed`
+- 当前已接入 `conversation.created`、`message.received`、`routing_decision`、`clarification_created`、`clarification_answered`、`interrupt.created`、`approval_requested`、`approval.pending`、`approval_decided`、`approval.approved`、`approval.rejected`、`approval.expired`、`approval.cancelled`、`execution.plan_created`、`execution.started`、`execution.step_started`、`execution.step_finished`、`run_summary`、`conversation.resumed`、`conversation.closed`
 - `tests/test_runtime_smoke.py` 已覆盖审批恢复成功链路与执行失败链路上的关键 system events 验证
 
 目标：统一记录会话、审批、执行、恢复事件。
@@ -800,6 +802,42 @@ M4（execution / event ledger）已完成 D1 ~ D4 收口
 确认方式：
 
 - 完成一条工单后能按时间顺序看到核心事件序列
+
+---
+
+### D3.5 可观测性补充盘点（对照下一阶段路线图）
+
+状态：`[~]`
+
+实际实现说明：
+
+- 已新增 `observability/langfuse.py` 与 `observability/__init__.py`，落地可选 Langfuse tracing 封装，并对 input / output / metadata 做脱敏与截断保护
+- `main.py` 已在应用生命周期统一执行 observability configure / flush / shutdown，并通过 `/healthz` 暴露 `langfuse_enabled` 基础状态
+- `runtime/orchestrator.py` 已在 `start_conversation`、`post_message`、`resume_conversation`、`handle_approval_decision`、`approval_expired/cancelled` 等入口回写 trace 上下文，并在响应 payload 中附带 `trace_id / trace_url / observation_id`
+- `runtime/supervisor.py`、`graph/nodes.py`、`agents/base.py`、`llm_client.py` 已补齐 supervisor / graph node / agent / tool / LLM generation 等关键 span
+- 当前 system event 账本 + process memory 摘要 + Langfuse spans 已形成“会话内回放 + trace 外链定位”的第一版联合排障入口
+
+当前遗漏与未完成项：
+
+- 仍未落地正式 `metrics / alerts` 管线；当前没有 counters / histograms / latency SLI、没有 dashboard，也没有异常告警规则
+- `routing / approval / execution` 具备第一版 tracing，但路线图要求的 `fan-out / aggregation / verification / incident loop` 观测覆盖尚未实现；这些能力当前也还未进入主链路
+- `/healthz` 当前仅反映 Langfuse 相关配置是否存在，还不能严格代表 SDK 初始化成功、trace backend 可达或 flush 成功
+- 目前还缺少针对 observability 的专项回归测试；现有 smoke 主要验证 system event 账本，尚未覆盖 trace context 注入、关键 span 元数据与健康检查语义
+- 配置样例与部署文档尚未把 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_BASE_URL`、`LANGFUSE_ENVIRONMENT`、`LANGFUSE_RELEASE` 作为标准部署项明确列出
+
+目标：基于当前最小可观测性，补齐可追踪、可量化、可告警的正式生产观测基线。
+
+验收标准：
+
+- 关键链路同时具备 trace、event、健康探针三类基础观测能力
+- 能区分“配置存在”与“observability backend 实际可用”
+- 至少补齐 session / routing / approval / execution 的核心指标与告警阈值
+- 后续多 Agent 主干接入时，fan-out / aggregation / verification / incident loop 不会形成观测盲区
+
+确认方式：
+
+- 在启用 Langfuse 的情况下，发起一次完整工单后可从 API 响应拿到 trace 上下文，并在 tracing 平台、system event 流、session 详情三处完成交叉定位
+- 人为制造执行失败场景时，能同时看到失败 system event、失败 trace/span 与明确的恢复建议
 
 ---
 

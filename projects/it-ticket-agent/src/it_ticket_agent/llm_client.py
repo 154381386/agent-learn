@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 import httpx
 
+from .observability import get_observability
 from .settings import Settings
 
 
@@ -34,11 +35,26 @@ class OpenAICompatToolLLM:
             "Authorization": f"Bearer {self.settings.llm_api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=self.settings.llm_timeout_sec) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        return data["choices"][0]["message"]
+        observability = get_observability()
+        with observability.start_span(
+            name="llm.chat_completion",
+            as_type="generation",
+            input={
+                "message_count": len(messages),
+                "messages": messages,
+                "tool_names": [tool.get("function", {}).get("name") for tool in tools or []],
+            },
+            metadata={"provider": "openai_compatible", "endpoint": "/chat/completions"},
+            model=self.settings.llm_model,
+            model_parameters={"temperature": self.settings.llm_temperature},
+        ) as generation:
+            async with httpx.AsyncClient(timeout=self.settings.llm_timeout_sec) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            message = data["choices"][0]["message"]
+            generation.update(output=message, usage_details=data.get("usage"))
+            return message
 
     @staticmethod
     def extract_json(content: str) -> Dict[str, Any]:

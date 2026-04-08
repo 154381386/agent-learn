@@ -1,0 +1,69 @@
+{
+  "车云服务": {
+    "error": {
+      "inspect_dns_resolution": {
+        "summary": "车云服务 DNS 解析异常。",
+        "payload": {"service": "车云服务", "resolution_status": "degraded"},
+        "evidence": ["A record mismatch"]
+      },
+      "inspect_ingress_route": {
+        "summary": "车云服务 Ingress 路由存在错配。",
+        "payload": {"service": "车云服务", "route_status": "mismatch_or_unhealthy"},
+        "evidence": ["/car path routed to stale backend"]
+      },
+      "inspect_vpc_connectivity": {
+        "summary": "车云服务 VPC 连通性受阻。",
+        "payload": {"service": "车云服务", "connectivity_status": "blocked"},
+        "evidence": ["east-west traffic timeout"]
+      },
+      "inspect_load_balancer_status": {
+        "summary": "车云服务负载均衡后端异常。",
+        "payload": {"service": "车云服务", "lb_status": "degraded"},
+        "evidence": ["2 unhealthy backends"]
+      }
+    },
+    "health": {
+      "inspect_dns_resolution": {
+        "summary": "车云服务 DNS 解析正常。",
+        "payload": {"service": "车云服务", "resolution_status": "healthy"},
+        "evidence": ["DNS records healthy"]
+      },
+      "inspect_load_balancer_status": {
+        "summary": "车云服务负载均衡正常。",
+        "payload": {"service": "车云服务", "lb_status": "healthy"},
+        "evidence": ["all backends healthy"]
+      }
+    }
+  },
+  "支付服务": {
+    "error": {
+      "inspect_dns_resolution": {
+        "summary": "支付服务域名解析抖动。",
+        "payload": {"service": "支付服务", "resolution_status": "degraded"},
+        "evidence": ["partial NXDOMAIN observed"]
+      },
+      "inspect_ingress_route": {
+        "summary": "支付服务入口返回 502。",
+        "payload": {"service": "支付服务", "route_status": "mismatch_or_unhealthy"},
+        "evidence": ["gateway upstream unhealthy"]
+      },
+      "inspect_vpc_connectivity": {
+        "summary": "支付服务跨子网连接受限。",
+        "payload": {"service": "支付服务", "connectivity_status": "blocked"},
+        "evidence": ["security group denies traffic"]
+      },
+      "inspect_load_balancer_status": {
+        "summary": "支付服务 LB 监听器状态异常。",
+        "payload": {"service": "支付服务", "lb_status": "degraded"},
+        "evidence": ["listener health check failing"]
+      }
+    },
+    "health": {
+      "inspect_dns_resolution": {
+        "summary": "支付服务 DNS 正常。",
+        "payload": {"service": "支付服务", "resolution_status": "healthy"},
+        "evidence": ["lookup stable"]
+      }
+    }
+  }
+}

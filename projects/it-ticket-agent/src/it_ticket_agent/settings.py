@@ -16,6 +16,12 @@ class Settings:
     port: int = int(os.getenv("PORT", "8000"))
     mcp_connections_path: str = os.getenv("MCP_CONNECTIONS_PATH", "./mcp_connections.yaml")
     approval_db_path: str = os.getenv("APPROVAL_DB_PATH", "./data/approvals.db")
+    agent_registry_path: str = os.getenv("AGENT_REGISTRY_PATH", "./src/it_ticket_agent/agents/registry")
+    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    langfuse_base_url: str = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+    langfuse_environment: str = os.getenv("LANGFUSE_ENVIRONMENT", os.getenv("APP_ENV", "dev"))
+    langfuse_release: str = os.getenv("LANGFUSE_RELEASE", "it-ticket-agent")
 
     llm_base_url: str = os.getenv("LLM_BASE_URL", "")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")

@@ -7,8 +7,10 @@ from .base import BaseDomainAgent
 class GeneralSREAgent(BaseDomainAgent):
     name = "general_sre_agent"
     domain = "general"
+    display_name = "General SRE Agent"
+    description = "通用兜底诊断路径。"
 
-    async def run(self, task: TaskEnvelope) -> AgentResult:
+    async def diagnose(self, task: TaskEnvelope) -> AgentResult:
         execution_context = task.shared_context.get("execution_context") or {}
         request_context = execution_context.get("request_context") or {}
         message = task.shared_context.get("message") or request_context.get("message", "")

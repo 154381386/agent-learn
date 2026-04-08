@@ -1,0 +1,34 @@
+version: 1
+enabled: false
+implementation: it_ticket_agent.agents.finops.FinOpsAgent
+routing:
+  enabled: false
+  priority: 50
+descriptor:
+  agent_name: finops_agent
+  domain: finops
+  display_name: FinOps Agent
+  description: 负责排查成本异常、预算护栏、闲置资源和承诺覆盖率问题。
+  required_fields:
+    - name: service
+      type: string
+      description: 需要排查的服务名
+      required: true
+      priority: critical
+  capabilities:
+    - cost_anomaly_investigation
+    - budget_guardrail_investigation
+    - idle_resource_investigation
+    - commitment_coverage_investigation
+  routing_keywords:
+    - 成本
+    - 费用
+    - budget
+    - cost
+    - 闲置
+    - coverage
+  tool_names:
+    - inspect_cost_anomaly
+    - inspect_budget_guardrail
+    - inspect_idle_resource_candidates
+    - inspect_commitment_coverage

@@ -29,6 +29,7 @@ class IncidentState(BaseModel):
     shared_context: Dict[str, Any] = Field(default_factory=dict)
     rag_context: Optional[RAGContextBundle] = None
     subagent_results: List[SubAgentResult] = Field(default_factory=list)
+    clarification_requests: List[Dict[str, Any]] = Field(default_factory=list)
     approval_proposals: List[ApprovalProposal] = Field(default_factory=list)
     approved_actions: List[ApprovedAction] = Field(default_factory=list)
     execution_results: List[ExecutionResult] = Field(default_factory=list)

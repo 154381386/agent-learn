@@ -5,6 +5,49 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class FieldRequirement(BaseModel):
+    name: str
+    type: Literal["string", "enum", "integer", "number", "boolean", "timestamp"] = "string"
+    description: str
+    required: bool = True
+    values: List[str] = Field(default_factory=list)
+    priority: Literal["critical", "high", "low"] = "high"
+
+
+class ClarificationField(BaseModel):
+    name: str
+    type: Literal["string", "enum", "integer", "number", "boolean", "timestamp"] = "string"
+    description: str
+    required: bool = True
+    values: List[str] = Field(default_factory=list)
+    priority: Literal["critical", "high", "low"] = "high"
+    requested_by: List[str] = Field(default_factory=list)
+
+
+class ClarificationRequest(BaseModel):
+    agent_name: str
+    domain: str
+    reason: str
+    question: str
+    fields: List[ClarificationField] = Field(default_factory=list)
+
+
+class ValidationResult(BaseModel):
+    valid: bool = True
+    missing_fields: List[FieldRequirement] = Field(default_factory=list)
+
+
+class AgentDescriptor(BaseModel):
+    agent_name: str
+    domain: str
+    display_name: str
+    description: str = ""
+    required_fields: List[FieldRequirement] = Field(default_factory=list)
+    capabilities: List[str] = Field(default_factory=list)
+    routing_keywords: List[str] = Field(default_factory=list)
+    tool_names: List[str] = Field(default_factory=list)
+
+
 class AgentAction(BaseModel):
     action: str
     risk: str = "low"
@@ -46,6 +89,7 @@ class AgentResult(BaseModel):
     open_questions: List[str] = Field(default_factory=list)
     needs_handoff: bool = False
     raw_refs: List[str] = Field(default_factory=list)
+    clarification_request: Optional[ClarificationRequest] = None
 
 
 class RoutingDecision(BaseModel):

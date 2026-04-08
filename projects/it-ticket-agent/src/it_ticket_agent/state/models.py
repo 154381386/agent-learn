@@ -122,4 +122,5 @@ class SubAgentResult(BaseModel):
     open_questions: List[str] = Field(default_factory=list)
     needs_handoff: bool = False
     raw_refs: List[str] = Field(default_factory=list)
+    clarification_request: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)

@@ -5,14 +5,22 @@ import logging
 from typing import List
 
 from ..llm_client import OpenAICompatToolLLM
-from ..mcp import MCPClient, MCPConnectionManager
+from ..mcp import MCPConnectionManager
 from ..rag_client import RAGServiceClient
-from ..runtime.contracts import AgentAction, AgentFinding, AgentResult, TaskEnvelope
+from ..runtime.contracts import AgentAction, AgentFinding, AgentResult, FieldRequirement, TaskEnvelope
 from ..settings import Settings
 from ..tools import (
+    CheckCanaryStatusTool,
     CheckPipelineStatusTool,
+    CheckPodStatusTool,
     CheckRecentDeploymentsTool,
+    CheckRecentAlertsTool,
+    CheckServiceHealthTool,
+    GetChangeRecordsTool,
     GetDeploymentStatusTool,
+    GetGitCommitHistoryTool,
+    GetRollbackHistoryTool,
+    InspectBuildFailureLogsTool,
     SearchKnowledgeBaseTool,
 )
 from ..tools.contracts import ToolExecutionResult
@@ -25,6 +33,13 @@ logger = logging.getLogger(__name__)
 class CICDAgent(BaseDomainAgent):
     name = "cicd_agent"
     domain = "cicd"
+    display_name = "CICD Agent"
+    description = "诊断构建、流水线、发布和回滚相关问题。"
+    required_fields = [
+        FieldRequirement(name="service", type="string", description="需要排查的服务名", priority="critical"),
+    ]
+    capabilities = ["deployment_diagnosis", "pipeline_analysis", "rollback_recommendation"]
+    routing_keywords = ["发版", "发布", "回滚", "构建", "流水线", "deploy", "pipeline", "gitlab", "jenkins"]
 
     @staticmethod
     def _ctx(task: TaskEnvelope) -> dict:
@@ -49,16 +64,26 @@ class CICDAgent(BaseDomainAgent):
         self.knowledge_client = knowledge_client
         self.connection_manager = connection_manager
         self.llm = OpenAICompatToolLLM(settings)
-        servers = self.connection_manager.servers_for_agent(self.name)
-        self.mcp_client = MCPClient(servers[0]) if servers else None
+        self.mcp_client = None
         self.tools = [
             CheckRecentDeploymentsTool(self.mcp_client),
             CheckPipelineStatusTool(self.mcp_client),
             GetDeploymentStatusTool(self.mcp_client),
+            CheckServiceHealthTool(self.mcp_client),
+            CheckRecentAlertsTool(self.mcp_client),
+            CheckCanaryStatusTool(self.mcp_client),
+            InspectBuildFailureLogsTool(self.mcp_client),
+            GetRollbackHistoryTool(self.mcp_client),
+            GetGitCommitHistoryTool(self.mcp_client),
+            GetChangeRecordsTool(self.mcp_client),
+            CheckPodStatusTool(self.mcp_client),
             SearchKnowledgeBaseTool(knowledge_client),
         ]
 
-    async def run(self, task: TaskEnvelope) -> AgentResult:
+    def context_for_validation(self, task: TaskEnvelope) -> dict:
+        return self._ctx(task)
+
+    async def diagnose(self, task: TaskEnvelope) -> AgentResult:
         if self.llm.enabled:
             try:
                 logger.info("cicd.run path=llm_loop ticket_id=%s", task.ticket_id)
@@ -78,7 +103,6 @@ class CICDAgent(BaseDomainAgent):
         context = self._ctx(task)
         message = context.get("message", "")
         service = context.get("service", "unknown-service")
-        mcp_servers = self.connection_manager.servers_for_agent(self.name)
         findings: List[AgentFinding] = []
         evidence: List[str] = []
         raw_refs: List[str] = []
@@ -87,7 +111,7 @@ class CICDAgent(BaseDomainAgent):
         tool_results = []
         for tool in self.tools:
             try:
-                tool_result = await tool.run(task)
+                tool_result = await self.run_tool_observed(tool, task)
                 logger.info(
                     "cicd.fallback tool=%s ticket_id=%s status=%s",
                     tool.name,
@@ -172,24 +196,13 @@ class CICDAgent(BaseDomainAgent):
             section = item.get("section") or "摘要"
             raw_refs.append(title)
 
-        if mcp_servers:
-            findings.append(
-                AgentFinding(
-                    title="已发现 CICD MCP 连接",
-                    detail=f"当前 CICD Agent 已绑定 MCP Servers：{', '.join(mcp_servers)}",
-                    severity="info",
-                )
+        findings.append(
+            AgentFinding(
+                title="当前使用本地领域工具",
+                detail="CICD Agent 当前不连接 MCP，统一通过本地 tools 与 mock/fallback 响应提供诊断事实。",
+                severity="info",
             )
-            raw_refs.extend(mcp_servers)
-            evidence.append(f"已加载 MCP 连接：{', '.join(mcp_servers)}")
-        else:
-            findings.append(
-                AgentFinding(
-                    title="当前使用本地工具骨架",
-                    detail="尚未检测到 CICD MCP 连接配置，当前使用本地工具实现和 RAG 检索做最小闭环验证。",
-                    severity="info",
-                )
-            )
+        )
 
         if not findings:
             findings.append(
@@ -223,7 +236,6 @@ class CICDAgent(BaseDomainAgent):
         message = context.get("message", "")
         service = context.get("service", "unknown-service")
         cluster = context.get("cluster", "prod-shanghai-1")
-        mcp_servers = self.connection_manager.servers_for_agent(self.name)
         tools_by_name = {tool.name: tool for tool in self.tools}
         messages = [
             {
@@ -245,7 +257,7 @@ class CICDAgent(BaseDomainAgent):
                         "message": message,
                         "service": service,
                         "cluster": cluster,
-                        "mcp_servers": mcp_servers,
+                        "execution_mode": "local_tools_only",
                         "goal": task.goal,
                     },
                     ensure_ascii=False,
@@ -286,7 +298,7 @@ class CICDAgent(BaseDomainAgent):
                     raw_arguments = function.get("arguments") or "{}"
                     arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
                     try:
-                        tool_result = await tool.run(task, arguments=arguments)
+                        tool_result = await self.run_tool_observed(tool, task, arguments=arguments)
                         logger.info(
                             "cicd.llm_loop tool=%s ticket_id=%s status=%s",
                             tool.name,
@@ -324,7 +336,7 @@ class CICDAgent(BaseDomainAgent):
                 len(tool_results),
                 payload.get("confidence"),
             )
-            return self._build_agent_result_from_llm(task, payload, tool_results, mcp_servers)
+            return self._build_agent_result_from_llm(task, payload, tool_results)
 
         raise ValueError("LLM tool loop exceeded max steps")
 
@@ -333,7 +345,6 @@ class CICDAgent(BaseDomainAgent):
         task: TaskEnvelope,
         payload: dict,
         tool_results: List[ToolExecutionResult],
-        mcp_servers: List[str],
     ) -> AgentResult:
         service = task.shared_context.get("service", "unknown-service")
         findings = [
@@ -363,16 +374,13 @@ class CICDAgent(BaseDomainAgent):
                 title = hit.get("title")
                 if title:
                     raw_refs.append(title)
-        raw_refs.extend(mcp_servers)
-
-        if mcp_servers:
-            findings.append(
-                AgentFinding(
-                    title="已发现 CICD MCP 连接",
-                    detail=f"当前 CICD Agent 已绑定 MCP Servers：{', '.join(mcp_servers)}",
-                    severity="info",
-                )
+        findings.append(
+            AgentFinding(
+                title="当前使用本地领域工具",
+                detail="CICD Agent 当前不连接 MCP，统一通过本地 tools 与 mock/fallback 响应提供诊断事实。",
+                severity="info",
             )
+        )
 
         return AgentResult(
             agent_name=self.name,

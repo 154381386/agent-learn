@@ -1,0 +1,36 @@
+version: 1
+enabled: false
+implementation: it_ticket_agent.agents.db.DBAgent
+routing:
+  enabled: false
+  priority: 60
+descriptor:
+  agent_name: db_agent
+  domain: db
+  display_name: DB Agent
+  description: 负责排查数据库实例健康、复制延迟、慢查询、连接池和 schema 变更问题。
+  required_fields:
+    - name: service
+      type: string
+      description: 需要排查的服务名
+      required: true
+      priority: critical
+  capabilities:
+    - db_health_investigation
+    - replication_investigation
+    - slow_query_investigation
+    - schema_change_investigation
+  routing_keywords:
+    - 数据库
+    - db
+    - mysql
+    - postgres
+    - replication
+    - 慢查询
+    - 连接池
+  tool_names:
+    - inspect_db_instance_health
+    - inspect_replication_status
+    - inspect_slow_queries
+    - inspect_connection_pool
+    - inspect_schema_change_records
