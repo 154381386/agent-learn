@@ -4,9 +4,6 @@ import logging
 from typing import Any, Dict
 from uuid import uuid4
 
-from ..agent_registry.loader import AgentRegistryLoader
-from ..agents import AgentFactory
-from ..agents.base import BaseDomainAgent
 from ..approval_store import ApprovalStore
 from ..checkpoint_store import CheckpointStore
 from ..execution_store import ExecutionStore
@@ -19,10 +16,13 @@ from ..graph import (
     extract_graph_response,
 )
 from ..interrupt_store import InterruptStore
+from ..knowledge import KnowledgeService
 from ..mcp import MCPConnectionManager
+from ..rag_client import RAGServiceClient
 from ..system_event_store import SystemEventStore
 from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..observability import configure_observability
+from ..orchestration import HypothesisGenerator
 from ..schemas import (
     ApprovalDecisionRequest,
     ConversationCreateRequest,
@@ -34,8 +34,9 @@ from ..session import SessionService
 from ..session.models import ConversationTurn
 from ..session_store import SessionStore
 from ..settings import Settings
+from ..skills import SkillRegistry
 from ..state.incident_state import IncidentState
-from .supervisor import RuleBasedSupervisor
+from .smart_router import SmartRouter
 
 
 logger = logging.getLogger(__name__)
@@ -67,25 +68,26 @@ class SupervisorOrchestrator:
         self.system_event_store = system_event_store or SystemEventStore(settings.approval_db_path)
         self.observability = configure_observability(settings)
         self.context_assembler = ContextAssembler()
-        self.registry = AgentRegistryLoader(settings.agent_registry_path).load()
         self.connection_manager = MCPConnectionManager(settings.mcp_connections_path)
-        self.supervisor = RuleBasedSupervisor(settings, self.registry)
-        self.agent_factory = AgentFactory(
-            settings=settings,
-            connection_manager=self.connection_manager,
-            knowledge_client=self.supervisor.knowledge_client(settings),
-        )
-        self.agents: Dict[str, BaseDomainAgent] = self.agent_factory.build_agents(self.registry)
+        self.knowledge_client = RAGServiceClient(settings)
+        self.knowledge_service = KnowledgeService(self.knowledge_client)
+        self.smart_router = SmartRouter(settings)
+        self.skill_registry = SkillRegistry()
+        self.hypothesis_generator = HypothesisGenerator(settings)
         self.graph_nodes = OrchestratorGraphNodes(
-            supervisor=self.supervisor,
+            supervisor=None,
             approval_store=self.approval_store,
             session_store=self.session_store,
             interrupt_store=self.interrupt_store,
             process_memory_store=self.process_memory_store,
+            incident_case_store=self.incident_case_store,
             connection_manager=self.connection_manager,
-            agents=self.agents,
+            agents={},
             execution_store=self.execution_store,
             system_event_store=self.system_event_store,
+            smart_router=self.smart_router,
+            skill_registry=self.skill_registry,
+            hypothesis_generator=self.hypothesis_generator,
         )
         self.graph_builder = OrchestratorGraphBuilder(self.graph_nodes)
         self.ticket_graph = self.graph_builder.build_ticket_graph()
@@ -483,13 +485,23 @@ class SupervisorOrchestrator:
         incident_state: dict[str, Any] | None = None,
         current_intent: dict[str, Any] | None = None,
     ) -> str | None:
+        if current_intent and current_intent.get("current_node"):
+            return str(current_intent["current_node"])
+        if current_intent and current_intent.get("intent"):
+            return str(current_intent["intent"])
         if current_intent and current_intent.get("agent_name"):
             return str(current_intent["agent_name"])
         routing = dict((incident_state or {}).get("routing") or {})
+        if routing.get("intent"):
+            return str(routing["intent"])
         if routing.get("agent_name"):
             return str(routing["agent_name"])
         existing_memory = dict((session or {}).get("session_memory") or {})
         existing_intent = dict(existing_memory.get("current_intent") or {})
+        if existing_intent.get("current_node"):
+            return str(existing_intent["current_node"])
+        if existing_intent.get("intent"):
+            return str(existing_intent["intent"])
         if existing_intent.get("agent_name"):
             return str(existing_intent["agent_name"])
         current_agent = (session or {}).get("current_agent")
@@ -505,6 +517,9 @@ class SupervisorOrchestrator:
             "turns": self.session_service.list_turns(session_id),
             "pending_interrupt": pending_interrupt,
         }
+
+    async def _retrieve_rag_context(self, request: TicketRequest):
+        return await self.knowledge_service.retrieve_for_request(request)
 
     def _assemble_execution_context(
         self,
@@ -562,6 +577,8 @@ class SupervisorOrchestrator:
             incident_state=incident_state,
         )
         incident_state = graph_input["incident_state"]
+        incident_state.rag_context = await self._retrieve_rag_context(request)
+        incident_state.shared_context["rag_context"] = incident_state.rag_context.model_dump()
         if create_session:
             self.session_service.create_initial_session(
                 session_id=session_id,
@@ -602,6 +619,20 @@ class SupervisorOrchestrator:
             session=current_session,
             incident_state=incident_state.model_dump(),
             entrypoint=entrypoint,
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=thread_id,
+            ticket_id=request.ticket_id,
+            event_type="knowledge.retrieved",
+            payload={
+                "query": incident_state.rag_context.query if incident_state.rag_context is not None else request.message,
+                "query_type": incident_state.rag_context.query_type if incident_state.rag_context is not None else "unknown",
+                "hit_count": len(incident_state.rag_context.hits if incident_state.rag_context is not None else []),
+                "context_count": len(incident_state.rag_context.context if incident_state.rag_context is not None else []),
+                "citations": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
+            },
+            metadata={"source": "orchestrator"},
         )
         self._append_user_turn(
             session_id,
@@ -644,12 +675,12 @@ class SupervisorOrchestrator:
         approval_request = state.get("approval_request")
         if isinstance(approval_request, dict):
             latest_approval_id = approval_request.get("approval_id")
+        route_decision = state.get("route_decision")
         current_intent = {
-            "agent_name": state.get("agent_result").agent_name if state.get("agent_result") is not None else state.get("routing_decision").agent_name if state.get("routing_decision") is not None else None,
-            "mode": state.get("routing_decision").mode if state.get("routing_decision") is not None else None,
-            "route_source": state.get("routing_decision").route_source if state.get("routing_decision") is not None else None,
-            "candidate_agents": list(state.get("routing_decision").candidate_agents or []) if state.get("routing_decision") is not None else [],
-            "source_agents": [item.get("agent_name") for item in list((final_incident_state.model_dump().get("subagent_results") if final_incident_state is not None else []) or []) if isinstance(item, dict)],
+            "intent": getattr(route_decision, "intent", None) if route_decision is not None else None,
+            "route_source": getattr(route_decision, "route_source", None) if route_decision is not None else None,
+            "matched_signals": list(getattr(route_decision, "matched_signals", []) or []) if route_decision is not None else [],
+            "current_node": getattr(route_decision, "intent", None) if route_decision is not None else None,
         }
         current_agent = self._resolve_current_agent(
             current_session,
@@ -766,8 +797,8 @@ class SupervisorOrchestrator:
                     "response_status": response.get("status"),
                     "message": response.get("message"),
                     "diagnosis_summary": (response.get("diagnosis") or {}).get("summary") if isinstance(response.get("diagnosis"), dict) else None,
-                    "aggregated_summary": (((response.get("diagnosis") or {}).get("incident_state") or {}).get("metadata") or {}).get("aggregated_result", {}).get("summary") if isinstance(response.get("diagnosis"), dict) else None,
-                    "source_agents": [item.get("agent_name") for item in ((((response.get("diagnosis") or {}).get("incident_state") or {}).get("subagent_results") or [])) if isinstance(item, dict)],
+                    "route_intent": current_intent.get("intent"),
+                    "routing": (response.get("diagnosis") or {}).get("routing") if isinstance(response.get("diagnosis"), dict) else None,
                     "approval_request": approval_request if isinstance(approval_request, dict) else None,
                     "pending_interrupt": pending_interrupt_payload if isinstance(pending_interrupt_payload, dict) else None,
                 },

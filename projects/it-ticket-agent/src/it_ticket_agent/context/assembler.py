@@ -106,5 +106,6 @@ class ContextAssembler:
             "cluster": request_context.cluster,
             "namespace": request_context.namespace,
             "channel": request_context.channel,
+            "rag_context": dict(context.evidence_bundle.rag_context or {}),
             "execution_context": context.model_dump(),
         }

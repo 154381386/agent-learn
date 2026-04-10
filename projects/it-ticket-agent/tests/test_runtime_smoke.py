@@ -19,6 +19,7 @@ from it_ticket_agent.settings import Settings
 from it_ticket_agent.session.models import ConversationSession
 from it_ticket_agent.system_event_store import SystemEventStore
 from it_ticket_agent.state.incident_state import IncidentState
+from it_ticket_agent.state.models import Hypothesis, RAGContextBundle, VerificationStep
 
 
 class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
@@ -183,109 +184,134 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         return approval, interrupt
 
-    async def test_s1_session_resume_after_clarification(self) -> None:
+    async def test_s1_faq_request_is_answered_via_direct_answer_path(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="发布流程是什么",
+                query_type="search",
+                should_respond_directly=True,
+                direct_answer="标准发布流程包括构建、审批、发布和回滚验证。",
+                citations=["发布手册 / 发布流程"],
+                index_info={"ready": True},
+            )
+        )
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u1",
-                message="帮我看一下现在发布失败了",
-                service=None,
+                message="发布流程是什么？",
+                service="checkout-service",
             )
         )
-        self.assertEqual(result["status"], "awaiting_clarification")
+        self.assertEqual(result["status"], "completed")
         session_id = result["session"]["session_id"]
-        interrupt = result["pending_interrupt"]
-        self.assertIsNotNone(interrupt)
-        self.assertEqual(interrupt["type"], "clarification")
-
-        resumed = await self.orchestrator.resume_conversation(
-            session_id,
-            ConversationResumeRequest(
-                interrupt_id=interrupt["interrupt_id"],
-                answer_payload={"text": "checkout-service"},
-            ),
-        )
-        self.assertIn(resumed["status"], {"completed", "awaiting_approval"})
         session = self.session_store.get(session_id)
         self.assertIsNotNone(session)
         self.assertIsNone(session["pending_interrupt_id"])
-        self.assertEqual(session["session_memory"]["key_entities"]["service"], "checkout-service")
+        self.assertEqual(session["current_agent"], "direct_answer")
+        self.assertEqual(result["message"], "标准发布流程包括构建、审批、发布和回滚验证。")
+        self.assertEqual(result["diagnosis"]["routing"]["intent"], "direct_answer")
         turns = self.session_store.list_turns(session_id)
-        self.assertEqual(len([turn for turn in turns if turn["role"] == "user"]), 2)
+        self.assertEqual(len([turn for turn in turns if turn["role"] == "user"]), 1)
         summary = self.process_memory_store.summarize(session_id)
-        self.assertEqual(summary["latest_clarification"]["event_type"], "clarification_answered")
+        self.assertEqual(summary["latest_execution"]["event_type"], "run_summary")
 
-    async def test_clarification_resume_reuses_checkpoint_snapshot(self) -> None:
+    async def test_hypothesis_request_routes_to_new_entry_path(self) -> None:
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u-checkpoint",
                 message="帮我看 deploy 失败了",
-                service=None,
+                service="checkout-service",
             )
         )
-        self.assertEqual(result["status"], "awaiting_clarification")
+        self.assertIn(result["status"], {"completed", "awaiting_approval"})
         session_id = result["session"]["session_id"]
-        interrupt = result["pending_interrupt"]
         session = self.session_store.get(session_id)
         self.assertIsNotNone(session)
+        self.assertEqual(session["current_agent"], "hypothesis_graph")
+        self.assertEqual(result["diagnosis"]["routing"]["intent"], "hypothesis_graph")
+        self.assertTrue(result["message"])
+        snapshot = result["diagnosis"]["context_snapshot"]
+        self.assertIsNotNone(snapshot)
+        self.assertIn("cicd", snapshot["matched_skill_categories"])
+        self.assertTrue(snapshot["available_skills"])
+        hypotheses = result["diagnosis"]["hypotheses"]
+        self.assertTrue(hypotheses)
+        self.assertIn("verification_plan", hypotheses[0])
+        verification_results = result["diagnosis"]["verification_results"]
+        self.assertTrue(verification_results)
+        self.assertEqual(len(verification_results), len(hypotheses))
+        ranked_result = result["diagnosis"]["ranked_result"]
+        self.assertIsNotNone(ranked_result)
+        self.assertTrue(ranked_result["primary"])
+        approval_proposals = result["diagnosis"]["incident_state"]["approval_proposals"]
+        self.assertLessEqual(len(approval_proposals), 1)
+        if result["status"] == "awaiting_approval":
+            self.assertIsNotNone(result["approval_request"])
+            self.assertIsNotNone(result["pending_interrupt"])
 
-        checkpoint = self.checkpoint_store.create(
-            {
-                "session_id": session_id,
-                "thread_id": session_id,
-                "ticket_id": session["ticket_id"],
-                "stage": "awaiting_clarification",
-                "next_action": "wait_for_clarification",
-                "state_snapshot": {
-                    **session["incident_state"],
-                    "metadata": {
-                        **dict(session["incident_state"].get("metadata") or {}),
-                        "resume_probe": "checkpoint-first",
-                    },
-                },
-                "metadata": {"source": "test-case"},
-            }
+    async def test_high_risk_primary_action_enters_approval_interrupt(self) -> None:
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-high-risk",
+                message="checkout-service 发布失败，需要排查最近变更",
+                service="checkout-service",
+            )
         )
-        self.session_store.update_state(
-            session_id,
-            incident_state=session["incident_state"],
-            status=session["status"],
-            current_stage=session["current_stage"],
-            latest_approval_id=session.get("latest_approval_id"),
-            pending_interrupt_id=session.get("pending_interrupt_id"),
-            last_checkpoint_id=checkpoint["checkpoint_id"],
+
+        self.assertEqual(result["status"], "awaiting_approval")
+        self.assertIsNotNone(result["approval_request"])
+        self.assertIsNotNone(result["pending_interrupt"])
+        self.assertEqual(result["pending_interrupt"]["type"], "approval")
+        diagnosis = result["diagnosis"]
+        self.assertTrue(diagnosis["ranked_result"]["primary"])
+        self.assertEqual(
+            diagnosis["incident_state"]["metadata"]["selected_root_cause"],
+            diagnosis["ranked_result"]["primary"]["root_cause"],
         )
 
-        captured_state: dict[str, object] = {}
+    async def test_low_risk_primary_action_auto_executes_in_main_graph(self) -> None:
+        self.orchestrator.hypothesis_generator.generate = AsyncMock(
+            return_value=[
+                Hypothesis(
+                    hypothesis_id="H1",
+                    root_cause="低风险自动化动作即可恢复服务",
+                    confidence_prior=0.9,
+                    verification_plan=[
+                        VerificationStep(
+                            skill_name="check_log_errors",
+                            params={"service": "checkout-service", "window": "30m"},
+                            purpose="确认主要异常模式",
+                        )
+                    ],
+                    expected_evidence="存在明确的低风险修复入口。",
+                    recommended_action="observe_service",
+                    action_risk="low",
+                    action_params={"service": "checkout-service", "mcp_server": "http://fixture-mcp"},
+                )
+            ]
+        )
 
-        async def fake_ainvoke(graph_input):
-            captured_state["incident_state"] = graph_input["incident_state"].model_dump()
-            return {
-                **graph_input,
-                "incident_state": graph_input["incident_state"],
-                "response": {
-                    "ticket_id": graph_input["request"].ticket_id,
-                    "status": "completed",
-                    "message": "恢复完成",
-                    "diagnosis": {"summary": "ok"},
-                },
-                "approval_request": None,
-                "pending_node": None,
-            }
-
-        with patch.object(self.orchestrator.ticket_graph, "ainvoke", AsyncMock(side_effect=fake_ainvoke)):
-            resumed = await self.orchestrator.resume_conversation(
-                session_id,
-                ConversationResumeRequest(
-                    interrupt_id=interrupt["interrupt_id"],
-                    answer_payload={"text": "checkout-service"},
-                ),
+        with patch(
+            "it_ticket_agent.graph.nodes.MCPClient.call_tool",
+            return_value={
+                "structuredContent": {"status": "completed", "job_id": "observe-123"},
+                "content": [{"text": "低风险动作已执行完成。"}],
+            },
+        ):
+            result = await self.orchestrator.start_conversation(
+                ConversationCreateRequest(
+                    user_id="u-auto-exec",
+                    message="checkout-service 需要一个低风险自动修复动作",
+                    service="checkout-service",
+                )
             )
 
-        self.assertEqual(resumed["status"], "completed")
-        replay_state = captured_state.get("incident_state")
-        self.assertIsNotNone(replay_state)
-        self.assertEqual(replay_state["service"], "checkout-service")
-        self.assertEqual(replay_state["metadata"]["resume_probe"], "checkpoint-first")
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["approval_request"])
+        self.assertIn("审批已通过", result["message"])
+        execution_results = result["diagnosis"]["incident_state"]["execution_results"]
+        self.assertTrue(execution_results)
+        self.assertEqual(execution_results[0]["status"], "completed")
 
     async def test_s2_approval_resume_after_decision(self) -> None:
         session_id = "s2-session"
@@ -617,10 +643,10 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
             ConversationCreateRequest(
                 user_id="u4",
                 message="帮我看 deploy 失败了",
-                service=None,
+                service="checkout-service",
             )
         )
-        self.assertEqual(result["status"], "awaiting_clarification")
+        self.assertIn(result["status"], {"completed", "awaiting_approval"})
         session_id = result["session"]["session_id"]
 
         from it_ticket_agent.session_store import SessionStore
@@ -635,8 +661,11 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         detail = restarted.get_conversation(session_id)
         self.assertIsNotNone(detail)
-        self.assertEqual(detail["session"]["status"], "awaiting_clarification")
-        self.assertIsNotNone(detail["pending_interrupt"])
+        self.assertEqual(detail["session"]["status"], result["status"])
+        if result["status"] == "awaiting_approval":
+            self.assertIsNotNone(detail["pending_interrupt"])
+        else:
+            self.assertIsNone(detail["pending_interrupt"])
         restored_state = restarted._restore_incident_state_for_session(detail["session"])
         self.assertIsInstance(restored_state, dict)
         self.assertEqual(restored_state.get("ticket_id"), detail["session"]["ticket_id"])

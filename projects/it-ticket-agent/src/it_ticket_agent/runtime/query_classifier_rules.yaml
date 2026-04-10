@@ -1,0 +1,38 @@
+direct_answer_score_threshold: 0.8
+action_keywords:
+  - 查
+  - 排查
+  - 修
+  - 修复
+  - 重启
+  - 回滚
+  - 扩容
+  - rollback
+  - restart
+  - scale
+  - fix
+  - investigate
+symptom_keywords:
+  - 挂了
+  - 报错
+  - 错误
+  - 超时
+  - 失败
+  - "502"
+  - "503"
+  - "504"
+  - 5xx
+  - oom
+  - 重启
+  - timeout
+  - error
+  - latency
+question_keywords:
+  - 是什么
+  - 怎么
+  - 为什么
+  - 流程
+  - 推荐
+  - explain
+  - what
+  - how

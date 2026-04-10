@@ -50,6 +50,74 @@ class RAGContextBundle(BaseModel):
     raw_response: Dict[str, Any] = Field(default_factory=dict)
 
 
+class SimilarIncidentCase(BaseModel):
+    case_id: str = ""
+    service: str = ""
+    symptom: str = ""
+    root_cause: str = ""
+    final_action: str = ""
+    approval_required: bool = False
+    verification_passed: Optional[bool] = None
+    summary: str = ""
+
+
+class SkillCategory(BaseModel):
+    name: str
+    description: str
+    skill_count: int = 0
+    match_keywords: List[str] = Field(default_factory=list)
+
+
+class SkillSignature(BaseModel):
+    name: str
+    params: str
+    description: str
+    risk_level: RiskLevel = "low"
+    category: str
+
+
+class ContextSnapshot(BaseModel):
+    request: Dict[str, Any] = Field(default_factory=dict)
+    rag_context: Optional[RAGContextBundle] = None
+    similar_cases: List[SimilarIncidentCase] = Field(default_factory=list)
+    live_signals: Dict[str, Any] = Field(default_factory=dict)
+    context_quality: float = 0.0
+    available_skills: List[SkillSignature] = Field(default_factory=list)
+    matched_skill_categories: List[str] = Field(default_factory=list)
+
+
+class VerificationStep(BaseModel):
+    skill_name: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    purpose: str
+
+
+class Hypothesis(BaseModel):
+    hypothesis_id: str
+    root_cause: str
+    confidence_prior: float = 0.0
+    verification_plan: List[VerificationStep] = Field(default_factory=list)
+    expected_evidence: str = ""
+    recommended_action: str = ""
+    action_risk: RiskLevel = "low"
+    action_params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SkillResult(BaseModel):
+    skill_name: str
+    status: str
+    summary: str
+    evidence: List[str] = Field(default_factory=list)
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceItem(BaseModel):
+    skill: str
+    purpose: str
+    result: Dict[str, Any] = Field(default_factory=dict)
+    matches_expected: bool = False
+
+
 class ApprovalProposal(BaseModel):
     proposal_id: str
     source_agent: str
@@ -98,6 +166,14 @@ class VerificationPlan(BaseModel):
 
 
 class VerificationResult(BaseModel):
+    hypothesis_id: str = ""
+    root_cause: str = ""
+    confidence: float = 0.0
+    evidence_strength: float = 0.0
+    evidence_items: List[EvidenceItem] = Field(default_factory=list)
+    recommended_action: str = ""
+    action_risk: RiskLevel = "low"
+    action_params: Dict[str, Any] = Field(default_factory=dict)
     status: VerificationStatus = "not_run"
     summary: str
     checks_passed: List[str] = Field(default_factory=list)
@@ -105,6 +181,13 @@ class VerificationResult(BaseModel):
     evidence: List[str] = Field(default_factory=list)
     payload: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RankedResult(BaseModel):
+    primary: Optional[VerificationResult] = None
+    secondary: List[VerificationResult] = Field(default_factory=list)
+    rejected: List[VerificationResult] = Field(default_factory=list)
+    ranking_metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SubAgentResult(BaseModel):

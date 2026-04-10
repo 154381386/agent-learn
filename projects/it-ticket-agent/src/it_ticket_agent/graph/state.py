@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Literal
 from typing_extensions import TypedDict
 
 from ..context.models import ExecutionContext
-from ..runtime.contracts import AgentResult, RoutingDecision, TaskEnvelope
+from ..runtime.contracts import AgentResult, RoutingDecision, SmartRouterDecision, TaskEnvelope
 from ..schemas import ApprovalDecisionRequest, TicketRequest
 from ..state.incident_state import IncidentState
+from ..state.models import ContextSnapshot, Hypothesis, RankedResult, VerificationResult
 from ..state.transformers import build_initial_incident_state
 
 
@@ -17,6 +18,11 @@ class TicketGraphState(TypedDict, total=False):
     thread_id: str
     execution_context: ExecutionContext
     incident_state: IncidentState
+    route_decision: SmartRouterDecision
+    context_snapshot: ContextSnapshot
+    hypotheses: List[Hypothesis]
+    verification_results: List[VerificationResult]
+    ranked_result: RankedResult
     routing_decision: RoutingDecision
     task: TaskEnvelope
     agent_result: AgentResult

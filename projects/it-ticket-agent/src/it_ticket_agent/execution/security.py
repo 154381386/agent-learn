@@ -45,6 +45,49 @@ class ActionRegistration:
 
 
 ACTION_REGISTRY: dict[str, ActionRegistration] = {
+    "rollback_deploy": ActionRegistration(
+        action="rollback_deploy",
+        allowed_risks=frozenset({"high", "critical"}),
+        target_fields=("service",),
+        required_params=("service",),
+        optional_params=("version",),
+        parameter_types={
+            "service": "string",
+            "version": "string",
+        },
+    ),
+    "restart_pods": ActionRegistration(
+        action="restart_pods",
+        allowed_risks=frozenset({"high", "critical"}),
+        target_fields=("service",),
+        required_params=("service",),
+        optional_params=("namespace",),
+        parameter_types={
+            "service": "string",
+            "namespace": "string",
+        },
+    ),
+    "scale_replicas": ActionRegistration(
+        action="scale_replicas",
+        allowed_risks=frozenset({"high", "critical"}),
+        target_fields=("service",),
+        required_params=("service", "count"),
+        optional_params=(),
+        parameter_types={
+            "service": "string",
+            "count": "integer",
+        },
+    ),
+    "observe_service": ActionRegistration(
+        action="observe_service",
+        allowed_risks=frozenset({"low", "medium"}),
+        target_fields=("service",),
+        required_params=("service",),
+        optional_params=(),
+        parameter_types={
+            "service": "string",
+        },
+    ),
     "cicd.rollback_release": ActionRegistration(
         action="cicd.rollback_release",
         allowed_risks=frozenset({"high", "critical"}),

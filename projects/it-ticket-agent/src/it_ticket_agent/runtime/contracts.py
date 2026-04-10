@@ -99,3 +99,16 @@ class RoutingDecision(BaseModel):
     reason: str
     confidence: float = 0.0
     candidate_agents: List[str] = Field(default_factory=list)
+
+
+RouteIntent = Literal["direct_answer", "hypothesis_graph"]
+
+
+class SmartRouterDecision(BaseModel):
+    intent: RouteIntent
+    route_source: str = "rule"
+    reason: str
+    confidence: float = 0.0
+    matched_signals: List[str] = Field(default_factory=list)
+    rag_score: float = 0.0
+    should_respond_directly: bool = False

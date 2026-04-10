@@ -7,8 +7,11 @@ from pydantic import BaseModel, Field
 from .models import (
     ApprovedAction,
     ApprovalProposal,
+    ContextSnapshot,
     ExecutionResult,
+    Hypothesis,
     RAGContextBundle,
+    RankedResult,
     SubAgentResult,
     VerificationPlan,
     VerificationResult,
@@ -28,6 +31,9 @@ class IncidentState(BaseModel):
     routing: Dict[str, Any] = Field(default_factory=dict)
     shared_context: Dict[str, Any] = Field(default_factory=dict)
     rag_context: Optional[RAGContextBundle] = None
+    context_snapshot: Optional[ContextSnapshot] = None
+    hypotheses: List[Hypothesis] = Field(default_factory=list)
+    ranked_result: Optional[RankedResult] = None
     subagent_results: List[SubAgentResult] = Field(default_factory=list)
     clarification_requests: List[Dict[str, Any]] = Field(default_factory=list)
     approval_proposals: List[ApprovalProposal] = Field(default_factory=list)

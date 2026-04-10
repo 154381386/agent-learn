@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from it_ticket_agent.approval_store import ApprovalStore
 from it_ticket_agent.checkpoint_store import CheckpointStore
@@ -16,12 +16,12 @@ from it_ticket_agent.runtime.contracts import (
     AgentAction,
     AgentFinding,
     AgentResult,
-    RoutingDecision,
     TaskEnvelope,
 )
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
 from it_ticket_agent.schemas import ConversationCreateRequest
 from it_ticket_agent.settings import Settings
+from it_ticket_agent.state.models import RAGContextBundle
 from it_ticket_agent.system_event_store import SystemEventStore
 
 
@@ -130,7 +130,7 @@ class AggregatorTest(unittest.TestCase):
         self.assertIn("general_sre_agent", aggregated.aggregated_result.summary)
 
 
-class ParallelGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
+class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
         db_path = str(Path(self.temp_dir.name) / "parallel-smoke.db")
@@ -168,69 +168,82 @@ class ParallelGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    async def test_fan_out_path_aggregates_multiple_subagent_results(self) -> None:
-        decision = RoutingDecision(
-            agent_name="cicd_agent",
-            mode="fan_out",
-            route_source="test",
-            reason="进入 Phase 2 fan-out smoke",
-            confidence=0.9,
-            candidate_agents=["cicd_agent", "general_sre_agent"],
-        )
-        with patch.object(self.orchestrator.supervisor, "route", AsyncMock(return_value=decision)):
-            response = await self.orchestrator.start_conversation(
-                ConversationCreateRequest(
-                    user_id="u1",
-                    message="order-service 发布后 5xx 激增，帮我排查",
-                    service="order-service",
-                )
+    async def test_high_confidence_faq_goes_to_direct_answer(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="K8s HPA 是什么",
+                query_type="search",
+                should_respond_directly=True,
+                direct_answer="HPA 会根据指标自动调整副本数。",
+                hits=[],
+                context=[],
+                citations=["Kubernetes 文档 / HPA"],
+                index_info={"ready": True},
             )
+        )
+        response = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u1",
+                message="K8s HPA 是什么？",
+                service="order-service",
+            )
+        )
 
         diagnosis = dict(response.get("diagnosis") or {})
-        incident_state = dict(diagnosis.get("incident_state") or {})
-        self.assertEqual(diagnosis.get("agent_name"), "aggregator")
-        self.assertEqual(diagnosis.get("routing", {}).get("mode"), "fan_out")
-        self.assertEqual(len(incident_state.get("subagent_results") or []), 2)
+        self.assertEqual(diagnosis.get("routing", {}).get("intent"), "direct_answer")
+        self.assertEqual(response.get("message"), "HPA 会根据指标自动调整副本数。")
         graph_notes = ((diagnosis.get("graph") or {}).get("transition_notes") or [])
-        self.assertTrue(any("aggregator synthesized" in note for note in graph_notes))
-        self.assertIn(response.get("status"), {"completed", "awaiting_approval"})
+        self.assertTrue(any("direct_answer" in note for note in graph_notes))
+        self.assertEqual(response.get("status"), "completed")
 
-    async def test_supervisor_auto_fan_out_enables_parallel_network_and_approval_context(self) -> None:
-        with patch("it_ticket_agent.agents.cicd.CICDAgent._should_request_rollback", return_value=True):
-            response = await self.orchestrator.start_conversation(
-                ConversationCreateRequest(
-                    user_id="u2",
-                    message="order-service 发布后 ingress 502 超时，怀疑网络或发布变更导致",
-                    service="order-service",
-                )
+    async def test_symptom_request_goes_to_hypothesis_graph_entry(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="order-service 发布后 502 超时",
+                query_type="search",
+                should_respond_directly=False,
+                direct_answer=None,
+                hits=[],
+                context=[],
+                citations=["发布手册 / 故障排查"],
+                index_info={"ready": True},
             )
+        )
+        response = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u2",
+                message="order-service 发布后 ingress 502 超时，帮我排查",
+                service="order-service",
+            )
+        )
 
         diagnosis = dict(response.get("diagnosis") or {})
         routing = dict(diagnosis.get("routing") or {})
+        self.assertEqual(routing.get("intent"), "hypothesis_graph")
+        self.assertEqual(response.get("status"), "completed")
+        self.assertIn("假设", response.get("message") or "")
+        snapshot = dict(diagnosis.get("context_snapshot") or {})
+        self.assertIn("network", snapshot.get("matched_skill_categories") or [])
+        skill_names = [item.get("name") for item in snapshot.get("available_skills") or [] if isinstance(item, dict)]
+        self.assertIn("check_ingress_rules", skill_names)
+        hypotheses = list(diagnosis.get("hypotheses") or [])
+        self.assertTrue(hypotheses)
+        first_plan = hypotheses[0].get("verification_plan") or []
+        self.assertTrue(first_plan)
+        used_skill_names = [item.get("skill_name") for item in first_plan if isinstance(item, dict)]
+        for name in used_skill_names:
+            self.assertIn(name, skill_names)
+        verification_results = list(diagnosis.get("verification_results") or [])
+        self.assertEqual(len(verification_results), len(hypotheses))
+        self.assertIn(verification_results[0].get("status"), {"passed", "inconclusive", "failed"})
+        ranked_result = dict(diagnosis.get("ranked_result") or {})
+        self.assertIn("primary", ranked_result)
+        self.assertTrue(ranked_result.get("primary"))
         incident_state = dict(diagnosis.get("incident_state") or {})
-        subagent_results = list(incident_state.get("subagent_results") or [])
-        subagent_names = [item.get("agent_name") for item in subagent_results if isinstance(item, dict)]
-
-        self.assertEqual(routing.get("mode"), "fan_out")
-        self.assertIn("cicd_agent", routing.get("candidate_agents") or [])
-        self.assertIn("network_agent", routing.get("candidate_agents") or [])
-        self.assertIn("cicd_agent", subagent_names)
-        self.assertIn("network_agent", subagent_names)
-        self.assertEqual(response.get("status"), "awaiting_approval")
-
-        approval_request = dict(response.get("approval_request") or {})
-        approval_id = str(approval_request.get("approval_id") or "")
-        self.assertTrue(approval_id)
-        stored_request = self.approval_store.get_request(approval_id)
-        self.assertIsNotNone(stored_request)
-        assert stored_request is not None
-        self.assertIn("aggregated_result", stored_request.context)
-        self.assertIn("source_agents", stored_request.context)
-        self.assertIn("network_agent", stored_request.context.get("source_agents") or [])
-        self.assertEqual(str(stored_request.context.get("aggregated_result", {}).get("agent_name") or ""), "aggregator")
-
+        approval_proposals = list(incident_state.get("approval_proposals") or [])
+        self.assertLessEqual(len(approval_proposals), 1)
         session_payload = dict(response.get("session") or {})
         session = self.session_store.get_by_thread_id(str(session_payload.get("thread_id") or ""))
         self.assertIsNotNone(session)
         assert session is not None
-        self.assertEqual(session.get("current_agent"), "aggregator")
+        self.assertEqual(session.get("current_agent"), "hypothesis_graph")

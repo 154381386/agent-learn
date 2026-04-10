@@ -174,12 +174,20 @@ class SearchKnowledgeBaseTool(BaseTool):
         arguments = arguments or {}
         message = arguments.get("query") or task.shared_context.get("message", "")
         service = arguments.get("service") or task.shared_context.get("service", "")
-        try:
-            result = await self.knowledge_client.search(query=message, service=service)
-        except Exception:
-            result = {"context": [], "citations": []}
+        shared_rag = task.shared_context.get("rag_context")
+        if isinstance(shared_rag, dict) and (
+            not arguments.get("query")
+            or str(arguments.get("query") or "").strip() == str(shared_rag.get("query") or "").strip()
+            or str(arguments.get("query") or "").strip() == str(task.shared_context.get("message") or "").strip()
+        ):
+            result = dict(shared_rag)
+        else:
+            try:
+                result = await self.knowledge_client.search(query=message, service=service)
+            except Exception:
+                result = {"context": [], "citations": []}
 
-        hits = result.get("context", [])[:2]
+        hits = list(result.get("context") or result.get("hits") or [])[:2]
         evidence = [
             f"知识库命中：{item.get('title', '未命名文档')} / {item.get('section', '摘要')}"
             for item in hits

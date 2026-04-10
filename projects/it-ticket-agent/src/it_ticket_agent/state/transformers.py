@@ -158,8 +158,11 @@ def incident_state_from_parallel_results(
     agent_results: Iterable[AgentResult] | None = None,
     aggregated_result: AgentResult | None = None,
     dispatch_failures: Iterable[Dict[str, Any]] | None = None,
+    rag_context: RAGContextBundle | Dict[str, Any] | None = None,
 ) -> IncidentState:
     state = build_initial_incident_state(request, routing=routing)
+    if rag_context is not None:
+        state.rag_context = rag_context if isinstance(rag_context, RAGContextBundle) else RAGContextBundle(**rag_context)
     subagent_results = [
         subagent_result_from_agent_result(result, ticket_id=request.ticket_id)
         for result in (agent_results or [])
