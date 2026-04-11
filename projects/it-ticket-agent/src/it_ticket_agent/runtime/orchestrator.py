@@ -36,6 +36,7 @@ from ..session_store import SessionStore
 from ..settings import Settings
 from ..skills import SkillRegistry
 from ..state.incident_state import IncidentState
+from ..service_names import infer_service_name
 from .smart_router import SmartRouter
 
 
@@ -432,6 +433,9 @@ class SupervisorOrchestrator:
             cluster=str(restored_state.get("cluster") or "prod-shanghai-1"),
             namespace=str(restored_state.get("namespace") or "default"),
             channel=str(restored_state.get("channel") or "feishu"),
+            mock_scenario=str(shared_context.get("mock_scenario") or "") or None,
+            mock_scenarios=dict(shared_context.get("mock_scenarios") or {}),
+            mock_tool_responses=dict(shared_context.get("mock_tool_responses") or {}),
         )
         return await self._run_ticket_message(
             ticket_request,
@@ -864,10 +868,13 @@ class SupervisorOrchestrator:
             ticket_id=ticket_id,
             user_id=request.user_id,
             message=request.message,
-            service=request.service,
+            service=request.service or infer_service_name(request.message),
             cluster=request.cluster,
             namespace=request.namespace,
             channel=request.channel,
+            mock_scenario=request.mock_scenario,
+            mock_scenarios=dict(request.mock_scenarios or {}),
+            mock_tool_responses=dict(request.mock_tool_responses or {}),
         )
         with self.observability.start_span(
             name="orchestrator.start_conversation",
@@ -890,14 +897,26 @@ class SupervisorOrchestrator:
         if session.get("pending_interrupt_id"):
             raise RuntimeError("conversation is awaiting resume; use the resume endpoint")
         incident_state = dict(session.get("incident_state") or {})
+        shared_context = dict(incident_state.get("shared_context") or {})
         ticket_request = TicketRequest(
             ticket_id=str(session.get("ticket_id") or session_id),
             user_id=str(session.get("user_id") or ""),
             message=request.message,
-            service=incident_state.get("service"),
+            service=incident_state.get("service") or infer_service_name(request.message),
             cluster=str(incident_state.get("cluster") or "prod-shanghai-1"),
             namespace=str(incident_state.get("namespace") or "default"),
             channel=str(incident_state.get("channel") or "feishu"),
+            mock_scenario=request.mock_scenario or (str(shared_context.get("mock_scenario") or "") or None),
+            mock_scenarios=(
+                dict(request.mock_scenarios)
+                if request.mock_scenarios
+                else dict(shared_context.get("mock_scenarios") or {})
+            ),
+            mock_tool_responses=(
+                dict(request.mock_tool_responses)
+                if request.mock_tool_responses
+                else dict(shared_context.get("mock_tool_responses") or {})
+            ),
         )
         with self.observability.start_span(
             name="orchestrator.post_message",

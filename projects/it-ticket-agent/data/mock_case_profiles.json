@@ -1,0 +1,257 @@
+{
+  "case1": {
+    "services": {
+      "order-service": {
+        "check_service_health": {
+          "summary": "order-service 在 case1 中表现为内存型故障。",
+          "payload": {
+            "service": "order-service",
+            "environment": "prod-shanghai-1",
+            "health_status": "unhealthy",
+            "replica_status": "insufficient_replicas",
+            "error_rate_percent": 9.4,
+            "p99_latency_ms": 3200,
+            "impacted_endpoints": ["/orders/create", "/orders/query"]
+          },
+          "evidence": ["error rate 升高", "内存抖动导致 ready 副本不足"]
+        },
+        "check_recent_alerts": {
+          "summary": "order-service 在 case1 中触发内存与错误率告警。",
+          "payload": {
+            "service": "order-service",
+            "window_minutes": 30,
+            "alert_count": 2,
+            "highest_severity": "critical",
+            "alerts": [
+              {"name": "order-service pod oom killed", "severity": "critical", "status": "firing"},
+              {"name": "order-service high error rate", "severity": "high", "status": "firing"}
+            ]
+          },
+          "evidence": ["OOM 告警 firing", "错误率告警 firing"]
+        },
+        "check_pod_status": {
+          "summary": "order-service 在 case1 中有一个 Pod 因 OOMKilled 反复重启。",
+          "payload": {
+            "service": "order-service",
+            "namespace": "default",
+            "pods": [
+              {"name": "order-service-7f8d9", "status": "Running", "ready": true, "restarts": 0},
+              {"name": "order-service-7f8da", "status": "OOMKilled", "ready": false, "restarts": 6, "last_reason": "OOMKilled"}
+            ],
+            "ready_replicas": 1,
+            "desired_replicas": 2
+          },
+          "evidence": ["order-service-7f8da OOMKilled", "ready 1/2"]
+        },
+        "inspect_pod_logs": {
+          "summary": "order-service 在 case1 中命中 OOM 日志。",
+          "payload": {
+            "service": "order-service",
+            "namespace": "default",
+            "error_pattern": "oom_killed",
+            "oom_detected": true,
+            "log_snippets": [
+              "java.lang.OutOfMemoryError: Java heap space",
+              "container terminated with exit code 137"
+            ]
+          },
+          "evidence": ["OutOfMemoryError", "exit code 137"]
+        },
+        "inspect_pod_events": {
+          "summary": "order-service 在 case1 中 Pod 事件显示 OOMKilled。",
+          "payload": {
+            "service": "order-service",
+            "namespace": "default",
+            "event_count": 2,
+            "last_termination_reason": "OOMKilled",
+            "events": [
+              {"type": "Warning", "reason": "OOMKilled", "message": "Container killed due to memory limit"},
+              {"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container"}
+            ]
+          },
+          "evidence": ["last_termination_reason=OOMKilled"]
+        },
+        "inspect_jvm_memory": {
+          "summary": "order-service 在 case1 中 JVM 堆内存已打满。",
+          "payload": {
+            "service": "order-service",
+            "heap_usage_ratio": 0.98,
+            "gc_pressure": "critical"
+          },
+          "evidence": ["heap_usage=0.98", "gc_pressure=critical"]
+        },
+        "inspect_error_budget_burn": {
+          "summary": "order-service 在 case1 中错误预算快速消耗。",
+          "payload": {
+            "service": "order-service",
+            "burn_state": "fast_burn",
+            "burn_rate": 3.2
+          },
+          "evidence": ["burn_rate=3.2"]
+        },
+        "inspect_dns_resolution": {
+          "summary": "order-service 在 case1 中 DNS 正常。",
+          "payload": {"service": "order-service", "resolution_status": "healthy"},
+          "evidence": ["DNS stable"]
+        },
+        "inspect_ingress_route": {
+          "summary": "order-service 在 case1 中 Ingress 正常。",
+          "payload": {"service": "order-service", "route_status": "healthy"},
+          "evidence": ["route healthy"]
+        },
+        "inspect_load_balancer_status": {
+          "summary": "order-service 在 case1 中负载均衡正常。",
+          "payload": {"service": "order-service", "lb_status": "healthy"},
+          "evidence": ["all backends healthy"]
+        },
+        "inspect_vpc_connectivity": {
+          "summary": "order-service 在 case1 中 VPC 连通性正常。",
+          "payload": {"service": "order-service", "connectivity_status": "healthy"},
+          "evidence": ["east-west network healthy"]
+        },
+        "inspect_upstream_dependency": {
+          "summary": "order-service 在 case1 中上游依赖健康。",
+          "payload": {"service": "order-service", "dependency_status": "healthy", "timeout_ratio": 0.0},
+          "evidence": ["upstream healthy"]
+        },
+        "inspect_egress_policy": {
+          "summary": "order-service 在 case1 中出口网络策略正常。",
+          "payload": {"service": "order-service", "policy_status": "healthy"},
+          "evidence": ["egress allowed"]
+        }
+      }
+    }
+  },
+  "case2": {
+    "services": {
+      "order-service": {
+        "check_service_health": {
+          "summary": "order-service 在 case2 中表现为网络抖动型故障。",
+          "payload": {
+            "service": "order-service",
+            "environment": "prod-shanghai-1",
+            "health_status": "degraded",
+            "replica_status": "all_ready",
+            "error_rate_percent": 5.7,
+            "p99_latency_ms": 4100,
+            "impacted_endpoints": ["/orders/create", "/orders/query"]
+          },
+          "evidence": ["副本正常", "但超时与延迟明显抬升"]
+        },
+        "check_recent_alerts": {
+          "summary": "order-service 在 case2 中网络与延迟告警波动明显。",
+          "payload": {
+            "service": "order-service",
+            "window_minutes": 30,
+            "alert_count": 3,
+            "highest_severity": "high",
+            "alerts": [
+              {"name": "order-service timeout spike", "severity": "high", "status": "firing"},
+              {"name": "order-service p99 latency elevated", "severity": "high", "status": "firing"},
+              {"name": "order-service upstream dependency degraded", "severity": "high", "status": "firing"}
+            ]
+          },
+          "evidence": ["timeout 告警 firing", "latency 告警 firing"]
+        },
+        "check_pod_status": {
+          "summary": "order-service 在 case2 中 Pod 本身基本健康。",
+          "payload": {
+            "service": "order-service",
+            "namespace": "default",
+            "pods": [
+              {"name": "order-service-7f8d9", "status": "Running", "ready": true, "restarts": 0},
+              {"name": "order-service-7f8da", "status": "Running", "ready": true, "restarts": 0}
+            ],
+            "ready_replicas": 2,
+            "desired_replicas": 2
+          },
+          "evidence": ["ready 2/2"]
+        },
+        "inspect_pod_logs": {
+          "summary": "order-service 在 case2 中日志总体正常，没有 OOM 线索。",
+          "payload": {
+            "service": "order-service",
+            "namespace": "default",
+            "error_pattern": "none",
+            "oom_detected": false,
+            "log_snippets": [
+              "request completed normally",
+              "no critical error pattern found"
+            ]
+          },
+          "evidence": ["日志正常", "没有 OOM 线索"]
+        },
+        "inspect_pod_events": {
+          "summary": "order-service 在 case2 中 Pod 事件正常。",
+          "payload": {
+            "service": "order-service",
+            "namespace": "default",
+            "event_count": 1,
+            "last_termination_reason": "none",
+            "events": [
+              {"type": "Normal", "reason": "Pulled", "message": "Container image already present"}
+            ]
+          },
+          "evidence": ["last_termination_reason=none"]
+        },
+        "inspect_jvm_memory": {
+          "summary": "order-service 在 case2 中 JVM 内存正常。",
+          "payload": {
+            "service": "order-service",
+            "heap_usage_ratio": 0.46,
+            "gc_pressure": "normal"
+          },
+          "evidence": ["heap_usage=0.46"]
+        },
+        "inspect_thread_pool_status": {
+          "summary": "order-service 在 case2 中线程池积压明显。",
+          "payload": {
+            "service": "order-service",
+            "pool_state": "saturated",
+            "queue_depth": 126
+          },
+          "evidence": ["queue_depth=126"]
+        },
+        "inspect_error_budget_burn": {
+          "summary": "order-service 在 case2 中错误预算快速燃烧。",
+          "payload": {
+            "service": "order-service",
+            "burn_state": "fast_burn",
+            "burn_rate": 4.1
+          },
+          "evidence": ["burn_rate=4.1"]
+        },
+        "inspect_dns_resolution": {
+          "summary": "order-service 在 case2 中 DNS 本身正常。",
+          "payload": {"service": "order-service", "resolution_status": "healthy"},
+          "evidence": ["DNS lookup stable"]
+        },
+        "inspect_ingress_route": {
+          "summary": "order-service 在 case2 中入口路由有抖动。",
+          "payload": {"service": "order-service", "route_status": "mismatch_or_unhealthy"},
+          "evidence": ["gateway upstream unhealthy"]
+        },
+        "inspect_load_balancer_status": {
+          "summary": "order-service 在 case2 中 LB 后端波动较大。",
+          "payload": {"service": "order-service", "lb_status": "degraded"},
+          "evidence": ["2 unhealthy backends"]
+        },
+        "inspect_vpc_connectivity": {
+          "summary": "order-service 在 case2 中 VPC 链路存在抖动。",
+          "payload": {"service": "order-service", "connectivity_status": "blocked"},
+          "evidence": ["intermittent timeout observed"]
+        },
+        "inspect_upstream_dependency": {
+          "summary": "order-service 在 case2 中上游依赖明显波动。",
+          "payload": {"service": "order-service", "dependency_status": "degraded", "timeout_ratio": 0.31},
+          "evidence": ["timeout_ratio=0.31"]
+        },
+        "inspect_egress_policy": {
+          "summary": "order-service 在 case2 中出口网络策略正常。",
+          "payload": {"service": "order-service", "policy_status": "healthy"},
+          "evidence": ["egress allowed"]
+        }
+      }
+    }
+  }
+}

@@ -97,3 +97,49 @@ class InspectLoadBalancerStatusTool(BaseTool):
             payload={"service": ctx["service"], "lb_status": lb_status},
             evidence=[f"lb={lb_status}"],
         )
+
+
+class InspectUpstreamDependencyTool(BaseTool):
+    name = "inspect_upstream_dependency"
+    summary = "Inspect upstream dependency health and timeout ratio"
+    input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+
+    async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
+        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        if mocked is not None:
+            return mocked
+        ctx = build_context(task, arguments)
+        dependency_status = "healthy"
+        timeout_ratio = 0.0
+        if match_any(ctx["message"], ["upstream", "依赖", "timeout", "超时", "下游"]):
+            dependency_status = "degraded"
+            timeout_ratio = 0.23
+        return ToolExecutionResult(
+            tool_name=self.name,
+            status="completed",
+            summary="已汇总上游依赖状态。",
+            payload={"service": ctx["service"], "dependency_status": dependency_status, "timeout_ratio": timeout_ratio},
+            evidence=[f"dependency={dependency_status}", f"timeout_ratio={timeout_ratio}"],
+        )
+
+
+class InspectEgressPolicyTool(BaseTool):
+    name = "inspect_egress_policy"
+    summary = "Inspect egress policy and outbound access restrictions"
+    input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+
+    async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
+        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        if mocked is not None:
+            return mocked
+        ctx = build_context(task, arguments)
+        policy_status = "healthy"
+        if match_any(ctx["message"], ["egress", "出口", "networkpolicy", "访问受限", "连不出去"]):
+            policy_status = "blocked"
+        return ToolExecutionResult(
+            tool_name=self.name,
+            status="completed",
+            summary="已汇总出口网络策略状态。",
+            payload={"service": ctx["service"], "policy_status": policy_status},
+            evidence=[f"egress_policy={policy_status}"],
+        )

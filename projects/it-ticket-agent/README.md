@@ -1,15 +1,92 @@
 # IT Ticket Orchestrator
 
-当前项目现在只负责 **Supervisor 编排、SubAgent 路由、MCP 工具接入与 HITL 审批主流程**，RAG 已拆到兄弟项目 `projects/it-ticket-rag-service`。
+当前项目现在负责 **Smart Router + Hypothesis Graph + Skill 执行 + HITL 审批主流程**，RAG 已拆到兄弟项目 `projects/it-ticket-rag-service`。
 
 ## 当前职责
 
 - 接收用户工单请求
 - 调用 RAG 服务做知识检索
-- 路由到领域 SubAgent
-- 调用领域 MCP 工具
+- 分流到 `direct_answer` 或 `hypothesis_graph`
+- 基于 Skill 生成验证计划，并执行 Skill 内部 tool 链路
 - 处理 HITL 审批与执行动作
 - 汇总最终回复
+
+## Skill Mock 场景控制
+
+当前验证链路支持两种控制方式：
+
+- 请求级控制：在会话请求里显式传 `mock_scenario` / `mock_scenarios` / `mock_tool_responses`
+- 环境变量级控制：用户继续使用普通问法，后台通过 `case` 统一切换整套故障现场
+
+当前仓库里已经有 `40` 个导出 Tool 名称，其中 `39` 个是具体 Tool 实现，足够覆盖 CICD、K8s、日志、监控、网络、数据库、SDE、FinOps 的常见排障面。
+
+- `mock_scenario`: 为当前服务设置全局场景，例如 `oom`、`health`、`normal`、`error`
+- `mock_scenarios`: 为不同服务分别指定场景
+- `mock_tool_responses`: 对某个具体 tool 直接覆盖返回值
+
+示例：让 `checkout-service` 走 OOM 场景
+
+```bash
+curl -X POST http://localhost:8000/api/v1/conversations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id":"u1",
+    "message":"checkout-service pod OOMKilled，帮我排查",
+    "service":"checkout-service",
+    "mock_scenario":"oom"
+  }'
+```
+
+示例：强行覆盖某个 tool 的返回
+
+```bash
+curl -X POST http://localhost:8000/api/v1/conversations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id":"u1",
+    "message":"帮我检查服务日志",
+    "service":"checkout-service",
+    "mock_tool_responses":{
+      "inspect_pod_logs":{
+        "summary":"命中自定义日志 mock",
+        "payload":{
+          "error_pattern":"oom_killed",
+          "oom_detected":true,
+          "log_snippets":["java.lang.OutOfMemoryError: Java heap space"]
+        },
+        "evidence":["custom mock log"]
+      }
+    }
+  }'
+```
+
+## Case 环境变量控制
+
+如果你希望用户只说普通问题，例如“order service 为什么总是超时”，可以直接在环境变量里切 case。
+
+- `IT_TICKET_AGENT_CASE=case1`
+- `IT_TICKET_AGENT_CASE=case2`
+- `IT_TICKET_AGENT_CASES='{"order-service":"case1","payment-service":"case2"}'`
+- `IT_TICKET_AGENT_CASE_PROFILES_PATH=/path/to/mock_case_profiles.json`
+
+当前内置了两个典型案例：
+
+- `case1`: 日志与 Pod 事件表现为 `OOMKilled`，监控同步报错，网络排查基本正常
+- `case2`: 日志基本正常，网络链路和监控抖动明显，上游依赖与线程池也会同步波动
+
+示例：用户只问普通问题，但后台用环境变量切到 `case1`
+
+```bash
+export IT_TICKET_AGENT_CASE=case1
+curl -X POST http://localhost:8000/api/v1/conversations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id":"u1",
+    "message":"order service为什么总是超时"
+  }'
+```
+
+对应的 case 配置文件在 [mock_case_profiles.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/mock_case_profiles.json)，可以继续按你自己的场景扩展。
 
 ## 兄弟项目
 

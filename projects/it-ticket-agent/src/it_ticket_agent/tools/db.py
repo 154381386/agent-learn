@@ -119,3 +119,47 @@ class InspectSchemaChangeRecordsTool(BaseTool):
             payload={"service": ctx["service"], "schema_change_count": change_count},
             evidence=[f"schema_changes={change_count}"],
         )
+
+
+class InspectDeadlockSignalsTool(BaseTool):
+    name = "inspect_deadlock_signals"
+    summary = "Inspect database deadlock and lock wait signals"
+    input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+
+    async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
+        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        if mocked is not None:
+            return mocked
+        ctx = build_context(task, arguments)
+        deadlock_count = 0
+        if match_any(ctx["message"], ["deadlock", "锁等待", "行锁", "数据库超时"]):
+            deadlock_count = 2
+        return ToolExecutionResult(
+            tool_name=self.name,
+            status="completed",
+            summary="已汇总死锁信号。",
+            payload={"service": ctx["service"], "deadlock_count": deadlock_count},
+            evidence=[f"deadlocks={deadlock_count}"],
+        )
+
+
+class InspectTransactionRollbackRateTool(BaseTool):
+    name = "inspect_transaction_rollback_rate"
+    summary = "Inspect transaction rollback rate and database abort ratio"
+    input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+
+    async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
+        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        if mocked is not None:
+            return mocked
+        ctx = build_context(task, arguments)
+        rollback_rate = 0.0
+        if match_any(ctx["message"], ["rollback", "事务回滚", "数据库超时", "写失败"]):
+            rollback_rate = 0.18
+        return ToolExecutionResult(
+            tool_name=self.name,
+            status="completed",
+            summary="已汇总事务回滚率。",
+            payload={"service": ctx["service"], "rollback_rate": rollback_rate},
+            evidence=[f"rollback_rate={rollback_rate}"],
+        )

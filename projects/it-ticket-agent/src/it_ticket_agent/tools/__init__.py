@@ -12,9 +12,44 @@ from .cicd import (
     GetGitCommitHistoryTool,
     GetRollbackHistoryTool,
     InspectBuildFailureLogsTool,
+    InspectCpuSaturationTool,
+    InspectErrorBudgetBurnTool,
+    InspectJvmMemoryTool,
+    InspectPodEventsTool,
+    InspectPodLogsTool,
+    InspectThreadPoolStatusTool,
     SearchKnowledgeBaseTool,
 )
+from .db import (
+    InspectConnectionPoolTool,
+    InspectDBInstanceHealthTool,
+    InspectDeadlockSignalsTool,
+    InspectReplicationStatusTool,
+    InspectSchemaChangeRecordsTool,
+    InspectSlowQueriesTool,
+    InspectTransactionRollbackRateTool,
+)
 from .contracts import BaseTool, ToolExecutionResult
+from .finops import (
+    InspectBudgetGuardrailTool,
+    InspectCommitmentCoverageTool,
+    InspectCostAnomalyTool,
+    InspectIdleResourceCandidatesTool,
+)
+from .network import (
+    InspectDNSResolutionTool,
+    InspectEgressPolicyTool,
+    InspectIngressRouteTool,
+    InspectLoadBalancerStatusTool,
+    InspectUpstreamDependencyTool,
+    InspectVpcConnectivityTool,
+)
+from .sde import (
+    GetQuotaStatusTool,
+    InspectClusterBootstrapTool,
+    InspectMachineProvisioningTool,
+    InvestigateResourceProvisioningTool,
+)
 
 __all__ = [
     "BaseTool",
@@ -29,6 +64,33 @@ __all__ = [
     "GetGitCommitHistoryTool",
     "GetRollbackHistoryTool",
     "InspectBuildFailureLogsTool",
+    "InspectBudgetGuardrailTool",
+    "InspectClusterBootstrapTool",
+    "InspectCommitmentCoverageTool",
+    "InspectConnectionPoolTool",
+    "InspectCostAnomalyTool",
+    "InspectCpuSaturationTool",
+    "InspectDBInstanceHealthTool",
+    "InspectDNSResolutionTool",
+    "InspectDeadlockSignalsTool",
+    "InspectEgressPolicyTool",
+    "InspectErrorBudgetBurnTool",
+    "InspectIdleResourceCandidatesTool",
+    "InspectIngressRouteTool",
+    "InspectJvmMemoryTool",
+    "InspectLoadBalancerStatusTool",
+    "InspectMachineProvisioningTool",
+    "InspectPodEventsTool",
+    "InspectPodLogsTool",
+    "InspectReplicationStatusTool",
+    "InspectSchemaChangeRecordsTool",
+    "InspectSlowQueriesTool",
+    "InspectThreadPoolStatusTool",
+    "InspectTransactionRollbackRateTool",
+    "InspectUpstreamDependencyTool",
+    "InspectVpcConnectivityTool",
+    "InvestigateResourceProvisioningTool",
+    "GetQuotaStatusTool",
     "SearchKnowledgeBaseTool",
     "ToolExecutionResult",
 ]

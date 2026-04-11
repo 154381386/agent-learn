@@ -11,6 +11,9 @@ class TicketRequest(BaseModel):
     cluster: str = "prod-shanghai-1"
     namespace: str = "default"
     channel: str = "feishu"
+    mock_scenario: Optional[str] = None
+    mock_scenarios: Dict[str, str] = Field(default_factory=dict)
+    mock_tool_responses: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -113,10 +116,16 @@ class ConversationCreateRequest(BaseModel):
     cluster: str = "prod-shanghai-1"
     namespace: str = "default"
     channel: str = "feishu"
+    mock_scenario: Optional[str] = None
+    mock_scenarios: Dict[str, str] = Field(default_factory=dict)
+    mock_tool_responses: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ConversationMessageRequest(BaseModel):
     message: str
+    mock_scenario: Optional[str] = None
+    mock_scenarios: Dict[str, str] = Field(default_factory=dict)
+    mock_tool_responses: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ConversationResumeRequest(BaseModel):

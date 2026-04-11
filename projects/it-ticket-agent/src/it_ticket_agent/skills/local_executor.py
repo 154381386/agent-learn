@@ -16,18 +16,28 @@ from ..tools.cicd import (
     GetDeploymentStatusTool,
     GetRollbackHistoryTool,
     InspectBuildFailureLogsTool,
+    InspectCpuSaturationTool,
+    InspectErrorBudgetBurnTool,
+    InspectJvmMemoryTool,
+    InspectPodEventsTool,
+    InspectPodLogsTool,
+    InspectThreadPoolStatusTool,
 )
 from ..tools.contracts import BaseTool, ToolExecutionResult
 from ..tools.db import (
     InspectConnectionPoolTool,
     InspectDBInstanceHealthTool,
+    InspectDeadlockSignalsTool,
     InspectReplicationStatusTool,
+    InspectTransactionRollbackRateTool,
     InspectSlowQueriesTool,
 )
 from ..tools.network import (
     InspectDNSResolutionTool,
+    InspectEgressPolicyTool,
     InspectIngressRouteTool,
     InspectLoadBalancerStatusTool,
+    InspectUpstreamDependencyTool,
     InspectVpcConnectivityTool,
 )
 from ..tools.sde import GetQuotaStatusTool
@@ -45,14 +55,24 @@ class LocalSkillExecutor:
             "get_rollback_history": GetRollbackHistoryTool(),
             "get_change_records": GetChangeRecordsTool(),
             "check_pod_status": CheckPodStatusTool(),
+            "inspect_pod_logs": InspectPodLogsTool(),
+            "inspect_pod_events": InspectPodEventsTool(),
+            "inspect_jvm_memory": InspectJvmMemoryTool(),
+            "inspect_cpu_saturation": InspectCpuSaturationTool(),
+            "inspect_thread_pool_status": InspectThreadPoolStatusTool(),
+            "inspect_error_budget_burn": InspectErrorBudgetBurnTool(),
             "inspect_dns_resolution": InspectDNSResolutionTool(),
             "inspect_ingress_route": InspectIngressRouteTool(),
             "inspect_vpc_connectivity": InspectVpcConnectivityTool(),
             "inspect_load_balancer_status": InspectLoadBalancerStatusTool(),
+            "inspect_upstream_dependency": InspectUpstreamDependencyTool(),
+            "inspect_egress_policy": InspectEgressPolicyTool(),
             "inspect_db_instance_health": InspectDBInstanceHealthTool(),
             "inspect_replication_status": InspectReplicationStatusTool(),
             "inspect_slow_queries": InspectSlowQueriesTool(),
             "inspect_connection_pool": InspectConnectionPoolTool(),
+            "inspect_deadlock_signals": InspectDeadlockSignalsTool(),
+            "inspect_transaction_rollback_rate": InspectTransactionRollbackRateTool(),
             "get_quota_status": GetQuotaStatusTool(),
         }
 
@@ -90,10 +110,16 @@ class LocalSkillExecutor:
                 task,
                 [
                     ("check_pod_status", {"service": params.get("service"), "namespace": params.get("namespace")}),
+                    ("inspect_pod_events", {"service": params.get("service"), "namespace": params.get("namespace")}),
+                    ("inspect_pod_logs", {"service": params.get("service"), "namespace": params.get("namespace")}),
                     ("check_service_health", {"service": params.get("service"), "environment": params.get("cluster")}),
                 ],
             )
-            return self._aggregate(skill_name, results, positive_keys=("pods", "health_status", "replica_status"))
+            return self._aggregate(
+                skill_name,
+                results,
+                positive_keys=("pods", "health_status", "replica_status", "last_termination_reason", "oom_detected"),
+            )
 
         if skill_name == "check_memory_trend":
             results = await self._run_many(
@@ -101,9 +127,17 @@ class LocalSkillExecutor:
                 [
                     ("check_service_health", {"service": params.get("service"), "environment": params.get("cluster")}),
                     ("check_pod_status", {"service": params.get("service"), "namespace": params.get("namespace")}),
+                    ("inspect_pod_events", {"service": params.get("service"), "namespace": params.get("namespace")}),
+                    ("inspect_pod_logs", {"service": params.get("service"), "namespace": params.get("namespace")}),
+                    ("inspect_jvm_memory", {"service": params.get("service")}),
+                    ("inspect_cpu_saturation", {"service": params.get("service")}),
                 ],
             )
-            return self._aggregate(skill_name, results, positive_keys=("health_status", "pods"))
+            return self._aggregate(
+                skill_name,
+                results,
+                positive_keys=("health_status", "pods", "last_termination_reason", "oom_detected", "heap_usage_ratio", "gc_pressure"),
+            )
 
         if skill_name == "check_resource_limits":
             results = await self._run_many(
@@ -118,9 +152,11 @@ class LocalSkillExecutor:
                 [
                     ("inspect_vpc_connectivity", {"service": params.get("service")}),
                     ("inspect_load_balancer_status", {"service": params.get("service")}),
+                    ("inspect_upstream_dependency", {"service": params.get("service")}),
+                    ("inspect_egress_policy", {"service": params.get("service")}),
                 ],
             )
-            return self._aggregate(skill_name, results, positive_keys=("connectivity_status", "lb_status"))
+            return self._aggregate(skill_name, results, positive_keys=("connectivity_status", "lb_status", "dependency_status", "policy_status"))
 
         if skill_name == "check_dns_resolution":
             results = await self._run_many(task, [("inspect_dns_resolution", {"service": params.get("domain") or params.get("service")})])
@@ -143,9 +179,11 @@ class LocalSkillExecutor:
                     ("inspect_db_instance_health", {"service": params.get("service")}),
                     ("inspect_connection_pool", {"service": params.get("service")}),
                     ("inspect_slow_queries", {"service": params.get("service")}),
+                    ("inspect_deadlock_signals", {"service": params.get("service")}),
+                    ("inspect_transaction_rollback_rate", {"service": params.get("service")}),
                 ],
             )
-            return self._aggregate(skill_name, results, positive_keys=("db_health", "pool_state", "slow_query_count"))
+            return self._aggregate(skill_name, results, positive_keys=("db_health", "pool_state", "slow_query_count", "deadlock_count", "rollback_rate"))
 
         if skill_name == "check_replication_lag":
             results = await self._run_many(task, [("inspect_replication_status", {"service": params.get("instance") or params.get("service")})])
@@ -155,11 +193,12 @@ class LocalSkillExecutor:
             results = await self._run_many(
                 task,
                 [
-                    ("inspect_build_failure_logs", {"service": params.get("service")}),
+                    ("inspect_pod_logs", {"service": params.get("service"), "namespace": params.get("namespace")}),
                     ("check_recent_alerts", {"service": params.get("service"), "window_minutes": 30}),
+                    ("inspect_thread_pool_status", {"service": params.get("service")}),
                 ],
             )
-            return self._aggregate(skill_name, results, positive_keys=("failed_stage", "alerts"))
+            return self._aggregate(skill_name, results, positive_keys=("error_pattern", "oom_detected", "alerts", "pool_state", "queue_depth"))
 
         if skill_name == "check_alert_history":
             results = await self._run_many(task, [("check_recent_alerts", {"service": params.get("service"), "window_minutes": 30})])
@@ -171,9 +210,10 @@ class LocalSkillExecutor:
                 [
                     ("check_service_health", {"service": params.get("service"), "environment": params.get("cluster")}),
                     ("check_recent_alerts", {"service": params.get("service"), "window_minutes": 30}),
+                    ("inspect_error_budget_burn", {"service": params.get("service")}),
                 ],
             )
-            return self._aggregate(skill_name, results, positive_keys=("health_status", "alert_count"))
+            return self._aggregate(skill_name, results, positive_keys=("health_status", "alert_count", "burn_state", "burn_rate"))
 
         return SkillResult(
             skill_name=skill_name,
@@ -262,6 +302,9 @@ class LocalSkillExecutor:
                 "service": service,
                 "cluster": str(request.get("cluster") or "prod-shanghai-1"),
                 "namespace": str(request.get("namespace") or "default"),
+                "mock_scenario": str(request.get("mock_scenario") or ""),
+                "mock_scenarios": dict(request.get("mock_scenarios") or {}),
+                "mock_tool_responses": dict(request.get("mock_tool_responses") or {}),
                 "rag_context": context_snapshot.rag_context.model_dump() if context_snapshot.rag_context is not None else {},
             },
             upstream_findings=[],
@@ -294,7 +337,62 @@ class LocalSkillExecutor:
         for item in tool_results:
             for key in positive_keys:
                 value = item.payload.get(key)
-                if value in (None, "", 0, False, "healthy", "stable", "all_ready", "not_in_progress", "sufficient"):
+                if not LocalSkillExecutor._is_positive_value(key, value):
                     continue
                 return True
         return False
+
+    @staticmethod
+    def _is_positive_value(key: str, value: Any) -> bool:
+        if value in (None, "", 0, False):
+            return False
+        if key == "pods":
+            if not isinstance(value, list):
+                return False
+            for pod in value:
+                if not isinstance(pod, dict):
+                    continue
+                if not bool(pod.get("ready", True)):
+                    return True
+                if str(pod.get("status") or "").lower() not in {"running", "succeeded"}:
+                    return True
+                if int(pod.get("restarts") or 0) > 0:
+                    return True
+            return False
+        if key in {"alerts", "signals", "changes", "events"}:
+            return bool(value)
+        if key == "log_snippets":
+            if not isinstance(value, list):
+                return False
+            return any("error" in str(item).lower() or "oom" in str(item).lower() for item in value)
+        if key in {"health_status", "replica_status", "resolution_status", "route_status", "connectivity_status", "lb_status", "db_health", "pool_state", "quota_state"}:
+            return str(value).lower() not in {"healthy", "all_ready", "stable", "sufficient"}
+        if key == "failed_stage":
+            return str(value).lower() not in {"", "unknown", "none"}
+        if key == "error_pattern":
+            return str(value).lower() not in {"", "none", "normal"}
+        if key == "last_termination_reason":
+            return str(value).lower() not in {"", "none", "completed", "running"}
+        if key == "lag_seconds":
+            return float(value) > 0
+        if key in {"slow_query_count", "schema_change_count", "alert_count"}:
+            return int(value) > 0
+        if key == "heap_usage_ratio":
+            return float(value) >= 0.8
+        if key == "rollback_rate":
+            return float(value) > 0.05
+        if key == "timeout_ratio":
+            return float(value) > 0.05
+        if key == "queue_depth":
+            return int(value) > 20
+        if key == "burn_rate":
+            return float(value) > 1.0
+        return bool(value) and str(value).lower() not in {
+            "healthy",
+            "stable",
+            "all_ready",
+            "not_in_progress",
+            "sufficient",
+            "normal",
+            "none",
+        }

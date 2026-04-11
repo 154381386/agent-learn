@@ -663,6 +663,8 @@ class OrchestratorGraphNodes:
             if any(str(keyword).lower() in haystack for keyword in category.match_keywords):
                 matched.append(category.name)
         if matched:
+            if request.service:
+                matched = sorted(set(matched) | {"monitor", "k8s"})
             return matched
         if request.service:
             return ["k8s", "cicd", "monitor"]

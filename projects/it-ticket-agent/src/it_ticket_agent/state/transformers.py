@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 from uuid import NAMESPACE_URL, uuid5
 
 from ..runtime.contracts import AgentAction, AgentResult, RoutingDecision
+from ..service_names import infer_service_name
 from ..schemas import TicketRequest, model_to_dict
 from .incident_state import IncidentState
 from .models import (
@@ -103,12 +104,13 @@ def build_initial_incident_state(
     routing: RoutingDecision | Dict[str, Any] | None = None,
 ) -> IncidentState:
     routing_payload = model_to_dict(routing) if routing is not None and not isinstance(routing, dict) else dict(routing or {})
+    resolved_service = request.service or infer_service_name(request.message)
     return IncidentState(
         ticket_id=request.ticket_id,
         user_id=request.user_id,
         thread_id=request.ticket_id,
         message=request.message,
-        service=request.service,
+        service=resolved_service,
         cluster=request.cluster,
         namespace=request.namespace,
         channel=request.channel,
@@ -116,10 +118,13 @@ def build_initial_incident_state(
         routing=routing_payload,
         shared_context={
             "message": request.message,
-            "service": request.service or "",
+            "service": resolved_service or "",
             "cluster": request.cluster,
             "namespace": request.namespace,
             "channel": request.channel,
+            "mock_scenario": request.mock_scenario or "",
+            "mock_scenarios": dict(request.mock_scenarios or {}),
+            "mock_tool_responses": dict(request.mock_tool_responses or {}),
         },
     )
 
