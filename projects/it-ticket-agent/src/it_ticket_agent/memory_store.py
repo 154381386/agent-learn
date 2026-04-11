@@ -40,6 +40,29 @@ class IncidentCaseStore:
         record = self.v2_store.get_case_by_session_id(session_id)
         return None if record is None else record.model_dump()
 
+    def update_feedback(
+        self,
+        session_id: str,
+        *,
+        human_verified: bool,
+        hypothesis_accuracy: dict[str, float] | None = None,
+        actual_root_cause_hypothesis: str | None = None,
+    ) -> Optional[dict[str, Any]]:
+        record = self.v2_store.get_case_by_session_id(session_id)
+        if record is None:
+            return None
+        updated = record.model_copy(
+            update={
+                "human_verified": human_verified,
+                "hypothesis_accuracy": dict(hypothesis_accuracy or record.hypothesis_accuracy),
+                "actual_root_cause_hypothesis": (
+                    str(actual_root_cause_hypothesis or record.actual_root_cause_hypothesis)
+                ),
+            }
+        )
+        saved = self.v2_store.upsert_case(updated)
+        return saved.model_dump()
+
     def list_cases(
         self,
         *,

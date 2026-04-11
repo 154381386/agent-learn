@@ -411,6 +411,11 @@ class OrchestratorGraphNodes:
             ranked_result = self.ranker_impl.rank(
                 verification_results,
                 similar_cases=similar_cases,
+                feedback_cases=(
+                    self.incident_case_store.list_cases(service=str(request.service or incident_state.service or ""), limit=100)
+                    if self.incident_case_store is not None and (request.service or incident_state.service)
+                    else []
+                ),
             )
             incident_state.ranked_result = ranked_result
             incident_state.status = "ranked"
@@ -520,6 +525,12 @@ class OrchestratorGraphNodes:
             payload={"citations": citations},
             metadata={"source": "graph.hypothesis_graph"},
         )
+        feedback_interrupt = self._create_feedback_interrupt(
+            incident_state=incident_state,
+            session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
+            thread_id=str(state.get("thread_id") or request.ticket_id),
+            ticket_id=request.ticket_id,
+        )
         return {
             "incident_state": incident_state,
             "response": {
@@ -539,6 +550,7 @@ class OrchestratorGraphNodes:
                     "graph": {"transition_notes": transition_notes, "next_node": "approval_gate"},
                 },
             },
+            "feedback_interrupt": feedback_interrupt,
             "pending_node": None,
         }
 
@@ -591,6 +603,62 @@ class OrchestratorGraphNodes:
                 "metadata": dict(metadata or {}),
             }
         )
+
+    def _create_feedback_interrupt(
+        self,
+        *,
+        incident_state: IncidentState,
+        session_id: str,
+        thread_id: str,
+        ticket_id: str,
+    ) -> dict[str, Any] | None:
+        if incident_state.ranked_result is None or incident_state.ranked_result.primary is None:
+            return None
+        existing = incident_state.metadata.get("feedback_interrupt") if isinstance(incident_state.metadata, dict) else None
+        if isinstance(existing, dict) and existing.get("interrupt_id"):
+            return existing
+        interrupt = self.interrupt_store.create_feedback_interrupt(
+            session_id=session_id,
+            ticket_id=ticket_id,
+            reason="诊断已完成，需要人工确认根因与建议动作是否准确。",
+            question="请确认本次根因判断是否正确；如不正确，可补充真实根因假设和各假设准确度。",
+            expected_input_schema={
+                "type": "object",
+                "properties": {
+                    "human_verified": {"type": "boolean"},
+                    "actual_root_cause_hypothesis": {"type": "string"},
+                    "hypothesis_accuracy": {"type": "object"},
+                    "comment": {"type": "string"},
+                },
+                "required": ["human_verified"],
+            },
+            metadata={
+                "thread_id": thread_id,
+                "selected_hypothesis_id": incident_state.ranked_result.primary.hypothesis_id,
+                "ranked_result": incident_state.ranked_result.model_dump(),
+            },
+        )
+        incident_state.metadata["feedback_interrupt"] = interrupt
+        self._append_process_entry(
+            session_id=session_id,
+            thread_id=thread_id,
+            ticket_id=ticket_id,
+            event_type="manual_intervention",
+            stage="feedback",
+            source="graph.feedback_gate",
+            summary="诊断已完成，已创建 feedback interrupt 等待人工确认。",
+            payload={"interrupt_id": interrupt.get("interrupt_id"), "selected_hypothesis_id": interrupt.get("metadata", {}).get("selected_hypothesis_id")},
+            refs={"interrupt_id": interrupt.get("interrupt_id")},
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=thread_id,
+            ticket_id=ticket_id,
+            event_type="feedback.requested",
+            payload={"interrupt_id": interrupt.get("interrupt_id")},
+            metadata={"source": "graph.feedback_gate"},
+        )
+        return interrupt
 
     @staticmethod
     def _normalize_rag_context(rag_context: RAGContextBundle | dict[str, Any] | None) -> RAGContextBundle:
@@ -648,10 +716,14 @@ class OrchestratorGraphNodes:
         if matched:
             if request.service:
                 matched = sorted(set(matched) | {"monitor", "k8s"})
-            return matched
+            incremental = incident_state.shared_context.get("incremental_skill_categories") if isinstance(incident_state.shared_context, dict) else []
+            return sorted(set(matched) | set(incremental or []))
         if request.service:
-            return ["k8s", "cicd", "monitor"]
-        return ["monitor", "cicd"]
+            base = ["k8s", "cicd", "monitor"]
+        else:
+            base = ["monitor", "cicd"]
+        incremental = incident_state.shared_context.get("incremental_skill_categories") if isinstance(incident_state.shared_context, dict) else []
+        return sorted(set(base) | set(incremental or []))
 
     @staticmethod
     def _score_context_quality(
@@ -920,9 +992,16 @@ class OrchestratorGraphNodes:
             )
         )
         response["diagnosis"] = diagnosis
+        feedback_interrupt = self._create_feedback_interrupt(
+            incident_state=final_state.get("incident_state") or incident_state,
+            session_id=str(state.get("session_id") or incident_state.thread_id or incident_state.ticket_id),
+            thread_id=str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
+            ticket_id=incident_state.ticket_id,
+        )
         return {
             "incident_state": final_state.get("incident_state"),
             "response": response,
+            "feedback_interrupt": feedback_interrupt,
             "pending_node": None,
         }
 

@@ -23,6 +23,8 @@ from ..system_event_store import SystemEventStore
 from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..observability import configure_observability
 from ..orchestration import HypothesisGenerator
+from ..orchestration.ranker import Ranker
+from ..orchestration.ranker_weights import RankerWeightsManager
 from ..schemas import (
     ApprovalDecisionRequest,
     ConversationCreateRequest,
@@ -36,6 +38,7 @@ from ..session_store import SessionStore
 from ..settings import Settings
 from ..skills import SkillRegistry
 from ..state.incident_state import IncidentState
+from ..runtime.topic_shift_detector import TopicShiftDetector
 from ..service_names import infer_service_name
 from .smart_router import SmartRouter
 
@@ -73,8 +76,11 @@ class SupervisorOrchestrator:
         self.knowledge_client = RAGServiceClient(settings)
         self.knowledge_service = KnowledgeService(self.knowledge_client)
         self.smart_router = SmartRouter(settings)
+        self.topic_shift_detector = TopicShiftDetector()
         self.skill_registry = SkillRegistry()
         self.hypothesis_generator = HypothesisGenerator(settings)
+        self.ranker_weights_manager = RankerWeightsManager(settings.approval_db_path)
+        self.ranker = Ranker(weights_manager=self.ranker_weights_manager)
         self.graph_nodes = OrchestratorGraphNodes(
             approval_store=self.approval_store,
             session_store=self.session_store,
@@ -87,6 +93,7 @@ class SupervisorOrchestrator:
             smart_router=self.smart_router,
             skill_registry=self.skill_registry,
             hypothesis_generator=self.hypothesis_generator,
+            ranker=self.ranker,
         )
         self.graph_builder = OrchestratorGraphBuilder(self.graph_nodes)
         self.ticket_graph = self.graph_builder.build_ticket_graph()
@@ -195,6 +202,7 @@ class SupervisorOrchestrator:
         approved_actions = incident_state.get("approved_actions") if isinstance(incident_state.get("approved_actions"), list) else []
         execution_results = incident_state.get("execution_results") if isinstance(incident_state.get("execution_results"), list) else []
         diagnosis_approval = diagnosis.get("approval") if isinstance(diagnosis.get("approval"), dict) else {}
+        ranked_result = incident_state.get("ranked_result") if isinstance(incident_state.get("ranked_result"), dict) else {}
         final_action = ""
         if approved_actions and isinstance(approved_actions[0], dict):
             final_action = str(approved_actions[0].get("action") or "")
@@ -239,6 +247,15 @@ class SupervisorOrchestrator:
                 "final_action": final_action,
                 "approval_required": approval_required,
                 "verification_passed": verification_passed,
+                "human_verified": False,
+                "hypothesis_accuracy": {},
+                "actual_root_cause_hypothesis": "",
+                "selected_hypothesis_id": str(((ranked_result.get("primary") or {}) if isinstance(ranked_result, dict) else {}).get("hypothesis_id") or ""),
+                "selected_ranker_features": {
+                    key: float(value)
+                    for key, value in dict((((ranked_result.get("primary") or {}) if isinstance(ranked_result, dict) else {}).get("metadata") or {}).get("ranker", {})).items()
+                    if key in {"evidence_strength", "confidence", "history_match"} and isinstance(value, (int, float))
+                },
                 "final_conclusion": final_conclusion,
                 "closed_at": session.get("closed_at"),
             }
@@ -449,6 +466,81 @@ class SupervisorOrchestrator:
             },
         )
 
+    async def _resume_feedback(
+        self,
+        session: dict[str, Any],
+        interrupt: dict[str, Any],
+        answer_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        session_id = str(session["session_id"])
+        human_verified = bool(answer_payload.get("human_verified"))
+        actual_root = str(answer_payload.get("actual_root_cause_hypothesis") or "")
+        hypothesis_accuracy = {
+            str(key): float(value)
+            for key, value in dict(answer_payload.get("hypothesis_accuracy") or {}).items()
+        }
+        updated_case = self.incident_case_store.update_feedback(
+            session_id,
+            human_verified=human_verified,
+            hypothesis_accuracy=hypothesis_accuracy,
+            actual_root_cause_hypothesis=actual_root,
+        )
+        self.interrupt_store.answer(str(interrupt["interrupt_id"]), answer_payload=answer_payload)
+        self._append_process_entry(
+            session_id=session_id,
+            thread_id=str(session.get("thread_id") or session_id),
+            ticket_id=str(session.get("ticket_id") or session_id),
+            event_type="manual_intervention",
+            stage="feedback",
+            source="orchestrator",
+            summary="人工反馈已写回案例库。",
+            payload={
+                "human_verified": human_verified,
+                "actual_root_cause_hypothesis": actual_root,
+                "hypothesis_accuracy": hypothesis_accuracy,
+            },
+            refs={"interrupt_id": interrupt.get("interrupt_id")},
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=str(session.get("thread_id") or session_id),
+            ticket_id=str(session.get("ticket_id") or session_id),
+            event_type="feedback.received",
+            payload={
+                "human_verified": human_verified,
+                "actual_root_cause_hypothesis": actual_root,
+            },
+            metadata={"source": "orchestrator", "interrupt_id": interrupt.get("interrupt_id")},
+        )
+        updated_session = self.session_store.update_state(
+            session_id,
+            incident_state=session.get("incident_state") or {},
+            status="completed",
+            current_stage="finalize",
+            latest_approval_id=session.get("latest_approval_id"),
+            pending_interrupt_id=None,
+            last_checkpoint_id=session.get("last_checkpoint_id"),
+            session_memory=self._merge_session_memory(
+                session,
+                current_stage="finalize",
+                pending_interrupt=None,
+            ),
+        )
+        message = "已记录人工反馈，本次诊断结果已补充到案例库。"
+        assistant_turn = self._append_assistant_turn(
+            session_id,
+            response={"status": "completed", "message": message, "diagnosis": {"feedback": updated_case}},
+        )
+        return {
+            "session": updated_session,
+            "status": "completed",
+            "message": message,
+            "diagnosis": {"feedback": updated_case},
+            "approval_request": None,
+            "pending_interrupt": None,
+            "assistant_turn": assistant_turn,
+        }
+
     def _merge_session_memory(
         self,
         session: dict[str, Any],
@@ -457,6 +549,7 @@ class SupervisorOrchestrator:
         current_intent: dict[str, Any] | None = None,
         key_entities: dict[str, Any] | None = None,
         clarification_answers: dict[str, Any] | None = None,
+        current_intent_history: list[dict[str, Any]] | None = None,
         pending_approval: dict[str, Any] | None = None,
         current_stage: str | None = None,
         pending_interrupt: dict[str, Any] | None = None,
@@ -474,6 +567,8 @@ class SupervisorOrchestrator:
         if clarification_answers:
             clarification_payload.update(clarification_answers)
         memory["clarification_answers"] = clarification_payload
+        if current_intent_history is not None:
+            memory["current_intent_history"] = list(current_intent_history)
         memory["pending_approval"] = pending_approval if pending_approval is not None else memory.get("pending_approval")
         if current_stage is not None:
             memory["current_stage"] = current_stage
@@ -544,6 +639,98 @@ class SupervisorOrchestrator:
             ),
             entrypoint=entrypoint,
         )
+
+    def _infer_skill_categories_from_message(self, message: str) -> list[str]:
+        lowered = str(message or "").lower()
+        matched: list[str] = []
+        for category in self.skill_registry.get_categories():
+            if any(str(keyword).lower() in lowered for keyword in category.match_keywords):
+                matched.append(category.name)
+        return matched
+
+    def _detect_topic_shift_for_session(
+        self,
+        *,
+        session: dict[str, Any],
+        current_message: str,
+    ) -> dict[str, Any]:
+        previous_incident_state = dict(session.get("incident_state") or {})
+        previous_snapshot = dict(previous_incident_state.get("context_snapshot") or {})
+        previous_categories = list(previous_snapshot.get("matched_skill_categories") or [])
+        current_categories = self._infer_skill_categories_from_message(current_message)
+        return self.topic_shift_detector.detect(
+            previous_message=str(previous_incident_state.get("message") or ""),
+            current_message=current_message,
+            previous_categories=previous_categories,
+            current_categories=current_categories,
+        )
+
+    def _supersede_pending_interrupt_for_new_message(
+        self,
+        *,
+        session: dict[str, Any],
+        pending_interrupt: dict[str, Any],
+        request: ConversationMessageRequest,
+    ) -> dict[str, Any]:
+        session_id = str(session["session_id"])
+        interrupt_type = str(pending_interrupt.get("type") or "")
+        topic_shift = self._detect_topic_shift_for_session(session=session, current_message=request.message)
+        should_supersede = interrupt_type == "feedback" or (
+            interrupt_type == "approval" and bool(topic_shift.get("topic_shift_detected"))
+        )
+        if not should_supersede:
+            raise RuntimeError("conversation is awaiting resume; use the resume endpoint")
+
+        if interrupt_type == "approval":
+            approval_id = str(pending_interrupt.get("metadata", {}).get("approval_id") or "")
+            if approval_id:
+                self.approval_store.cancel(
+                    approval_id,
+                    actor_id="system",
+                    comment="superseded by topic shift",
+                )
+                self._append_system_event(
+                    session_id=session_id,
+                    thread_id=str(session.get("thread_id") or session_id),
+                    ticket_id=str(session.get("ticket_id") or session_id),
+                    event_type="approval.superseded",
+                    payload={"approval_id": approval_id, "new_message": request.message},
+                    metadata={"source": "orchestrator"},
+                )
+        self.interrupt_store.cancel(
+            str(pending_interrupt["interrupt_id"]),
+            answer_payload={"superseded_by_message": request.message},
+        )
+        self._append_system_event(
+            session_id=session_id,
+            thread_id=str(session.get("thread_id") or session_id),
+            ticket_id=str(session.get("ticket_id") or session_id),
+            event_type="interrupt.superseded",
+            payload={
+                "interrupt_id": pending_interrupt.get("interrupt_id"),
+                "interrupt_type": interrupt_type,
+                "new_message": request.message,
+                "topic_shift_detected": bool(topic_shift.get("topic_shift_detected")),
+            },
+            metadata={"source": "orchestrator"},
+        )
+        updated_session = self.session_service.update_session_state(
+            session_id,
+            incident_state=dict(session.get("incident_state") or {}),
+            status="active",
+            current_stage="routing",
+            current_agent=session.get("current_agent"),
+            latest_approval_id=session.get("latest_approval_id") if interrupt_type != "approval" else None,
+            pending_interrupt_id=None,
+            last_checkpoint_id=session.get("last_checkpoint_id"),
+            session_memory=self._merge_session_memory(
+                session,
+                current_stage="routing",
+                pending_approval=None if interrupt_type == "approval" else dict((session.get("session_memory") or {}).get("pending_approval") or {}),
+                pending_interrupt=None,
+            ),
+        )
+        return updated_session or session
 
     async def _run_ticket_message(
         self,
@@ -616,6 +803,23 @@ class SupervisorOrchestrator:
         current_session = self.session_service.get_session(session_id)
         if current_session is None:
             raise ValueError("session not found during context assembly")
+        topic_shift = None
+        if not create_session:
+            previous_incident_state = dict(current_session.get("incident_state") or {})
+            previous_snapshot = dict(previous_incident_state.get("context_snapshot") or {})
+            previous_categories = list(previous_snapshot.get("matched_skill_categories") or [])
+            current_categories = self._infer_skill_categories_from_message(request.message)
+            topic_shift = self.topic_shift_detector.detect(
+                previous_message=str(previous_incident_state.get("message") or ""),
+                current_message=request.message,
+                previous_categories=previous_categories,
+                current_categories=current_categories,
+            )
+            incident_state.shared_context["current_intent_history"] = list(
+                dict(current_session.get("session_memory") or {}).get("current_intent_history") or []
+            )
+            incident_state.shared_context["topic_shift"] = topic_shift
+            incident_state.shared_context["incremental_skill_categories"] = list(topic_shift.get("incremental_skill_categories") or [])
         graph_input["execution_context"] = self._assemble_execution_context(
             request=request,
             session=current_session,
@@ -702,9 +906,13 @@ class SupervisorOrchestrator:
         if isinstance(approval_request, dict):
             pending_interrupt_id = approval_request.get("interrupt_id")
         clarification_interrupt = final_incident_state.metadata.get("clarification_interrupt") if hasattr(final_incident_state, "metadata") else None
+        feedback_interrupt = final_incident_state.metadata.get("feedback_interrupt") if hasattr(final_incident_state, "metadata") else None
         if pending_interrupt_id is None and isinstance(clarification_interrupt, dict):
             pending_interrupt_id = clarification_interrupt.get("interrupt_id")
             pending_interrupt_payload = clarification_interrupt
+        if pending_interrupt_id is None and isinstance(feedback_interrupt, dict):
+            pending_interrupt_id = feedback_interrupt.get("interrupt_id")
+            pending_interrupt_payload = feedback_interrupt
         session = self.session_service.update_session_state(
             session_id,
             incident_state=final_incident_state.model_dump(),
@@ -739,6 +947,8 @@ class SupervisorOrchestrator:
                             if final_status == "awaiting_approval"
                             else "clarification"
                             if final_status == "awaiting_clarification"
+                            else "feedback"
+                            if isinstance(pending_interrupt_payload, dict) and pending_interrupt_payload.get("type") == "feedback"
                             else None
                         ),
                         "reason": (
@@ -757,6 +967,68 @@ class SupervisorOrchestrator:
                 ),
             ),
         )
+        if topic_shift is not None and session is not None:
+            current_intent_history = list(dict(session.get("session_memory") or {}).get("current_intent_history") or [])
+            current_intent_history.append(
+                {
+                    "message": request.message,
+                    "topic_shift_detected": bool(topic_shift.get("topic_shift_detected")),
+                    "incremental_skill_categories": list(topic_shift.get("incremental_skill_categories") or []),
+                }
+            )
+            session = self.session_service.update_session_state(
+                session_id,
+                incident_state=final_incident_state.model_dump(),
+                status=final_status,
+                current_stage=final_stage,
+                session_memory=self._merge_session_memory(
+                    session,
+                    current_intent=current_intent,
+                    key_entities={
+                        "service": final_incident_state.service,
+                        "cluster": final_incident_state.cluster,
+                        "namespace": final_incident_state.namespace,
+                    },
+                    pending_approval=(
+                        {
+                            "approval_id": latest_approval_id,
+                            "action": approval_request.get("action"),
+                            "risk": approval_request.get("risk"),
+                            "reason": approval_request.get("reason"),
+                        }
+                        if isinstance(approval_request, dict)
+                        else None
+                    ),
+                    current_stage=final_stage,
+                    current_intent_history=current_intent_history,
+                    pending_interrupt=(
+                        {
+                            "interrupt_id": pending_interrupt_id,
+                            "type": (
+                                "approval"
+                                if final_status == "awaiting_approval"
+                                else "clarification"
+                                if final_status == "awaiting_clarification"
+                                else "feedback"
+                                if isinstance(pending_interrupt_payload, dict) and pending_interrupt_payload.get("type") == "feedback"
+                                else None
+                            ),
+                            "reason": (
+                                approval_request.get("reason")
+                                if isinstance(approval_request, dict)
+                                else pending_interrupt_payload.get("reason") if isinstance(pending_interrupt_payload, dict) else None
+                            ),
+                            "question": (
+                                "是否批准执行该高风险动作？"
+                                if final_status == "awaiting_approval"
+                                else pending_interrupt_payload.get("question") if isinstance(pending_interrupt_payload, dict) else None
+                            ),
+                        }
+                        if pending_interrupt_id
+                        else None
+                    ),
+                ),
+            )
         checkpoint = None
         if session is not None:
             checkpoint = self._create_checkpoint(
@@ -892,8 +1164,13 @@ class SupervisorOrchestrator:
         session = self.session_service.get_session(session_id)
         if session is None:
             raise ValueError("session not found")
-        if session.get("pending_interrupt_id"):
-            raise RuntimeError("conversation is awaiting resume; use the resume endpoint")
+        pending_interrupt = self._get_pending_interrupt(session)
+        if pending_interrupt is not None:
+            session = self._supersede_pending_interrupt_for_new_message(
+                session=session,
+                pending_interrupt=pending_interrupt,
+                request=request,
+            )
         incident_state = dict(session.get("incident_state") or {})
         shared_context = dict(incident_state.get("shared_context") or {})
         ticket_request = TicketRequest(
@@ -997,6 +1274,9 @@ class SupervisorOrchestrator:
                 return self._attach_observability(payload) or payload
             if interrupt_type == "clarification":
                 payload = await self._resume_clarification(session, pending_interrupt, answer_payload)
+                return self._attach_observability(payload) or payload
+            if interrupt_type == "feedback":
+                payload = await self._resume_feedback(session, pending_interrupt, answer_payload)
                 return self._attach_observability(payload) or payload
             raise RuntimeError(f"unsupported interrupt type for resume: {interrupt_type}")
 

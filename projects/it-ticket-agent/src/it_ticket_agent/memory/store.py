@@ -58,6 +58,11 @@ class ProcessMemoryStoreV2:
                     final_action text not null,
                     approval_required integer not null,
                     verification_passed integer,
+                    human_verified integer not null default 0,
+                    hypothesis_accuracy_json text not null default '{}',
+                    actual_root_cause_hypothesis text not null default '',
+                    selected_hypothesis_id text not null default '',
+                    selected_ranker_features_json text not null default '{}',
                     final_conclusion text not null,
                     created_at text not null,
                     updated_at text not null,
@@ -83,6 +88,17 @@ class ProcessMemoryStoreV2:
                 on process_memory_entry (session_id, created_at desc, memory_id desc)
                 """
             )
+            columns = {row["name"] for row in conn.execute("pragma table_info(incident_case)").fetchall()}
+            if "human_verified" not in columns:
+                conn.execute("alter table incident_case add column human_verified integer not null default 0")
+            if "hypothesis_accuracy_json" not in columns:
+                conn.execute("alter table incident_case add column hypothesis_accuracy_json text not null default '{}'")
+            if "actual_root_cause_hypothesis" not in columns:
+                conn.execute("alter table incident_case add column actual_root_cause_hypothesis text not null default ''")
+            if "selected_hypothesis_id" not in columns:
+                conn.execute("alter table incident_case add column selected_hypothesis_id text not null default ''")
+            if "selected_ranker_features_json" not in columns:
+                conn.execute("alter table incident_case add column selected_ranker_features_json text not null default '{}'")
             conn.commit()
 
     def append_entry(self, entry: ProcessMemoryEntry) -> ProcessMemoryEntry:
@@ -180,9 +196,11 @@ class ProcessMemoryStoreV2:
                 insert into incident_case (
                     case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
                     current_agent, symptom, root_cause, key_evidence_json, final_action,
-                    approval_required, verification_passed, final_conclusion, created_at,
+                    approval_required, verification_passed, human_verified,
+                    hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
+                    selected_ranker_features_json, final_conclusion, created_at,
                     updated_at, closed_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(session_id) do update set
                     thread_id = excluded.thread_id,
                     ticket_id = excluded.ticket_id,
@@ -196,6 +214,11 @@ class ProcessMemoryStoreV2:
                     final_action = excluded.final_action,
                     approval_required = excluded.approval_required,
                     verification_passed = excluded.verification_passed,
+                    human_verified = excluded.human_verified,
+                    hypothesis_accuracy_json = excluded.hypothesis_accuracy_json,
+                    actual_root_cause_hypothesis = excluded.actual_root_cause_hypothesis,
+                    selected_hypothesis_id = excluded.selected_hypothesis_id,
+                    selected_ranker_features_json = excluded.selected_ranker_features_json,
                     final_conclusion = excluded.final_conclusion,
                     updated_at = excluded.updated_at,
                     closed_at = excluded.closed_at
@@ -215,6 +238,11 @@ class ProcessMemoryStoreV2:
                     payload.final_action,
                     int(payload.approval_required),
                     None if payload.verification_passed is None else int(payload.verification_passed),
+                    int(payload.human_verified),
+                    json.dumps(payload.hypothesis_accuracy, ensure_ascii=False),
+                    payload.actual_root_cause_hypothesis,
+                    payload.selected_hypothesis_id,
+                    json.dumps(payload.selected_ranker_features, ensure_ascii=False),
                     payload.final_conclusion,
                     payload.created_at,
                     payload.updated_at,
@@ -233,7 +261,9 @@ class ProcessMemoryStoreV2:
                 """
                 select case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
                        current_agent, symptom, root_cause, key_evidence_json, final_action,
-                       approval_required, verification_passed, final_conclusion, created_at,
+                       approval_required, verification_passed, human_verified,
+                       hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
+                       selected_ranker_features_json, final_conclusion, created_at,
                        updated_at, closed_at
                 from incident_case
                 where case_id = ?
@@ -248,7 +278,9 @@ class ProcessMemoryStoreV2:
                 """
                 select case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
                        current_agent, symptom, root_cause, key_evidence_json, final_action,
-                       approval_required, verification_passed, final_conclusion, created_at,
+                       approval_required, verification_passed, human_verified,
+                       hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
+                       selected_ranker_features_json, final_conclusion, created_at,
                        updated_at, closed_at
                 from incident_case
                 where session_id = ?
@@ -289,7 +321,9 @@ class ProcessMemoryStoreV2:
         query = f"""
             select case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
                    current_agent, symptom, root_cause, key_evidence_json, final_action,
-                   approval_required, verification_passed, final_conclusion, created_at,
+                   approval_required, verification_passed, human_verified,
+                   hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
+                   selected_ranker_features_json, final_conclusion, created_at,
                    updated_at, closed_at
             from incident_case
             where {' and '.join(conditions)}
@@ -338,6 +372,11 @@ class ProcessMemoryStoreV2:
             final_action=row["final_action"],
             approval_required=bool(row["approval_required"]),
             verification_passed=None if verification_passed is None else bool(verification_passed),
+            human_verified=bool(row["human_verified"]),
+            hypothesis_accuracy=json.loads(row["hypothesis_accuracy_json"] or "{}"),
+            actual_root_cause_hypothesis=row["actual_root_cause_hypothesis"],
+            selected_hypothesis_id=row["selected_hypothesis_id"],
+            selected_ranker_features=json.loads(row["selected_ranker_features_json"] or "{}"),
             final_conclusion=row["final_conclusion"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

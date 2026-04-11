@@ -3,42 +3,62 @@ from __future__ import annotations
 from collections import Counter
 from typing import Iterable
 
+from .ranker_weights import RankerWeightsManager, estimate_adaptive_weights
 from ..state.models import RankedResult, SimilarIncidentCase, VerificationResult
 
 
 class Ranker:
-    def __init__(self, *, w1: float = 0.5, w2: float = 0.3, w3: float = 0.2) -> None:
+    def __init__(
+        self,
+        *,
+        w1: float = 0.5,
+        w2: float = 0.3,
+        w3: float = 0.2,
+        weights_manager: RankerWeightsManager | None = None,
+    ) -> None:
         self.w1 = w1
         self.w2 = w2
         self.w3 = w3
+        self.weights_manager = weights_manager
 
     def rank(
         self,
         verification_results: Iterable[VerificationResult],
         *,
         similar_cases: list[SimilarIncidentCase] | None = None,
+        feedback_cases: list[dict] | None = None,
     ) -> RankedResult:
         items = list(verification_results)
+        weights = (
+            self.weights_manager.resolve_weights(feedback_cases)
+            if self.weights_manager is not None
+            else estimate_adaptive_weights(feedback_cases)
+        )
+        w1 = weights["evidence_strength"]
+        w2 = weights["confidence"]
+        w3 = weights["history_match"]
         if not items:
             return RankedResult(
                 primary=None,
                 secondary=[],
                 rejected=[],
-                ranking_metadata={"scores": [], "weights": self._weights()},
+                ranking_metadata={"scores": [], "weights": weights},
             )
 
         scores: list[tuple[float, VerificationResult, float]] = []
         for result in items:
             history_match = self._history_match(result.root_cause, similar_cases or [])
             score = (
-                self.w1 * float(result.evidence_strength or 0.0)
-                + self.w2 * float(result.confidence or 0.0)
-                + self.w3 * history_match
+                w1 * float(result.evidence_strength or 0.0)
+                + w2 * float(result.confidence or 0.0)
+                + w3 * history_match
             )
             result.metadata["ranker"] = {
+                "evidence_strength": float(result.evidence_strength or 0.0),
+                "confidence": float(result.confidence or 0.0),
                 "history_match": history_match,
                 "final_score": score,
-                "weights": self._weights(),
+                "weights": weights,
             }
             scores.append((score, result, history_match))
 
@@ -52,7 +72,7 @@ class Ranker:
             secondary=secondary,
             rejected=rejected,
             ranking_metadata={
-                "weights": self._weights(),
+                "weights": weights,
                 "scores": [
                     {
                         "hypothesis_id": result.hypothesis_id,

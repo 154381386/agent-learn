@@ -5,9 +5,9 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-InterruptType = Literal["clarification", "approval", "external_event"]
+InterruptType = Literal["clarification", "approval", "external_event", "feedback"]
 InterruptStatus = Literal["pending", "answered", "cancelled", "expired"]
-InterruptSource = Literal["clarification", "approval", "external_event"]
+InterruptSource = Literal["clarification", "approval", "external_event", "feedback"]
 
 
 def utc_now() -> str:

@@ -11,6 +11,8 @@ from it_ticket_agent.checkpoint_store import CheckpointStore
 from it_ticket_agent.execution_store import ExecutionStore
 from it_ticket_agent.interrupt_store import InterruptStore
 from it_ticket_agent.memory_store import IncidentCaseStore, ProcessMemoryStore
+from it_ticket_agent.orchestration.ranker_weights import estimate_adaptive_weights
+from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager
 from it_ticket_agent.orchestration.verification_agent import VerificationAgent
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
 from it_ticket_agent.schemas import ConversationCreateRequest
@@ -209,6 +211,78 @@ class ToolInventoryTest(unittest.TestCase):
     def test_exported_tool_inventory_exceeds_thirty(self) -> None:
         tool_names = [name for name in exported_tools if name.endswith("Tool")]
         self.assertGreaterEqual(len(tool_names), 30)
+
+
+class RankerWeightAdaptationTest(unittest.TestCase):
+    def test_estimate_adaptive_weights_uses_verified_feedback_cases(self) -> None:
+        weights = estimate_adaptive_weights(
+            [
+                {
+                    "human_verified": True,
+                    "selected_hypothesis_id": "H1",
+                    "actual_root_cause_hypothesis": "H1",
+                    "selected_ranker_features": {
+                        "evidence_strength": 0.9,
+                        "confidence": 0.8,
+                        "history_match": 0.2,
+                    },
+                },
+                {
+                    "human_verified": True,
+                    "selected_hypothesis_id": "H2",
+                    "actual_root_cause_hypothesis": "H3",
+                    "selected_ranker_features": {
+                        "evidence_strength": 0.2,
+                        "confidence": 0.3,
+                        "history_match": 0.8,
+                    },
+                },
+            ]
+        )
+
+        self.assertGreater(weights["evidence_strength"], weights["history_match"])
+        self.assertGreater(weights["confidence"], 0.2)
+
+    def test_ranker_weights_manager_persists_and_activates_snapshots(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            manager = RankerWeightsManager(str(Path(tmp_dir) / "ranker-weights.db"), auto_activate_threshold=2)
+            resolved = manager.resolve_weights(
+                [
+                    {
+                        "human_verified": True,
+                        "selected_hypothesis_id": "H1",
+                        "actual_root_cause_hypothesis": "H1",
+                        "selected_ranker_features": {
+                            "evidence_strength": 0.9,
+                            "confidence": 0.7,
+                            "history_match": 0.1,
+                        },
+                    },
+                    {
+                        "human_verified": True,
+                        "selected_hypothesis_id": "H2",
+                        "actual_root_cause_hypothesis": "H2",
+                        "selected_ranker_features": {
+                            "evidence_strength": 0.8,
+                            "confidence": 0.6,
+                            "history_match": 0.2,
+                        },
+                    },
+                ]
+            )
+
+            snapshots = manager.list_snapshots()
+            self.assertTrue(snapshots)
+            self.assertEqual(manager.get_active_snapshot()["weights"], resolved)
+
+            manual = manager.save_snapshot(
+                {"evidence_strength": 0.2, "confidence": 0.2, "history_match": 0.6},
+                sample_count=2,
+                strategy="manual_override",
+                activate=False,
+            )
+            active = manager.activate_snapshot(manual["version_id"])
+            self.assertEqual(active["version_id"], manual["version_id"])
 
 
 if __name__ == "__main__":

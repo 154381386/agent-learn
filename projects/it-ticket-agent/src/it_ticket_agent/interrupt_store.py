@@ -67,6 +67,28 @@ class InterruptStore:
         )
         return record.model_dump()
 
+    def create_feedback_interrupt(
+        self,
+        *,
+        session_id: str,
+        ticket_id: str,
+        reason: str,
+        question: str,
+        expected_input_schema: dict[str, Any],
+        timeout_at: str | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        record = self.service.create_feedback_interrupt(
+            session_id=session_id,
+            ticket_id=ticket_id,
+            reason=reason,
+            question=question,
+            expected_input_schema=expected_input_schema,
+            timeout_at=timeout_at,
+            metadata=metadata,
+        )
+        return record.model_dump()
+
     def answer(self, interrupt_id: str, *, answer_payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         record = self.service.answer_interrupt(interrupt_id, answer_payload=answer_payload)
         return None if record is None else record.model_dump()

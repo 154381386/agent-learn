@@ -58,6 +58,11 @@ class IncidentCase(BaseModel):
     final_action: str = ""
     approval_required: bool = False
     verification_passed: Optional[bool] = None
+    human_verified: bool = False
+    hypothesis_accuracy: Dict[str, float] = Field(default_factory=dict)
+    actual_root_cause_hypothesis: str = ""
+    selected_hypothesis_id: str = ""
+    selected_ranker_features: Dict[str, float] = Field(default_factory=dict)
     final_conclusion: str = ""
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)

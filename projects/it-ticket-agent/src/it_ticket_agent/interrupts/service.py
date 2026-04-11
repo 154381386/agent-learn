@@ -80,6 +80,29 @@ class InterruptService:
             metadata=metadata,
         )
 
+    def create_feedback_interrupt(
+        self,
+        *,
+        session_id: str,
+        ticket_id: str,
+        reason: str,
+        question: str,
+        expected_input_schema: dict[str, Any],
+        timeout_at: str | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> InterruptRequest:
+        return self._create_interrupt(
+            session_id=session_id,
+            ticket_id=ticket_id,
+            interrupt_type="feedback",
+            source="feedback",
+            reason=reason,
+            question=question,
+            expected_input_schema=expected_input_schema,
+            timeout_at=timeout_at,
+            metadata=metadata,
+        )
+
     def get_interrupt(self, interrupt_id: str) -> InterruptRequest | None:
         return self.store.get_interrupt(interrupt_id)
 

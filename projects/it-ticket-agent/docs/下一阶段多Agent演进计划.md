@@ -118,113 +118,88 @@
 - 低风险动作可在主图中 auto-approve 并直接执行
 - 执行结果、checkpoint、execution plan 与事件账本继续复用现有实现
 
+### [x] T9. Legacy Graph 清理与迁移
+
+已完成内容：
+
+- 旧的 `runtime/supervisor.py`
+- 旧的 `orchestration/aggregator.py`、`orchestration/parallel_dispatcher.py`
+- 旧的 `agents/`、`agent_registry/`、`agents/registry/` 及对应测试
+- `graph` / `runtime` / `state` 中只服务旧主路径的兼容残留
+
+完成结果：
+
+- 新主路径已经成为唯一默认入口
+- 旧的 supervisor / subagent / aggregator 编排已从代码主干移除
+- 仓库当前只保留 `smart_router + hypothesis_graph + skill/tool` 主线
+- 相关回归测试已切换到新路径验证
+
+### [x] T6. Feedback Gate + IncidentCase 增强
+
+已完成内容：
+
+- `graph/nodes.py` 中已补齐反馈中断创建与反馈请求事件
+- `runtime/orchestrator.py` 中已补齐 feedback resume 与案例回写逻辑
+- `memory/models.py`、`memory/store.py`、`memory_store.py` 中已扩展 `IncidentCase` 反馈字段
+- `interrupts` 中已增加 `feedback` 类型中断
+- `tests/test_runtime_smoke.py` 中已覆盖 feedback interrupt 与反馈回写场景
+
+完成结果：
+
+- 执行/诊断完成后可创建人工确认反馈中断
+- 支持“确认根因正确”与“纠正实际根因”
+- `IncidentCase` 已增加 `human_verified`、`hypothesis_accuracy`、`actual_root_cause_hypothesis`
+- 反馈结果可审计、可恢复、可回放
+
+### [x] T7. Ranker 权重自适应
+
+已完成内容：
+
+- `orchestration/ranker_weights.py`
+- `orchestration/ranker.py` 中对历史反馈样本的权重解析
+- 基于 sqlite 的权重快照持久化、激活与切换逻辑
+- `tests/test_skill_scenarios.py` 中对权重估计和快照切换的验证
+
+完成结果：
+
+- 可基于历史反馈样本重新计算权重
+- 支持权重快照持久化与激活切换
+- 默认权重与自适应权重已具备清晰切换路径
+- 基础回滚能力可通过切换历史快照实现
+
+### [x] T8. 多轮对话中的 Topic Shift + Skill 动态追加
+
+已完成内容：
+
+- `runtime/topic_shift_detector.py`
+- `runtime/orchestrator.py` 中的 `current_intent_history` 记录
+- `graph/nodes.py` 中的 skill 增量加载整合
+- 挂起中的 `approval / feedback` 遇到改口时的 supersede / cancel / recompute 逻辑
+- `tests/test_runtime_smoke.py` 中对 topic shift 与 pending approval supersede 的验证
+
+完成结果：
+
+- 可检测用户中途改口和话题迁移
+- 新一轮 `ContextSnapshot` 可增量纳入新的 Skill 分类
+- 历史上下文保留在 `current_intent_history` 中
+- 对挂起中的中断已经具备取消、重算与审计记录
+
 ---
 
 ## 当前总代办
 
----
+当前约束：
 
-### T6. Feedback Gate + IncidentCase 增强
-
-推荐阶段：**Phase 3**
-
-目标：
-
-- 在执行完成后引入人工确认 / 纠正入口
-- 将确认结果写回 `IncidentCaseStore`
-- 为后续权重自适应提供结构化样本
-
-建议交付物：
-
-- `graph/nodes.py` 中的 `feedback_gate`
-- `knowledge` 或等价存储层中的 `IncidentCase` 扩展字段
-- `interrupts` 中的反馈中断模型
-- `events` 中的 feedback 事件
-
-完成标准：
-
-- 支持“确认根因正确”与“纠正实际根因”
-- `IncidentCase` 至少增加 `human_verified`、`hypothesis_accuracy`、`actual_root_cause_hypothesis`
-- 反馈不阻塞主链路结束，但可被完整审计与回放
-
----
-
-### T7. Ranker 权重自适应
-
-推荐阶段：**Phase 3**
-
-目标：
-
-- 基于历史反馈样本动态调整 Ranker 权重
-- 让 `evidence_strength / confidence / history_match` 的权重随历史准确率演化
-
-建议交付物：
-
-- `orchestration/ranker_weights.py`
-- 权重持久化与加载机制
-- 离线回放 / 统计脚本
-
-完成标准：
-
-- 可基于历史样本重新计算权重
-- 权重更新过程可审计、可回滚
-- 默认权重与自适应权重切换策略明确
-
----
-
-### T8. 多轮对话中的 Topic Shift + Skill 动态追加
-
-推荐阶段：**Phase 3**
-
-目标：
-
-- 识别用户中途改口或问题视角变化
-- 在下一轮重新装配上下文时提升最新输入优先级
-- 当问题扩展到新方向时，支持追加新的 Skill 分类，而不是重载全部 Skill
-
-建议交付物：
-
-- `runtime/topic_shift_detector.py`
-- `session_memory` 或等价结构中的 `current_intent_history`
-- Skill 增量加载策略
-- 对挂起中的 approval / feedback / execute 的改口处理策略
-
-完成标准：
-
-- 历史上下文不会丢失，但不会压过用户最新问题
-- 新一轮 `ContextSnapshot` 可增量纳入新 Skill 分类
-- 对已挂起中断的取消、复用、重算规则明确且可观测
-
----
-
-### T9. Legacy Graph 清理与迁移
-
-推荐阶段：**Phase 4**
-
-目标：
-
-- 清理旧的 `RuleBasedSupervisor`、`BaseDomainAgent`、`Aggregator`、`ticket_graph`
-- 将 API / runtime 默认入口迁移到 `hypothesis_graph`
-- 清理旧 registry 与多领域 Agent 配置残留
-
-建议交付物：
-
-- `runtime/supervisor.py` 迁移或下线
-- `agents/`、`agent_registry/`、`agents/registry/` 的清理计划
-- `graph/builder.py` 默认入口切换
-- 兼容期迁移说明
-
-完成标准：
-
-- 新主路径默认生效
-- 旧主路径不再承担默认流量
-- 旧组件删除或明确标记废弃，并有最小迁移说明
+- `T10`、`T11`、`T12`：当前只做设计说明，暂不进入代码实现
+- 设计类代办项需要把模块边界、输入输出契约、状态流转、风险点与验收口径写清楚
 
 ---
 
 ### T10. 生产化补齐
 
 推荐阶段：**Phase 4**
+
+当前处理方式：**仅设计，不实现**
 
 目标：
 
@@ -248,6 +223,61 @@
 
 ---
 
+### T11. 自动化任务 / Cron 预诊断
+
+推荐阶段：**Phase 4**
+
+当前处理方式：**仅设计，不实现**
+
+目标：
+
+- 让系统支持定时巡检、定时预诊断与定期 case 回放
+- 将 `skill` / `tool` 主链路扩展到主动运行，而不只是在用户提问时触发
+- 为后续告警联动、日报周报与值班辅助打基础
+
+建议交付物：
+
+- `automation` 或 `cron` 模块
+- 定时任务配置模型与持久化
+- 预置任务模板：`SLO 巡检`、`错误预算检查`、`高风险服务健康扫描`
+- 自动化任务执行日志、失败重试与结果审计
+
+完成标准：
+
+- 可按 cron 周期触发 `hypothesis_graph` 或指定 `skill`
+- 自动化任务可查看最近执行记录、状态与关键证据
+- 支持跳过重复任务、失败重试与基础告警
+
+---
+
+### T12. 多入口接入（API / Webhook / IM / Alert Ingress）
+
+推荐阶段：**Phase 4**
+
+当前处理方式：**仅设计，不实现**
+
+目标：
+
+- 把当前单一 API 入口扩展为统一 ingress 层
+- 支持用户提问、告警事件、Webhook 推送、IM 消息进入同一条主链路
+- 统一会话、审计、权限与事件模型，避免每种入口单独实现一套逻辑
+
+建议交付物：
+
+- `ingress/` 或等价模块
+- 标准入站事件模型：`user_message`、`alert_event`、`webhook_event`、`approval_callback`
+- Webhook 路由与签名校验
+- IM 渠道适配层（先从飞书/企业微信二选一）
+- 告警事件到 `hypothesis_graph` 的映射规则
+
+完成标准：
+
+- 普通会话 API、Webhook、至少一种 IM 渠道共用统一入口协议
+- 告警事件可以直接触发预诊断，并生成可追踪 session
+- 不同入口的上下文归一到同一个 `TicketRequest` / `IncidentState` 语义层
+
+---
+
 ## 推荐实施顺序
 
 ### 第一批：先打通诊断主干
@@ -267,8 +297,12 @@
 
 ### 第三批：迁移与生产化
 
-10. `Legacy Graph 清理与迁移`
-11. `生产化补齐`
+10. `Feedback Gate + IncidentCase 增强`
+11. `Ranker 权重自适应`
+12. `Topic Shift + Skill 动态追加`
+13. `生产化补齐`
+14. `自动化任务 / Cron 预诊断`
+15. `多入口接入（API / Webhook / IM / Alert Ingress）`
 
 ---
 
@@ -313,3 +347,11 @@
 
 - 旧 `ticket_graph` / `Aggregator` / 领域 Agent 退出默认主路径
 - 权限、人工升级、值班交接、可观测性、测试体系具备最小生产能力
+
+### N5：具备主动运行与多入口接入能力
+
+完成条件：
+
+- 定时自动化任务可稳定触发并审计
+- API、Webhook、至少一种 IM / Alert Ingress 已打通
+- 多入口事件统一进入主链路，具备一致的 session / trace / event 语义
