@@ -76,14 +76,12 @@ class SupervisorOrchestrator:
         self.skill_registry = SkillRegistry()
         self.hypothesis_generator = HypothesisGenerator(settings)
         self.graph_nodes = OrchestratorGraphNodes(
-            supervisor=None,
             approval_store=self.approval_store,
             session_store=self.session_store,
             interrupt_store=self.interrupt_store,
             process_memory_store=self.process_memory_store,
             incident_case_store=self.incident_case_store,
             connection_manager=self.connection_manager,
-            agents={},
             execution_store=self.execution_store,
             system_event_store=self.system_event_store,
             smart_router=self.smart_router,
@@ -180,8 +178,8 @@ class SupervisorOrchestrator:
                 if detail:
                     key_evidence.append(detail)
         if not key_evidence:
-            subagent_results = incident_state.get("subagent_results") if isinstance(incident_state.get("subagent_results"), list) else []
-            for result in subagent_results[:1]:
+            verification_results = incident_state.get("verification_results") if isinstance(incident_state.get("verification_results"), list) else []
+            for result in verification_results[:1]:
                 if isinstance(result, dict):
                     key_evidence.extend(str(item) for item in result.get("evidence", [])[:3] if item)
 

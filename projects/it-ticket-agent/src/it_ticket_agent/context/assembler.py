@@ -43,7 +43,6 @@ class ContextAssembler:
         evidence_bundle = EvidenceBundle(
             routing=dict(snapshot.get("routing") or {}),
             rag_context=dict(snapshot.get("rag_context") or {}) if snapshot.get("rag_context") else None,
-            subagent_results=list(snapshot.get("subagent_results") or []),
             approval_proposals=list(snapshot.get("approval_proposals") or []),
             approved_actions=list(snapshot.get("approved_actions") or []),
             execution_results=list(snapshot.get("execution_results") or []),

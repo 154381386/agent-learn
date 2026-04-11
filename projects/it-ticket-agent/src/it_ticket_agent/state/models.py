@@ -11,21 +11,6 @@ ExecutionStatus = Literal["pending", "completed", "failed", "skipped"]
 ApprovalStatus = Literal["approved", "rejected", "cancelled"]
 
 
-class IncidentFinding(BaseModel):
-    title: str
-    detail: str
-    severity: str = "info"
-
-
-class ToolResultSnapshot(BaseModel):
-    tool_name: str
-    status: str
-    summary: str
-    payload: Dict[str, Any] = Field(default_factory=dict)
-    evidence: List[str] = Field(default_factory=list)
-    risk: RiskLevel = "low"
-
-
 class KnowledgeHit(BaseModel):
     chunk_id: str = ""
     title: str = ""
@@ -189,21 +174,3 @@ class RankedResult(BaseModel):
     rejected: List[VerificationResult] = Field(default_factory=list)
     ranking_metadata: Dict[str, Any] = Field(default_factory=dict)
 
-
-class SubAgentResult(BaseModel):
-    agent_name: str
-    domain: str
-    status: str
-    summary: str
-    execution_path: str = "legacy"
-    findings: List[IncidentFinding] = Field(default_factory=list)
-    evidence: List[str] = Field(default_factory=list)
-    tool_results: List[ToolResultSnapshot] = Field(default_factory=list)
-    approval_proposals: List[ApprovalProposal] = Field(default_factory=list)
-    risk_level: RiskLevel = "low"
-    confidence: float = 0.0
-    open_questions: List[str] = Field(default_factory=list)
-    needs_handoff: bool = False
-    raw_refs: List[str] = Field(default_factory=list)
-    clarification_request: Optional[Dict[str, Any]] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)

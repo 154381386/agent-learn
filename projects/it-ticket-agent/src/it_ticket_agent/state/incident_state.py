@@ -12,7 +12,6 @@ from .models import (
     Hypothesis,
     RAGContextBundle,
     RankedResult,
-    SubAgentResult,
     VerificationPlan,
     VerificationResult,
 )
@@ -34,7 +33,6 @@ class IncidentState(BaseModel):
     context_snapshot: Optional[ContextSnapshot] = None
     hypotheses: List[Hypothesis] = Field(default_factory=list)
     ranked_result: Optional[RankedResult] = None
-    subagent_results: List[SubAgentResult] = Field(default_factory=list)
     clarification_requests: List[Dict[str, Any]] = Field(default_factory=list)
     approval_proposals: List[ApprovalProposal] = Field(default_factory=list)
     approved_actions: List[ApprovedAction] = Field(default_factory=list)

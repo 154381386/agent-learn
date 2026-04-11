@@ -42,7 +42,6 @@ class PendingInterruptContext(BaseModel):
 class EvidenceBundle(BaseModel):
     routing: Dict[str, Any] = Field(default_factory=dict)
     rag_context: Optional[Dict[str, Any]] = None
-    subagent_results: List[Dict[str, Any]] = Field(default_factory=list)
     approval_proposals: List[Dict[str, Any]] = Field(default_factory=list)
     approved_actions: List[Dict[str, Any]] = Field(default_factory=list)
     execution_results: List[Dict[str, Any]] = Field(default_factory=list)

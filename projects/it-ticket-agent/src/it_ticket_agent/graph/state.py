@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Literal
 from typing_extensions import TypedDict
 
 from ..context.models import ExecutionContext
-from ..runtime.contracts import AgentResult, RoutingDecision, SmartRouterDecision, TaskEnvelope
+from ..runtime.contracts import SmartRouterDecision
 from ..schemas import ApprovalDecisionRequest, TicketRequest
 from ..state.incident_state import IncidentState
 from ..state.models import ContextSnapshot, Hypothesis, RankedResult, VerificationResult
@@ -23,11 +23,6 @@ class TicketGraphState(TypedDict, total=False):
     hypotheses: List[Hypothesis]
     verification_results: List[VerificationResult]
     ranked_result: RankedResult
-    routing_decision: RoutingDecision
-    task: TaskEnvelope
-    agent_result: AgentResult
-    agent_results: List[AgentResult]
-    dispatch_failures: List[Dict[str, Any]]
     approval_request: Dict[str, Any] | None
     response: Dict[str, Any]
     pending_node: str | None

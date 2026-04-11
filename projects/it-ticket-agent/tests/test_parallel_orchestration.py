@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,123 +10,11 @@ from it_ticket_agent.checkpoint_store import CheckpointStore
 from it_ticket_agent.execution_store import ExecutionStore
 from it_ticket_agent.interrupt_store import InterruptStore
 from it_ticket_agent.memory_store import IncidentCaseStore, ProcessMemoryStore
-from it_ticket_agent.orchestration import Aggregator, ParallelDispatcher
-from it_ticket_agent.runtime.contracts import (
-    AgentAction,
-    AgentFinding,
-    AgentResult,
-    TaskEnvelope,
-)
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
 from it_ticket_agent.schemas import ConversationCreateRequest
 from it_ticket_agent.settings import Settings
 from it_ticket_agent.state.models import RAGContextBundle
 from it_ticket_agent.system_event_store import SystemEventStore
-
-
-class _StaticAgent:
-    def __init__(self, result: AgentResult | None = None, *, delay_sec: float = 0.0, error: Exception | None = None) -> None:
-        self._result = result
-        self._delay_sec = delay_sec
-        self._error = error
-
-    async def run(self, task: TaskEnvelope) -> AgentResult:
-        if self._delay_sec > 0:
-            await asyncio.sleep(self._delay_sec)
-        if self._error is not None:
-            raise self._error
-        assert self._result is not None
-        return self._result.model_copy(update={"execution_path": task.mode})
-
-
-class ParallelDispatcherTest(unittest.IsolatedAsyncioTestCase):
-    async def test_dispatch_isolates_failures_and_timeouts(self) -> None:
-        dispatcher = ParallelDispatcher(max_concurrency=2, timeout_sec=0.02)
-        task = TaskEnvelope(task_id="task-1", ticket_id="ticket-1", goal="并行诊断")
-        agents = {
-            "ok_agent": _StaticAgent(
-                AgentResult(
-                    agent_name="ok_agent",
-                    domain="general",
-                    status="completed",
-                    summary="ok",
-                )
-            ),
-            "boom_agent": _StaticAgent(error=RuntimeError("boom")),
-            "slow_agent": _StaticAgent(
-                AgentResult(
-                    agent_name="slow_agent",
-                    domain="general",
-                    status="completed",
-                    summary="slow",
-                ),
-                delay_sec=0.2,
-            ),
-        }
-
-        batch = await dispatcher.dispatch(
-            task=task,
-            candidate_agents=["ok_agent", "boom_agent", "slow_agent", "missing_agent"],
-            agents=agents,
-        )
-
-        self.assertEqual([result.agent_name for result in batch.results], ["ok_agent"])
-        self.assertEqual(len(batch.failures), 3)
-        failure_types = {failure.agent_name: failure.error_type for failure in batch.failures}
-        self.assertEqual(failure_types["boom_agent"], "RuntimeError")
-        self.assertEqual(failure_types["slow_agent"], "TimeoutError")
-        self.assertEqual(failure_types["missing_agent"], "AgentNotConfigured")
-
-
-class AggregatorTest(unittest.TestCase):
-    def test_aggregator_merges_results_and_deduplicates_actions(self) -> None:
-        aggregator = Aggregator()
-        result_a = AgentResult(
-            agent_name="cicd_agent",
-            domain="cicd",
-            status="completed",
-            summary="发布窗口内 pipeline 失败",
-            findings=[AgentFinding(title="Pipeline", detail="最近一次发布失败", severity="high")],
-            evidence=["pipeline failed", "release window matched"],
-            recommended_actions=[
-                AgentAction(
-                    action="cicd.rollback_release",
-                    risk="high",
-                    reason="发布失败后建议回滚",
-                    params={"service": "order-service"},
-                )
-            ],
-            risk_level="high",
-            confidence=0.82,
-        )
-        result_b = AgentResult(
-            agent_name="general_sre_agent",
-            domain="general",
-            status="completed",
-            summary="应用错误率升高",
-            findings=[AgentFinding(title="Errors", detail="5xx 激增", severity="high")],
-            evidence=["5xx increased", "release window matched"],
-            recommended_actions=[
-                AgentAction(
-                    action="cicd.rollback_release",
-                    risk="high",
-                    reason="发布失败后建议回滚",
-                    params={"service": "order-service"},
-                )
-            ],
-            risk_level="medium",
-            confidence=0.51,
-        )
-
-        aggregated = aggregator.aggregate([result_a, result_b], ticket_id="ticket-1")
-
-        self.assertEqual(aggregated.aggregated_result.agent_name, "aggregator")
-        self.assertEqual(aggregated.aggregated_result.status, "completed")
-        self.assertEqual(len(aggregated.subagent_results), 2)
-        self.assertEqual(len(aggregated.aggregated_result.recommended_actions), 1)
-        self.assertEqual(aggregated.aggregated_result.risk_level, "high")
-        self.assertIn("cicd_agent", aggregated.aggregated_result.summary)
-        self.assertIn("general_sre_agent", aggregated.aggregated_result.summary)
 
 
 class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):

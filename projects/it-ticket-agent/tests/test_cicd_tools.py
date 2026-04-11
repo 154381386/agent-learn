@@ -7,9 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from it_ticket_agent.agents.cicd import CICDAgent
 from it_ticket_agent.runtime.contracts import TaskEnvelope
-from it_ticket_agent.settings import Settings
 from it_ticket_agent.tools import (
     CheckCanaryStatusTool,
     CheckPodStatusTool,
@@ -23,10 +21,6 @@ from it_ticket_agent.tools import (
 
 
 class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
-    class _DummyConnections:
-        def servers_for_agent(self, agent_name: str):
-            return []
-
     def build_task(
         self,
         *,
@@ -175,23 +169,6 @@ class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.summary, "json override")
             self.assertEqual(result.payload["health_status"], "degraded")
             self.assertEqual(result.evidence, ["from json file"])
-
-    async def test_cicd_agent_returns_structured_clarification_request_when_service_missing(self) -> None:
-        settings = Settings(llm_base_url="", llm_api_key="", llm_model="")
-        agent = CICDAgent(settings, knowledge_client=object(), connection_manager=self._DummyConnections())
-        task = TaskEnvelope(
-            task_id="task-clarify",
-            ticket_id="ticket-clarify",
-            goal="诊断并给出下一步建议",
-            shared_context={"message": "帮我看看现在发布失败了", "service": "", "cluster": "prod-shanghai-1", "namespace": "default"},
-        )
-
-        result = await agent.run(task)
-
-        self.assertEqual(result.status, "awaiting_clarification")
-        self.assertIsNotNone(result.clarification_request)
-        self.assertEqual(result.clarification_request.fields[0].name, "service")
-        self.assertIn("服务名", result.clarification_request.question)
 
 
 if __name__ == "__main__":

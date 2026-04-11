@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 from uuid import uuid5, NAMESPACE_URL
-from typing import Any, Dict, Mapping
+from typing import Any, Dict
 
-from ..agents.base import BaseDomainAgent
 from ..approval import ApprovalCoordinator
 from ..approval.adapters import (
     approval_request_to_legacy_payload,
@@ -21,17 +20,13 @@ from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..mcp import MCPClient, MCPConnectionManager
 from ..observability import get_observability
 from ..orchestration import (
-    Aggregator,
     HypothesisGenerator,
-    ParallelDispatcher,
     ParallelVerifier,
     Ranker,
     VerificationAgent,
 )
-from ..context.models import ExecutionContext
-from ..runtime.contracts import AgentResult, ClarificationRequest, SmartRouterDecision
+from ..runtime.contracts import SmartRouterDecision
 from ..runtime.smart_router import SmartRouter
-from ..runtime.supervisor import RuleBasedSupervisor
 from ..schemas import ApprovalDecisionRequest, TicketRequest
 from ..session.models import utc_now
 from ..system_event_store import SystemEventStore
@@ -53,11 +48,7 @@ from ..state.models import (
     SimilarIncidentCase,
     VerificationResult,
 )
-from ..state.transformers import (
-    build_initial_incident_state,
-    incident_state_from_legacy,
-    incident_state_from_parallel_results,
-)
+from ..state.transformers import build_initial_incident_state
 from ..skills import SkillRegistry
 from .state import ApprovalGraphState, TicketGraphState
 
@@ -68,36 +59,28 @@ logger = logging.getLogger(__name__)
 class OrchestratorGraphNodes:
     def __init__(
         self,
-        supervisor: RuleBasedSupervisor | None,
         approval_store: ApprovalStore,
         session_store: SessionStore,
         interrupt_store: InterruptStore,
         process_memory_store: ProcessMemoryStore,
         incident_case_store: IncidentCaseStore | None,
         connection_manager: MCPConnectionManager,
-        agents: Mapping[str, BaseDomainAgent] | None,
         approval_coordinator: ApprovalCoordinator | None = None,
         execution_store: ExecutionStore | None = None,
         system_event_store: SystemEventStore | None = None,
-        parallel_dispatcher: ParallelDispatcher | None = None,
-        aggregator: Aggregator | None = None,
         smart_router: SmartRouter | None = None,
         skill_registry: SkillRegistry | None = None,
         hypothesis_generator: HypothesisGenerator | None = None,
         parallel_verifier: ParallelVerifier | None = None,
         ranker: Ranker | None = None,
     ) -> None:
-        self.supervisor = supervisor
         self.approval_store = approval_store
         self.session_store = session_store
         self.interrupt_store = interrupt_store
         self.process_memory_store = process_memory_store
         self.incident_case_store = incident_case_store
         self.connection_manager = connection_manager
-        self.agents = agents or {}
         self.approval_coordinator = approval_coordinator or ApprovalCoordinator()
-        self.parallel_dispatcher = parallel_dispatcher or ParallelDispatcher()
-        self.aggregator = aggregator or Aggregator()
         self.smart_router_impl = smart_router
         self.skill_registry = skill_registry or SkillRegistry()
         self.hypothesis_generator_impl = hypothesis_generator
@@ -719,323 +702,6 @@ class OrchestratorGraphNodes:
             )
         ]
 
-    async def supervisor_route(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.supervisor_route",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "message": request.message},
-            metadata={"node": "supervisor_route"},
-        ) as span:
-            decision = await self.supervisor.route(request)
-            execution_context = state.get("execution_context")
-            task = self.supervisor.build_task(request, decision, execution_context=execution_context)
-            incident_state = state.get("incident_state") or build_initial_incident_state(request)
-            incident_state.routing = decision.model_dump()
-            incident_state.status = "routed"
-            self._append_process_entry(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="routing_decision",
-                stage="routing",
-                source="graph.supervisor_route",
-                summary=f"路由已选择 {decision.agent_name}，模式 {decision.mode}，来源 {decision.route_source}",
-                payload={
-                    "agent_name": decision.agent_name,
-                    "mode": decision.mode,
-                    "route_source": decision.route_source,
-                    "reason": decision.reason,
-                    "confidence": decision.confidence,
-                },
-                refs={},
-            )
-            span.update(output=decision.model_dump())
-            return {
-                "incident_state": incident_state,
-                "routing_decision": decision,
-                "task": task,
-                "pending_node": "dispatch_subagents" if self.route_after_supervisor_route({"routing_decision": decision}) == "dispatch_subagents" else "domain_agent",
-            }
-
-    def route_after_supervisor_route(self, state: TicketGraphState) -> str:
-        decision = state["routing_decision"]
-        candidate_agents = [name for name in list(decision.candidate_agents or []) if name in self.agents]
-        if decision.agent_name in self.agents and decision.agent_name not in candidate_agents:
-            candidate_agents.insert(0, decision.agent_name)
-        if decision.mode == "fan_out" and len(candidate_agents) > 1:
-            return "dispatch_subagents"
-        return "domain_agent"
-
-    async def dispatch_subagents(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        decision = state["routing_decision"]
-        task = state["task"]
-        incident_state = state.get("incident_state") or build_initial_incident_state(request)
-        candidate_agents = [name for name in list(decision.candidate_agents or []) if name in self.agents]
-        if decision.agent_name in self.agents and decision.agent_name not in candidate_agents:
-            candidate_agents.insert(0, decision.agent_name)
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.dispatch_subagents",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "candidate_agents": candidate_agents},
-            metadata={"node": "dispatch_subagents", "mode": decision.mode},
-        ) as span:
-            dispatch_result = await self.parallel_dispatcher.dispatch(
-                task=task,
-                candidate_agents=candidate_agents,
-                agents=self.agents,
-            )
-            transition_notes = list(state.get("transition_notes") or [])
-            transition_notes.append(
-                f"parallel dispatcher executed {len(candidate_agents)} candidate agents with {len(dispatch_result.failures)} isolated failures"
-            )
-            incident_state.metadata["parallel_dispatch"] = {
-                "candidate_agents": candidate_agents,
-                "completed_agents": [result.agent_name for result in dispatch_result.results],
-                "failed_agents": [failure.model_dump() for failure in dispatch_result.failures],
-            }
-            span.update(
-                output={
-                    "result_count": len(dispatch_result.results),
-                    "failure_count": len(dispatch_result.failures),
-                }
-            )
-            return {
-                "incident_state": incident_state,
-                "agent_results": dispatch_result.results,
-                "dispatch_failures": [failure.model_dump() for failure in dispatch_result.failures],
-                "transition_notes": transition_notes,
-                "pending_node": "aggregate_subagent_results",
-            }
-
-    async def aggregate_subagent_results(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        decision = state["routing_decision"]
-        agent_results = list(state.get("agent_results") or [])
-        dispatch_failures = list(state.get("dispatch_failures") or [])
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.aggregate_subagent_results",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "result_count": len(agent_results)},
-            metadata={"node": "aggregate_subagent_results", "failure_count": len(dispatch_failures)},
-        ) as span:
-            aggregation = self.aggregator.aggregate(
-                agent_results,
-                ticket_id=request.ticket_id,
-                dispatch_failures=dispatch_failures,
-            )
-            current_incident_state = state.get("incident_state") or build_initial_incident_state(request)
-            incident_state = incident_state_from_parallel_results(
-                request,
-                routing=decision,
-                agent_results=agent_results,
-                aggregated_result=aggregation.aggregated_result,
-                dispatch_failures=dispatch_failures,
-                rag_context=current_incident_state.rag_context,
-            )
-            incident_state.metadata["parallel_aggregation"] = {
-                "source_agents": [result.agent_name for result in agent_results],
-                "aggregated_agent": aggregation.aggregated_result.agent_name,
-                "failure_count": len(dispatch_failures),
-            }
-            transition_notes = list(state.get("transition_notes") or [])
-            transition_notes.append(
-                f"aggregator synthesized {len(agent_results)} subagent results into a single incident-level result"
-            )
-            span.update(
-                output={
-                    "status": aggregation.aggregated_result.status,
-                    "summary": aggregation.aggregated_result.summary,
-                }
-            )
-            return {
-                "incident_state": incident_state,
-                "agent_result": aggregation.aggregated_result,
-                "agent_results": agent_results,
-                "dispatch_failures": dispatch_failures,
-                "transition_notes": transition_notes,
-                "pending_node": "clarification_gate",
-            }
-
-    async def domain_agent(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        decision = state["routing_decision"]
-        task = state["task"]
-        current_incident_state = state.get("incident_state") or build_initial_incident_state(request)
-        agent = self.agents.get(decision.agent_name)
-        if agent is None:
-            raise ValueError(f"agent not configured: {decision.agent_name}")
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.domain_agent",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "agent_name": decision.agent_name},
-            metadata={"node": "domain_agent", "route_source": decision.route_source},
-        ) as span:
-            result = await agent.run(task)
-            logger.info(
-                "supervisor_router_resolved ticket_id=%s agent=%s mode=%s confidence=%.2f",
-                request.ticket_id,
-                decision.agent_name,
-                decision.mode,
-                decision.confidence,
-            )
-            logger.info(
-                "subagent_completed ticket_id=%s agent=%s domain=%s",
-                request.ticket_id,
-                result.agent_name,
-                result.domain,
-            )
-            incident_state = incident_state_from_legacy(
-                request,
-                routing=decision,
-                agent_result=result,
-                rag_context=current_incident_state.rag_context,
-            )
-            span.update(output={"status": result.status, "summary": result.summary, "domain": result.domain})
-            return {
-                "incident_state": incident_state,
-                "agent_result": result,
-                "pending_node": "approval_gate",
-            }
-
-    @staticmethod
-    def _resolve_clarification_request(state: TicketGraphState) -> ClarificationRequest | None:
-        agent_result = state.get("agent_result")
-        if isinstance(agent_result, AgentResult) and agent_result.clarification_request is not None:
-            return agent_result.clarification_request
-        incident_state = state.get("incident_state")
-        if incident_state is None:
-            return None
-        payload = incident_state.metadata.get("clarification_request")
-        if not isinstance(payload, dict):
-            return None
-        return ClarificationRequest.model_validate(payload)
-
-    @staticmethod
-    def _clarification_schema(request: ClarificationRequest) -> dict[str, Any]:
-        if len(request.fields) == 1 and request.fields[0].type == "string":
-            return {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                },
-                "required": ["text"],
-            }
-        properties: dict[str, Any] = {}
-        required: list[str] = []
-        type_map = {
-            "string": "string",
-            "enum": "string",
-            "integer": "integer",
-            "number": "number",
-            "boolean": "boolean",
-            "timestamp": "string",
-        }
-        for field in request.fields:
-            field_schema: dict[str, Any] = {
-                "type": type_map.get(field.type, "string"),
-                "description": field.description,
-            }
-            if field.type == "timestamp":
-                field_schema["format"] = "date-time"
-            if field.type == "enum" and field.values:
-                field_schema["enum"] = list(field.values)
-            properties[field.name] = field_schema
-            if field.required:
-                required.append(field.name)
-        return {"type": "object", "properties": properties, "required": required}
-
-    async def clarification_gate(self, state: TicketGraphState) -> Dict[str, Any]:
-        incident_state = state["incident_state"]
-        request = state["request"]
-        transition_notes = list(state.get("transition_notes") or [])
-        clarification_request = self._resolve_clarification_request(state)
-        if clarification_request is None:
-            transition_notes.append("clarification gate passed without blocking interrupt")
-            return {
-                "incident_state": incident_state,
-                "transition_notes": transition_notes,
-                "pending_node": "approval_gate",
-            }
-
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.clarification_gate",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "question": clarification_request.question},
-            metadata={"node": "clarification_gate", "field_count": len(clarification_request.fields)},
-        ) as span:
-            interrupt_record = self.interrupt_store.create_clarification_interrupt(
-                session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
-                ticket_id=incident_state.ticket_id,
-                reason=clarification_request.reason,
-                question=clarification_request.question,
-                expected_input_schema=self._clarification_schema(clarification_request),
-                metadata={
-                    "thread_id": str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
-                    "field_name": clarification_request.fields[0].name if len(clarification_request.fields) == 1 else "",
-                    "clarification_fields": [field.model_dump() for field in clarification_request.fields],
-                    "clarification_request": clarification_request.model_dump(),
-                    "resume_kind": "clarification",
-                },
-            )
-            incident_state.status = "awaiting_clarification"
-            incident_state.open_questions = [clarification_request.question]
-            incident_state.metadata["clarification_interrupt"] = interrupt_record
-            incident_state.metadata["clarification_request"] = clarification_request.model_dump()
-            self._append_process_entry(
-                session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
-                thread_id=str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
-                ticket_id=incident_state.ticket_id,
-                event_type="clarification_created",
-                stage="awaiting_clarification",
-                source="graph.clarification_gate",
-                summary=f"由于缺少关键上下文，已创建 clarification interrupt：{clarification_request.question}",
-                payload={
-                    "reason": clarification_request.reason,
-                    "question": clarification_request.question,
-                    "fields": [field.model_dump() for field in clarification_request.fields],
-                },
-                refs={"interrupt_id": interrupt_record.get("interrupt_id")},
-            )
-            self._append_system_event(
-                session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
-                thread_id=str(state.get("thread_id") or incident_state.thread_id or incident_state.ticket_id),
-                ticket_id=incident_state.ticket_id,
-                event_type="interrupt.created",
-                payload={
-                    "interrupt_id": interrupt_record.get("interrupt_id"),
-                    "interrupt_type": "clarification",
-                    "question": interrupt_record.get("question"),
-                    "fields": [field.model_dump() for field in clarification_request.fields],
-                },
-                metadata={"source": "graph.clarification_gate"},
-            )
-            transition_notes.append("clarification gate materialized a persisted clarification interrupt from agent contract")
-            span.update(output={"status": "awaiting_clarification", "question": clarification_request.question})
-            return {
-                "incident_state": incident_state,
-                "transition_notes": transition_notes,
-                "approval_request": None,
-                "response": {
-                    "ticket_id": request.ticket_id,
-                    "status": "awaiting_clarification",
-                    "message": clarification_request.question,
-                    "diagnosis": {
-                        "summary": clarification_request.reason,
-                        "incident_state": incident_state.model_dump(),
-                        "graph": {"transition_notes": transition_notes},
-                        "clarification_request": clarification_request.model_dump(),
-                    },
-                },
-                "pending_node": None,
-            }
-
     async def approval_gate(self, state: TicketGraphState) -> Dict[str, Any]:
         incident_state = state["incident_state"]
         route_decision = state.get("route_decision")
@@ -1256,48 +922,6 @@ class OrchestratorGraphNodes:
         response["diagnosis"] = diagnosis
         return {
             "incident_state": final_state.get("incident_state"),
-            "response": response,
-            "pending_node": None,
-        }
-
-    async def finalize(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        result = state["agent_result"]
-        decision = state["routing_decision"]
-        approval_request = state.get("approval_request")
-        incident_state = state.get("incident_state")
-        transition_notes = list(state.get("transition_notes") or [])
-        diagnosis = self._render_diagnosis(
-            result,
-            decision,
-            incident_state=incident_state,
-            transition_notes=transition_notes,
-        )
-
-        if approval_request is not None:
-            response = {
-                "ticket_id": request.ticket_id,
-                "status": "awaiting_approval",
-                "message": "检测到高风险动作，需审批后才能继续执行。",
-                "approval_request": approval_request,
-                "diagnosis": diagnosis,
-            }
-            if incident_state is not None:
-                incident_state.final_message = response["message"]
-                incident_state.metadata["approval_request"] = approval_request
-        else:
-            response = {
-                "ticket_id": request.ticket_id,
-                "status": "completed",
-                "message": self._render_response(result),
-                "diagnosis": diagnosis,
-            }
-            if incident_state is not None:
-                incident_state.final_summary = result.summary
-                incident_state.final_message = response["message"]
-
-        return {
-            "incident_state": incident_state,
             "response": response,
             "pending_node": None,
         }
@@ -2074,15 +1698,6 @@ class OrchestratorGraphNodes:
         return evidence[:5]
 
     @staticmethod
-    def _render_response(result: AgentResult) -> str:
-        response_parts = [result.summary]
-        if result.evidence:
-            response_parts.append(f"关键证据：{'; '.join(result.evidence[:2])}")
-        if result.open_questions:
-            response_parts.append(f"待确认：{result.open_questions[0]}")
-        return "；".join(response_parts)
-
-    @staticmethod
     def _render_hypothesis_diagnosis(
         *,
         route_decision,
@@ -2101,24 +1716,6 @@ class OrchestratorGraphNodes:
         }
         if transition_notes:
             diagnosis["graph"] = {"transition_notes": list(transition_notes)}
-        return diagnosis
-
-    @staticmethod
-    def _render_diagnosis(
-        result: AgentResult,
-        decision,
-        *,
-        incident_state=None,
-        transition_notes: list[str] | None = None,
-    ) -> Dict[str, object]:
-        diagnosis = result.model_dump()
-        diagnosis["routing"] = decision.model_dump()
-        if incident_state is not None:
-            diagnosis["incident_state"] = incident_state.model_dump()
-        if transition_notes:
-            diagnosis["graph"] = {
-                "transition_notes": list(transition_notes),
-            }
         return diagnosis
 
     def _build_approval_gate_input(self, incident_state: IncidentState):
