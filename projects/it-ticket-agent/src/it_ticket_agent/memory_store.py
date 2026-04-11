@@ -6,9 +6,9 @@ from .memory import IncidentCase, ProcessMemoryEntry, ProcessMemoryStoreV2
 
 
 class ProcessMemoryStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, backend: ProcessMemoryStoreV2 | None = None) -> None:
         self.db_path = db_path
-        self.v2_store = ProcessMemoryStoreV2(db_path)
+        self.v2_store = backend or ProcessMemoryStoreV2(db_path)
 
     def append(self, entry: ProcessMemoryEntry | dict[str, Any]) -> dict[str, Any]:
         record = entry if isinstance(entry, ProcessMemoryEntry) else ProcessMemoryEntry.model_validate(entry)
@@ -23,9 +23,9 @@ class ProcessMemoryStore:
 
 
 class IncidentCaseStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, backend: ProcessMemoryStoreV2 | None = None) -> None:
         self.db_path = db_path
-        self.v2_store = ProcessMemoryStoreV2(db_path)
+        self.v2_store = backend or ProcessMemoryStoreV2(db_path)
 
     def upsert(self, case: IncidentCase | dict[str, Any]) -> dict[str, Any]:
         record = case if isinstance(case, IncidentCase) else IncidentCase.model_validate(case)

@@ -79,7 +79,11 @@ class SupervisorOrchestrator:
         self.topic_shift_detector = TopicShiftDetector()
         self.skill_registry = SkillRegistry()
         self.hypothesis_generator = HypothesisGenerator(settings)
-        self.ranker_weights_manager = RankerWeightsManager(settings.approval_db_path)
+        self.ranker_weights_manager = RankerWeightsManager(
+            settings.approval_db_path,
+            backend=settings.storage_backend,
+            postgres_dsn=settings.postgres_dsn,
+        )
         self.ranker = Ranker(weights_manager=self.ranker_weights_manager)
         self.graph_nodes = OrchestratorGraphNodes(
             approval_store=self.approval_store,

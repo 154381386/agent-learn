@@ -5,12 +5,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .approval_store import ApprovalStore
-from .checkpoint_store import CheckpointStore
-from .execution_store import ExecutionStore
-from .interrupt_store import InterruptStore
-from .system_event_store import SystemEventStore
-from .memory_store import IncidentCaseStore, ProcessMemoryStore
 from .observability import configure_observability
 from .runtime.orchestrator import SupervisorOrchestrator
 from .schemas import (
@@ -32,8 +26,8 @@ from .schemas import (
     TicketResponse,
 )
 from .session import SessionService
-from .session_store import SessionStore
 from .settings import get_settings
+from .storage import StoreProvider
 
 
 settings = get_settings()
@@ -43,15 +37,16 @@ static_dir = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     observability = configure_observability(settings)
-    approval_store = ApprovalStore(settings.approval_db_path)
-    session_store = SessionStore(settings.approval_db_path)
+    stores = StoreProvider(settings).build()
+    approval_store = stores.approval_store
+    session_store = stores.session_store
     session_service = SessionService(session_store)
-    interrupt_store = InterruptStore(settings.approval_db_path)
-    checkpoint_store = CheckpointStore(settings.approval_db_path)
-    process_memory_store = ProcessMemoryStore(settings.approval_db_path)
-    execution_store = ExecutionStore(settings.approval_db_path)
-    incident_case_store = IncidentCaseStore(settings.approval_db_path)
-    system_event_store = SystemEventStore(settings.approval_db_path)
+    interrupt_store = stores.interrupt_store
+    checkpoint_store = stores.checkpoint_store
+    process_memory_store = stores.process_memory_store
+    execution_store = stores.execution_store
+    incident_case_store = stores.incident_case_store
+    system_event_store = stores.system_event_store
     app.state.supervisor_orchestrator = SupervisorOrchestrator(settings, approval_store, session_store, interrupt_store, checkpoint_store, process_memory_store, execution_store=execution_store, session_service=session_service, incident_case_store=incident_case_store, system_event_store=system_event_store)
     app.state.approval_store = approval_store
     app.state.session_store = session_store

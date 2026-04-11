@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..session.models import utc_now
+from ..storage.postgres import postgres_connection
 
 
 DEFAULT_WEIGHTS = {
@@ -61,12 +62,22 @@ def estimate_adaptive_weights(cases: list[dict[str, Any]] | None) -> dict[str, f
 
 
 class RankerWeightsManager:
-    def __init__(self, db_path: str, *, auto_activate_threshold: int = 3) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        auto_activate_threshold: int = 3,
+        backend: str = "sqlite",
+        postgres_dsn: str = "",
+    ) -> None:
         self.db_path = db_path
         self.auto_activate_threshold = auto_activate_threshold
-        folder = os.path.dirname(db_path)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
+        self.backend = backend
+        self.postgres_dsn = postgres_dsn
+        if self.backend == "sqlite":
+            folder = os.path.dirname(db_path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -75,6 +86,28 @@ class RankerWeightsManager:
         return connection
 
     def _init_db(self) -> None:
+        if self.backend == "postgres":
+            with postgres_connection(self.postgres_dsn) as conn:
+                conn.execute(
+                    """
+                    create table if not exists ranker_weight_snapshot (
+                        version_id text primary key,
+                        weights_json jsonb not null,
+                        sample_count integer not null,
+                        strategy text not null,
+                        is_active boolean not null default false,
+                        metadata_json jsonb not null default '{}'::jsonb,
+                        created_at timestamptz not null
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    create index if not exists idx_ranker_weight_snapshot_active_created
+                    on ranker_weight_snapshot (is_active, created_at desc, version_id desc)
+                    """
+                )
+            return
         with self._connect() as conn:
             conn.execute(
                 """
@@ -98,6 +131,16 @@ class RankerWeightsManager:
             conn.commit()
 
     def list_snapshots(self) -> list[dict[str, Any]]:
+        if self.backend == "postgres":
+            with postgres_connection(self.postgres_dsn) as conn:
+                rows = conn.execute(
+                    """
+                    select version_id, weights_json, sample_count, strategy, is_active, metadata_json, created_at
+                    from ranker_weight_snapshot
+                    order by created_at desc, version_id desc
+                    """
+                ).fetchall()
+            return [self._pg_row_to_snapshot(row) for row in rows]
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -109,6 +152,18 @@ class RankerWeightsManager:
         return [self._row_to_snapshot(row) for row in rows]
 
     def get_active_snapshot(self) -> dict[str, Any] | None:
+        if self.backend == "postgres":
+            with postgres_connection(self.postgres_dsn) as conn:
+                row = conn.execute(
+                    """
+                    select version_id, weights_json, sample_count, strategy, is_active, metadata_json, created_at
+                    from ranker_weight_snapshot
+                    where is_active = true
+                    order by created_at desc, version_id desc
+                    limit 1
+                    """
+                ).fetchone()
+            return None if row is None else self._pg_row_to_snapshot(row)
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -139,6 +194,27 @@ class RankerWeightsManager:
             "metadata": dict(metadata or {}),
             "created_at": utc_now(),
         }
+        if self.backend == "postgres":
+            with postgres_connection(self.postgres_dsn) as conn:
+                if activate:
+                    conn.execute("update ranker_weight_snapshot set is_active = false where is_active = true")
+                conn.execute(
+                    """
+                    insert into ranker_weight_snapshot (
+                        version_id, weights_json, sample_count, strategy, is_active, metadata_json, created_at
+                    ) values (%s, %s::jsonb, %s, %s, %s, %s::jsonb, %s)
+                    """,
+                    (
+                        snapshot["version_id"],
+                        json.dumps(snapshot["weights"], ensure_ascii=False),
+                        snapshot["sample_count"],
+                        snapshot["strategy"],
+                        snapshot["is_active"],
+                        json.dumps(snapshot["metadata"], ensure_ascii=False),
+                        snapshot["created_at"],
+                    ),
+                )
+            return snapshot
         with self._connect() as conn:
             if activate:
                 conn.execute("update ranker_weight_snapshot set is_active = 0 where is_active = 1")
@@ -162,6 +238,21 @@ class RankerWeightsManager:
         return snapshot
 
     def activate_snapshot(self, version_id: str) -> dict[str, Any] | None:
+        if self.backend == "postgres":
+            with postgres_connection(self.postgres_dsn) as conn:
+                row = conn.execute(
+                    """
+                    select version_id, weights_json, sample_count, strategy, is_active, metadata_json, created_at
+                    from ranker_weight_snapshot
+                    where version_id = %s
+                    """,
+                    (version_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                conn.execute("update ranker_weight_snapshot set is_active = false where is_active = true")
+                conn.execute("update ranker_weight_snapshot set is_active = true where version_id = %s", (version_id,))
+            return self.get_active_snapshot()
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -223,4 +314,16 @@ class RankerWeightsManager:
             "is_active": bool(row["is_active"]),
             "metadata": json.loads(row["metadata_json"] or "{}"),
             "created_at": row["created_at"],
+        }
+
+    @staticmethod
+    def _pg_row_to_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "version_id": row["version_id"],
+            "weights": row["weights_json"],
+            "sample_count": int(row["sample_count"]),
+            "strategy": row["strategy"],
+            "is_active": bool(row["is_active"]),
+            "metadata": row["metadata_json"] or {},
+            "created_at": str(row["created_at"]),
         }

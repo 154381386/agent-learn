@@ -128,10 +128,35 @@ make run-cicd-mcp
 make run-orchestrator
 ```
 
+使用 Runtime Postgres：
+
+```bash
+make pg-up
+make run-orchestrator-pg
+```
+
 或者直接：
 
 ```bash
 make dev
+```
+
+如果希望开发环境默认走 Runtime Postgres：
+
+```bash
+make dev-pg
+```
+
+把现有 SQLite 运行时数据迁到 Runtime Postgres：
+
+```bash
+make migrate-runtime-pg
+```
+
+验证 Runtime Postgres 存储：
+
+```bash
+make test-runtime-pg
 ```
 
 ## 配置
@@ -143,6 +168,39 @@ MCP_CONNECTIONS_PATH=./mcp_connections.yaml
 RAG_ENABLED=true
 RAG_SERVICE_BASE_URL=http://localhost:8200
 RAG_SERVICE_TIMEOUT_SEC=30
+STORAGE_BACKEND=sqlite
+APPROVAL_DB_PATH=./data/approvals.db
+POSTGRES_DSN=postgresql://app:app@127.0.0.1:5433/it_ticket_agent_runtime
+```
+
+## Runtime Postgres
+
+当前 runtime 已支持把核心状态存到 Postgres。开发环境默认推荐用 Docker 启：
+
+```bash
+make pg-up
+make pg-ps
+make pg-logs
+```
+
+停止：
+
+```bash
+make pg-down
+```
+
+默认连接信息：
+
+```bash
+POSTGRES_DSN=postgresql://app:app@127.0.0.1:5433/it_ticket_agent_runtime
+```
+
+从现有 SQLite 迁移到 Postgres：
+
+```bash
+uv run python scripts/migrate_sqlite_to_postgres.py \
+  --sqlite-path ./data/approvals.db \
+  --postgres-dsn postgresql://app:app@127.0.0.1:5433/it_ticket_agent_runtime
 ```
 
 ## 部署

@@ -14,6 +14,8 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "dev")
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
+    storage_backend: str = os.getenv("STORAGE_BACKEND", "sqlite")
+    postgres_dsn: str = os.getenv("POSTGRES_DSN", "")
     mcp_connections_path: str = os.getenv("MCP_CONNECTIONS_PATH", "./mcp_connections.yaml")
     approval_db_path: str = os.getenv("APPROVAL_DB_PATH", "./data/approvals.db")
     langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")

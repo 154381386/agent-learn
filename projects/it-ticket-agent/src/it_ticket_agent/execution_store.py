@@ -6,9 +6,9 @@ from .execution import ExecutionPlan, ExecutionStep, ExecutionStoreV2
 
 
 class ExecutionStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, backend: ExecutionStoreV2 | None = None) -> None:
         self.db_path = db_path
-        self.v2_store = ExecutionStoreV2(db_path)
+        self.v2_store = backend or ExecutionStoreV2(db_path)
 
     def create_plan(self, plan: ExecutionPlan | dict[str, Any]) -> dict[str, Any]:
         record = plan if isinstance(plan, ExecutionPlan) else ExecutionPlan.model_validate(plan)

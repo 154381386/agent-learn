@@ -1,0 +1,21 @@
+services:
+  runtime-postgres:
+    image: postgres:17-alpine
+    container_name: it-ticket-agent-runtime-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: it_ticket_agent_runtime
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "5433:5432"
+    volumes:
+      - runtime-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d it_ticket_agent_runtime"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  runtime-postgres-data:

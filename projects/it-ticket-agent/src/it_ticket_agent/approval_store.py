@@ -12,9 +12,9 @@ from .approval.store import ApprovalStoreV2
 
 
 class ApprovalStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, backend: ApprovalStoreV2 | None = None) -> None:
         self.db_path = db_path
-        self.v2_store = ApprovalStoreV2(db_path)
+        self.v2_store = backend or ApprovalStoreV2(db_path)
 
     def create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         request = legacy_payload_to_approval_request(payload)

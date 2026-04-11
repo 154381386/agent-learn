@@ -6,10 +6,16 @@ from .interrupts import InterruptRequest, InterruptService, InterruptStoreV2
 
 
 class InterruptStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        backend: InterruptStoreV2 | None = None,
+        service: InterruptService | None = None,
+    ) -> None:
         self.db_path = db_path
-        self.v2_store = InterruptStoreV2(db_path)
-        self.service = InterruptService(self.v2_store)
+        self.v2_store = backend or InterruptStoreV2(db_path)
+        self.service = service or InterruptService(self.v2_store)
 
     def get(self, interrupt_id: str) -> Optional[dict[str, Any]]:
         record = self.service.get_interrupt(interrupt_id)

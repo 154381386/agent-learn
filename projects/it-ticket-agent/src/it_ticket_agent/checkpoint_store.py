@@ -6,9 +6,9 @@ from .checkpoints import CheckpointStoreV2, ExecutionCheckpoint
 
 
 class CheckpointStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, backend: CheckpointStoreV2 | None = None) -> None:
         self.db_path = db_path
-        self.v2_store = CheckpointStoreV2(db_path)
+        self.v2_store = backend or CheckpointStoreV2(db_path)
 
     def create(self, checkpoint: ExecutionCheckpoint | dict[str, Any]) -> dict[str, Any]:
         record = checkpoint if isinstance(checkpoint, ExecutionCheckpoint) else ExecutionCheckpoint.model_validate(checkpoint)
