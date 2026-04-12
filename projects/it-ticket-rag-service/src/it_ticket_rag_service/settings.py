@@ -38,6 +38,9 @@ class Settings:
     rag_rrf_k: int = int(os.getenv("RAG_RRF_K", "60"))
     rag_mmr_lambda: float = float(os.getenv("RAG_MMR_LAMBDA", "0.72"))
     rag_fail_on_embedding_error: bool = os.getenv("RAG_FAIL_ON_EMBEDDING_ERROR", "false").lower() == "true"
+    case_memory_schema: str = os.getenv("CASE_MEMORY_SCHEMA", "case_memory")
+    case_memory_table: str = os.getenv("CASE_MEMORY_TABLE", "incident_case_embedding")
+    case_memory_top_k: int = int(os.getenv("CASE_MEMORY_TOP_K", "6"))
 
     embedding_base_url: str = os.getenv("EMBEDDING_BASE_URL", "")
     embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")

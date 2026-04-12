@@ -52,6 +52,10 @@ class ProcessMemoryStoreV2:
                     cluster text not null,
                     namespace text not null,
                     current_agent text not null,
+                    failure_mode text not null default '',
+                    root_cause_taxonomy text not null default '',
+                    signal_pattern text not null default '',
+                    action_pattern text not null default '',
                     symptom text not null,
                     root_cause text not null,
                     key_evidence_json text not null,
@@ -91,6 +95,14 @@ class ProcessMemoryStoreV2:
             columns = {row["name"] for row in conn.execute("pragma table_info(incident_case)").fetchall()}
             if "human_verified" not in columns:
                 conn.execute("alter table incident_case add column human_verified integer not null default 0")
+            if "failure_mode" not in columns:
+                conn.execute("alter table incident_case add column failure_mode text not null default ''")
+            if "root_cause_taxonomy" not in columns:
+                conn.execute("alter table incident_case add column root_cause_taxonomy text not null default ''")
+            if "signal_pattern" not in columns:
+                conn.execute("alter table incident_case add column signal_pattern text not null default ''")
+            if "action_pattern" not in columns:
+                conn.execute("alter table incident_case add column action_pattern text not null default ''")
             if "hypothesis_accuracy_json" not in columns:
                 conn.execute("alter table incident_case add column hypothesis_accuracy_json text not null default '{}'")
             if "actual_root_cause_hypothesis" not in columns:
@@ -195,12 +207,13 @@ class ProcessMemoryStoreV2:
                 """
                 insert into incident_case (
                     case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
-                    current_agent, symptom, root_cause, key_evidence_json, final_action,
+                    current_agent, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                    symptom, root_cause, key_evidence_json, final_action,
                     approval_required, verification_passed, human_verified,
                     hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                     selected_ranker_features_json, final_conclusion, created_at,
                     updated_at, closed_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(session_id) do update set
                     thread_id = excluded.thread_id,
                     ticket_id = excluded.ticket_id,
@@ -208,6 +221,10 @@ class ProcessMemoryStoreV2:
                     cluster = excluded.cluster,
                     namespace = excluded.namespace,
                     current_agent = excluded.current_agent,
+                    failure_mode = excluded.failure_mode,
+                    root_cause_taxonomy = excluded.root_cause_taxonomy,
+                    signal_pattern = excluded.signal_pattern,
+                    action_pattern = excluded.action_pattern,
                     symptom = excluded.symptom,
                     root_cause = excluded.root_cause,
                     key_evidence_json = excluded.key_evidence_json,
@@ -232,6 +249,10 @@ class ProcessMemoryStoreV2:
                     payload.cluster,
                     payload.namespace,
                     payload.current_agent,
+                    payload.failure_mode,
+                    payload.root_cause_taxonomy,
+                    payload.signal_pattern,
+                    payload.action_pattern,
                     payload.symptom,
                     payload.root_cause,
                     json.dumps(payload.key_evidence, ensure_ascii=False),
@@ -260,7 +281,8 @@ class ProcessMemoryStoreV2:
             row = conn.execute(
                 """
                 select case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
-                       current_agent, symptom, root_cause, key_evidence_json, final_action,
+                       current_agent, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                       symptom, root_cause, key_evidence_json, final_action,
                        approval_required, verification_passed, human_verified,
                        hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                        selected_ranker_features_json, final_conclusion, created_at,
@@ -277,7 +299,8 @@ class ProcessMemoryStoreV2:
             row = conn.execute(
                 """
                 select case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
-                       current_agent, symptom, root_cause, key_evidence_json, final_action,
+                       current_agent, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                       symptom, root_cause, key_evidence_json, final_action,
                        approval_required, verification_passed, human_verified,
                        hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                        selected_ranker_features_json, final_conclusion, created_at,
@@ -293,6 +316,8 @@ class ProcessMemoryStoreV2:
         self,
         *,
         service: str | None = None,
+        failure_mode: str | None = None,
+        root_cause_taxonomy: str | None = None,
         final_action: str | None = None,
         approval_required: bool | None = None,
         verification_passed: bool | None = None,
@@ -304,6 +329,12 @@ class ProcessMemoryStoreV2:
         if service:
             conditions.append("service = ?")
             params.append(service)
+        if failure_mode:
+            conditions.append("failure_mode = ?")
+            params.append(failure_mode)
+        if root_cause_taxonomy:
+            conditions.append("root_cause_taxonomy = ?")
+            params.append(root_cause_taxonomy)
         if final_action:
             conditions.append("final_action = ?")
             params.append(final_action)
@@ -320,7 +351,8 @@ class ProcessMemoryStoreV2:
         params.append(limit)
         query = f"""
             select case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
-                   current_agent, symptom, root_cause, key_evidence_json, final_action,
+                   current_agent, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                   symptom, root_cause, key_evidence_json, final_action,
                    approval_required, verification_passed, human_verified,
                    hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                    selected_ranker_features_json, final_conclusion, created_at,
@@ -366,6 +398,10 @@ class ProcessMemoryStoreV2:
             cluster=row["cluster"],
             namespace=row["namespace"],
             current_agent=row["current_agent"],
+            failure_mode=row["failure_mode"],
+            root_cause_taxonomy=row["root_cause_taxonomy"],
+            signal_pattern=row["signal_pattern"],
+            action_pattern=row["action_pattern"],
             symptom=row["symptom"],
             root_cause=row["root_cause"],
             key_evidence=json.loads(row["key_evidence_json"]),

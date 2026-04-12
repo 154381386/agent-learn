@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict
 from uuid import uuid4
@@ -25,6 +26,8 @@ from ..observability import configure_observability
 from ..orchestration import HypothesisGenerator
 from ..orchestration.ranker import Ranker
 from ..orchestration.ranker_weights import RankerWeightsManager
+from ..case_retrieval import CaseRetriever, infer_failure_mode, infer_root_cause_taxonomy
+from ..case_vector_indexer import CaseVectorIndexer
 from ..schemas import (
     ApprovalDecisionRequest,
     ConversationCreateRequest,
@@ -79,6 +82,8 @@ class SupervisorOrchestrator:
         self.topic_shift_detector = TopicShiftDetector()
         self.skill_registry = SkillRegistry()
         self.hypothesis_generator = HypothesisGenerator(settings)
+        self.case_vector_indexer = CaseVectorIndexer(settings, self.incident_case_store, self.knowledge_client)
+        self.case_retriever = CaseRetriever(self.knowledge_client, settings)
         self.ranker_weights_manager = RankerWeightsManager(
             settings.approval_db_path,
             backend=settings.storage_backend,
@@ -98,6 +103,7 @@ class SupervisorOrchestrator:
             skill_registry=self.skill_registry,
             hypothesis_generator=self.hypothesis_generator,
             ranker=self.ranker,
+            case_retriever=self.case_retriever,
         )
         self.graph_builder = OrchestratorGraphBuilder(self.graph_nodes)
         self.ticket_graph = self.graph_builder.build_ticket_graph()
@@ -235,8 +241,20 @@ class SupervisorOrchestrator:
             or symptom
         )
         approval_required = bool(session.get("latest_approval_id") or diagnosis_approval or approved_actions)
+        failure_mode = infer_failure_mode(symptom or root_cause or final_conclusion)
+        root_cause_taxonomy = infer_root_cause_taxonomy(symptom or root_cause or final_conclusion)
+        signal_pattern = ""
+        if failure_mode == "oom":
+            signal_pattern = "pod_restart+heap_pressure"
+        elif failure_mode == "dependency_timeout":
+            signal_pattern = "timeout+gateway_unhealthy"
+        elif failure_mode == "db_pool_saturation":
+            signal_pattern = "slow_query+pool_saturation"
+        elif failure_mode == "deploy_regression":
+            signal_pattern = "release_window+5xx_spike"
+        action_pattern = str(final_action or "")
 
-        return self.incident_case_store.upsert(
+        saved_case = self.incident_case_store.upsert(
             {
                 "session_id": str(session.get("session_id") or ""),
                 "thread_id": str(session.get("thread_id") or session.get("session_id") or ""),
@@ -245,6 +263,10 @@ class SupervisorOrchestrator:
                 "cluster": str(incident_state.get("cluster") or ""),
                 "namespace": str(incident_state.get("namespace") or ""),
                 "current_agent": str(session.get("current_agent") or ""),
+                "failure_mode": failure_mode,
+                "root_cause_taxonomy": root_cause_taxonomy,
+                "signal_pattern": signal_pattern,
+                "action_pattern": action_pattern,
                 "symptom": symptom,
                 "root_cause": root_cause,
                 "key_evidence": key_evidence[:5],
@@ -264,6 +286,12 @@ class SupervisorOrchestrator:
                 "closed_at": session.get("closed_at"),
             }
         )
+        if self.case_vector_indexer.enabled:
+            try:
+                asyncio.get_running_loop().create_task(self.case_vector_indexer.index_case(saved_case))
+            except RuntimeError:
+                pass
+        return saved_case
 
     def _append_user_turn(self, session_id: str, *, content: str, structured_payload: dict[str, Any]) -> dict[str, Any]:
         return self.session_store.append_turn(
@@ -489,6 +517,11 @@ class SupervisorOrchestrator:
             hypothesis_accuracy=hypothesis_accuracy,
             actual_root_cause_hypothesis=actual_root,
         )
+        if updated_case is not None and self.case_vector_indexer.enabled:
+            try:
+                asyncio.get_running_loop().create_task(self.case_vector_indexer.index_case(updated_case))
+            except RuntimeError:
+                pass
         self.interrupt_store.answer(str(interrupt["interrupt_id"]), answer_payload=answer_payload)
         self._append_process_entry(
             session_id=session_id,

@@ -37,6 +37,37 @@ class RAGServiceClient:
     async def reindex(self) -> Dict[str, Any]:
         return await self._request("POST", "/api/v1/rag/reindex")
 
+    async def case_memory_search(
+        self,
+        *,
+        query: str,
+        service: str = "",
+        cluster: str = "",
+        namespace: str = "",
+        failure_mode: str = "",
+        root_cause_taxonomy: str = "",
+        exclude_case_ids: list[str] | None = None,
+        top_k: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "query": query,
+            "service": service,
+            "cluster": cluster,
+            "namespace": namespace,
+            "failure_mode": failure_mode,
+            "root_cause_taxonomy": root_cause_taxonomy,
+            "exclude_case_ids": list(exclude_case_ids or []),
+        }
+        if top_k is not None:
+            payload["top_k"] = top_k
+        return await self._request("POST", "/api/v1/case-memory/search", json=payload)
+
+    async def case_memory_sync(self, *, cases: list[Dict[str, Any]]) -> Dict[str, Any]:
+        return await self._request("POST", "/api/v1/case-memory/sync", json={"cases": cases})
+
+    async def case_memory_status(self) -> Dict[str, Any]:
+        return await self._request("GET", "/api/v1/case-memory/status")
+
     async def _request(
         self,
         method: str,

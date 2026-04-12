@@ -29,6 +29,10 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "")
     llm_timeout_sec: int = int(os.getenv("LLM_TIMEOUT_SEC", "30"))
     llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+    embedding_base_url: str = os.getenv("EMBEDDING_BASE_URL", "")
+    embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_timeout_sec: int = int(os.getenv("EMBEDDING_TIMEOUT_SEC", "30"))
 
     rag_enabled: bool = os.getenv("RAG_ENABLED", "true").lower() == "true"
     rag_service_base_url: str = os.getenv("RAG_SERVICE_BASE_URL", "http://localhost:8200")

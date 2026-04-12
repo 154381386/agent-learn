@@ -52,6 +52,10 @@ class IncidentCase(BaseModel):
     cluster: str = ""
     namespace: str = ""
     current_agent: str = ""
+    failure_mode: str = ""
+    root_cause_taxonomy: str = ""
+    signal_pattern: str = ""
+    action_pattern: str = ""
     symptom: str = ""
     root_cause: str = ""
     key_evidence: List[str] = Field(default_factory=list)

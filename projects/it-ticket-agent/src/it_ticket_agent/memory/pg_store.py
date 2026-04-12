@@ -43,6 +43,10 @@ class PostgresProcessMemoryStoreV2:
                     cluster text not null,
                     namespace text not null,
                     current_agent text not null,
+                    failure_mode text not null default '',
+                    root_cause_taxonomy text not null default '',
+                    signal_pattern text not null default '',
+                    action_pattern text not null default '',
                     symptom text not null,
                     root_cause text not null,
                     key_evidence_json jsonb not null,
@@ -79,6 +83,24 @@ class PostgresProcessMemoryStoreV2:
                 on process_memory_entry (session_id, created_at desc, memory_id desc)
                 """
             )
+            columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    """
+                    select column_name
+                    from information_schema.columns
+                    where table_schema = 'public' and table_name = 'incident_case'
+                    """
+                ).fetchall()
+            }
+            if "failure_mode" not in columns:
+                conn.execute("alter table incident_case add column failure_mode text not null default ''")
+            if "root_cause_taxonomy" not in columns:
+                conn.execute("alter table incident_case add column root_cause_taxonomy text not null default ''")
+            if "signal_pattern" not in columns:
+                conn.execute("alter table incident_case add column signal_pattern text not null default ''")
+            if "action_pattern" not in columns:
+                conn.execute("alter table incident_case add column action_pattern text not null default ''")
 
     def append_entry(self, entry: ProcessMemoryEntry) -> ProcessMemoryEntry:
         payload = entry.model_copy(update={"created_at": utc_now()})
@@ -171,10 +193,11 @@ class PostgresProcessMemoryStoreV2:
                 """
                 insert into incident_case (
                     case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
-                    current_agent, symptom, root_cause, key_evidence_json, final_action, approval_required,
+                    current_agent, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                    symptom, root_cause, key_evidence_json, final_action, approval_required,
                     verification_passed, human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis,
                     selected_hypothesis_id, selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s, %s)
                 on conflict (session_id) do update set
                     thread_id = excluded.thread_id,
                     ticket_id = excluded.ticket_id,
@@ -182,6 +205,10 @@ class PostgresProcessMemoryStoreV2:
                     cluster = excluded.cluster,
                     namespace = excluded.namespace,
                     current_agent = excluded.current_agent,
+                    failure_mode = excluded.failure_mode,
+                    root_cause_taxonomy = excluded.root_cause_taxonomy,
+                    signal_pattern = excluded.signal_pattern,
+                    action_pattern = excluded.action_pattern,
                     symptom = excluded.symptom,
                     root_cause = excluded.root_cause,
                     key_evidence_json = excluded.key_evidence_json,
@@ -206,6 +233,10 @@ class PostgresProcessMemoryStoreV2:
                     payload.cluster,
                     payload.namespace,
                     payload.current_agent,
+                    payload.failure_mode,
+                    payload.root_cause_taxonomy,
+                    payload.signal_pattern,
+                    payload.action_pattern,
                     payload.symptom,
                     payload.root_cause,
                     json.dumps(payload.key_evidence, ensure_ascii=False),
@@ -233,6 +264,7 @@ class PostgresProcessMemoryStoreV2:
             row = conn.execute(
                 """
                 select case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
+                       failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
                        symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
                        human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                        selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
@@ -247,6 +279,7 @@ class PostgresProcessMemoryStoreV2:
             row = conn.execute(
                 """
                 select case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
+                       failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
                        symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
                        human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                        selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
@@ -260,6 +293,8 @@ class PostgresProcessMemoryStoreV2:
         self,
         *,
         service: str | None = None,
+        failure_mode: str | None = None,
+        root_cause_taxonomy: str | None = None,
         final_action: str | None = None,
         approval_required: bool | None = None,
         verification_passed: bool | None = None,
@@ -271,6 +306,12 @@ class PostgresProcessMemoryStoreV2:
         if service:
             conditions.append("service = %s")
             params.append(service)
+        if failure_mode:
+            conditions.append("failure_mode = %s")
+            params.append(failure_mode)
+        if root_cause_taxonomy:
+            conditions.append("root_cause_taxonomy = %s")
+            params.append(root_cause_taxonomy)
         if final_action:
             conditions.append("final_action = %s")
             params.append(final_action)
@@ -287,6 +328,7 @@ class PostgresProcessMemoryStoreV2:
         params.append(limit)
         query = f"""
             select case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
+                   failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
                    symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
                    human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
                    selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
@@ -330,6 +372,10 @@ class PostgresProcessMemoryStoreV2:
             cluster=row["cluster"],
             namespace=row["namespace"],
             current_agent=row["current_agent"],
+            failure_mode=row["failure_mode"],
+            root_cause_taxonomy=row["root_cause_taxonomy"],
+            signal_pattern=row["signal_pattern"],
+            action_pattern=row["action_pattern"],
             symptom=row["symptom"],
             root_cause=row["root_cause"],
             key_evidence=row["key_evidence_json"],

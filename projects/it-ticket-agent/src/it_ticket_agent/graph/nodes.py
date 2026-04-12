@@ -9,6 +9,7 @@ from ..approval.adapters import (
     approval_request_to_legacy_payload,
     legacy_decision_to_record,
 )
+from ..case_retrieval import CaseRetriever
 from ..approval.models import ApprovalRequest
 from ..approval_store import ApprovalStore
 from ..interrupt_store import InterruptStore
@@ -73,6 +74,7 @@ class OrchestratorGraphNodes:
         hypothesis_generator: HypothesisGenerator | None = None,
         parallel_verifier: ParallelVerifier | None = None,
         ranker: Ranker | None = None,
+        case_retriever: CaseRetriever | None = None,
     ) -> None:
         self.approval_store = approval_store
         self.session_store = session_store
@@ -84,6 +86,7 @@ class OrchestratorGraphNodes:
         self.smart_router_impl = smart_router
         self.skill_registry = skill_registry or SkillRegistry()
         self.hypothesis_generator_impl = hypothesis_generator
+        self.case_retriever = case_retriever
         verification_agent = VerificationAgent(self.skill_registry)
         self.parallel_verifier = parallel_verifier or ParallelVerifier(verification_agent)
         self.ranker_impl = ranker or Ranker()
@@ -217,8 +220,11 @@ class OrchestratorGraphNodes:
             input={"ticket_id": request.ticket_id, "service": request.service, "message": request.message},
             metadata={"node": "context_collector"},
         ) as span:
-            similar_cases = self._load_similar_cases(
+            similar_cases = await self._load_similar_cases(
                 service=str(request.service or incident_state.service or ""),
+                cluster=str(request.cluster or incident_state.cluster or ""),
+                namespace=str(request.namespace or incident_state.namespace or ""),
+                message=str(request.message or ""),
                 session_id=str(state.get("session_id") or ""),
             )
             matched_categories = self._match_skill_categories(
@@ -255,6 +261,7 @@ class OrchestratorGraphNodes:
                     "matched_skill_categories": matched_categories,
                     "available_skill_names": [item.name for item in available_skills],
                     "similar_case_count": len(similar_cases),
+                    "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
                 },
                 refs={},
@@ -268,6 +275,7 @@ class OrchestratorGraphNodes:
                     "matched_skill_categories": matched_categories,
                     "available_skill_names": [item.name for item in available_skills],
                     "similar_case_count": len(similar_cases),
+                    "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
                 },
                 metadata={"source": "graph.context_collector"},
@@ -668,27 +676,24 @@ class OrchestratorGraphNodes:
             return RAGContextBundle.model_validate(rag_context)
         return RAGContextBundle()
 
-    def _load_similar_cases(self, *, service: str, session_id: str) -> list[SimilarIncidentCase]:
-        if not service or self.incident_case_store is None:
+    async def _load_similar_cases(
+        self,
+        *,
+        service: str,
+        cluster: str,
+        namespace: str,
+        message: str,
+        session_id: str,
+    ) -> list[SimilarIncidentCase]:
+        if not service or self.case_retriever is None:
             return []
-        raw_cases = self.incident_case_store.list_cases(service=service, limit=3)
-        cases: list[SimilarIncidentCase] = []
-        for item in raw_cases:
-            if str(item.get("session_id") or "") == session_id:
-                continue
-            cases.append(
-                SimilarIncidentCase(
-                    case_id=str(item.get("case_id") or ""),
-                    service=str(item.get("service") or ""),
-                    symptom=str(item.get("symptom") or ""),
-                    root_cause=str(item.get("root_cause") or ""),
-                    final_action=str(item.get("final_action") or ""),
-                    approval_required=bool(item.get("approval_required")),
-                    verification_passed=item.get("verification_passed"),
-                    summary=str(item.get("final_conclusion") or item.get("root_cause") or ""),
-                )
-            )
-        return cases
+        return await self.case_retriever.recall(
+            service=service,
+            cluster=cluster,
+            namespace=namespace,
+            message=message,
+            session_id=session_id,
+        )
 
     def _match_skill_categories(
         self,

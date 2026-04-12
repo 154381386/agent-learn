@@ -38,12 +38,18 @@ class RAGContextBundle(BaseModel):
 class SimilarIncidentCase(BaseModel):
     case_id: str = ""
     service: str = ""
+    failure_mode: str = ""
+    root_cause_taxonomy: str = ""
+    signal_pattern: str = ""
+    action_pattern: str = ""
     symptom: str = ""
     root_cause: str = ""
     final_action: str = ""
     approval_required: bool = False
     verification_passed: Optional[bool] = None
     summary: str = ""
+    recall_source: str = ""
+    recall_score: float = 0.0
 
 
 class SkillCategory(BaseModel):
@@ -173,4 +179,3 @@ class RankedResult(BaseModel):
     secondary: List[VerificationResult] = Field(default_factory=list)
     rejected: List[VerificationResult] = Field(default_factory=list)
     ranking_metadata: Dict[str, Any] = Field(default_factory=dict)
-

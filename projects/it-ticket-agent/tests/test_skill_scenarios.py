@@ -4,13 +4,16 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from it_ticket_agent.approval_store import ApprovalStore
+from it_ticket_agent.case_retrieval import CaseRetriever
 from it_ticket_agent.checkpoint_store import CheckpointStore
 from it_ticket_agent.execution_store import ExecutionStore
 from it_ticket_agent.interrupt_store import InterruptStore
 from it_ticket_agent.memory_store import IncidentCaseStore, ProcessMemoryStore
+from it_ticket_agent.memory.models import IncidentCase
 from it_ticket_agent.orchestration.ranker_weights import estimate_adaptive_weights
 from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager
 from it_ticket_agent.orchestration.verification_agent import VerificationAgent
@@ -243,6 +246,59 @@ class RankerWeightAdaptationTest(unittest.TestCase):
         self.assertGreater(weights["evidence_strength"], weights["history_match"])
         self.assertGreater(weights["confidence"], 0.2)
 
+
+class CaseRetrieverHybridTest(unittest.IsolatedAsyncioTestCase):
+    async def test_case_retriever_keeps_semantic_hybrid_even_with_exact_hits(self) -> None:
+        client = SimpleNamespace(case_memory_search=self._fake_case_memory_search)
+        retriever = CaseRetriever(client, Settings(rag_enabled=True))
+        cases = await retriever.recall(
+            service="order-service",
+            cluster="prod-shanghai-1",
+            namespace="default",
+            message="order service 为什么总是 timeout",
+            session_id="request-session",
+            limit=6,
+        )
+
+        sources = {case.case_id: case.recall_source for case in cases}
+        self.assertIn("exact", sources["case-order-timeout-1"])
+        self.assertIn("pattern", sources["case-payment-timeout-1"])
+        self.assertIn("semantic_hybrid", sources["case-payment-timeout-1"])
+
+    async def _fake_case_memory_search(self, **kwargs):
+        return {
+            "hits": [
+                {
+                    "case_id": "case-order-timeout-1",
+                    "service": "order-service",
+                    "symptom": "order timeout",
+                    "root_cause": "same service timeout",
+                    "summary": "same service timeout",
+                    "human_verified": True,
+                    "failure_mode": "dependency_timeout",
+                    "root_cause_taxonomy": "network_path_instability",
+                    "signal_pattern": "",
+                    "action_pattern": "",
+                    "recall_source": "exact",
+                    "score": 0.94,
+                },
+                {
+                    "case_id": "case-payment-timeout-1",
+                    "service": "payment-service",
+                    "symptom": "cross service timeout",
+                    "root_cause": "cross service dependency timeout",
+                    "summary": "cross service timeout",
+                    "human_verified": True,
+                    "failure_mode": "dependency_timeout",
+                    "root_cause_taxonomy": "network_path_instability",
+                    "signal_pattern": "",
+                    "action_pattern": "",
+                    "recall_source": "pattern,semantic_hybrid",
+                    "score": 0.88,
+                },
+            ]
+        }
+
     def test_ranker_weights_manager_persists_and_activates_snapshots(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             manager = RankerWeightsManager(str(Path(tmp_dir) / "ranker-weights.db"), auto_activate_threshold=2)
@@ -283,6 +339,84 @@ class RankerWeightAdaptationTest(unittest.TestCase):
             )
             active = manager.activate_snapshot(manual["version_id"])
             self.assertEqual(active["version_id"], manual["version_id"])
+
+
+class CaseRetrieverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_case_retriever_merges_exact_and_pattern_matches(self) -> None:
+        client = SimpleNamespace(case_memory_search=self._fake_case_memory_search)
+        retriever = CaseRetriever(client, Settings(rag_enabled=True))
+        cases = await retriever.recall(
+            service="order-service",
+            cluster="prod-shanghai-1",
+            namespace="default",
+            message="order service 为什么总是超时，最近还 OOMKilled",
+            session_id="current-session",
+        )
+
+        sources = {case.case_id: case.recall_source for case in cases}
+        self.assertEqual(sources["case-order-exact"], "exact")
+        self.assertIn("pattern", sources["case-payment-pattern"])
+
+    async def _fake_case_memory_search(self, **kwargs):
+        return {
+            "hits": [
+                {
+                    "case_id": "case-order-exact",
+                    "service": "order-service",
+                    "symptom": "order service 超时并 OOM",
+                    "root_cause": "Pod 健康异常或资源不足导致服务不稳定",
+                    "summary": "exact case",
+                    "human_verified": True,
+                    "failure_mode": "oom",
+                    "root_cause_taxonomy": "resource_exhaustion",
+                    "signal_pattern": "pod_restart+heap_pressure",
+                    "action_pattern": "restart_pods",
+                    "recall_source": "exact",
+                    "score": 0.94,
+                },
+                {
+                    "case_id": "case-payment-pattern",
+                    "service": "payment-service",
+                    "symptom": "payment service OOMKilled",
+                    "root_cause": "Pod 健康异常或资源不足导致服务不稳定",
+                    "summary": "pattern case",
+                    "human_verified": True,
+                    "failure_mode": "oom",
+                    "root_cause_taxonomy": "resource_exhaustion",
+                    "signal_pattern": "pod_restart+heap_pressure",
+                    "action_pattern": "restart_pods",
+                    "recall_source": "pattern,semantic_hybrid",
+                    "score": 0.82,
+                },
+            ]
+        }
+
+
+class CaseVectorIndexerTest(unittest.TestCase):
+    def test_sync_item_contains_stable_checksum_and_source_version(self) -> None:
+        from it_ticket_agent.case_vector_indexer import CaseVectorIndexer
+
+        payload = CaseVectorIndexer._to_sync_item(
+            {
+                "case_id": "case-1",
+                "service": "order-service",
+                "failure_mode": "oom",
+                "root_cause_taxonomy": "resource_exhaustion",
+                "signal_pattern": "pod_restart+heap_pressure",
+                "action_pattern": "restart_pods",
+                "symptom": "order-service OOMKilled",
+                "root_cause": "memory pressure",
+                "key_evidence": ["OOMKilled"],
+                "final_action": "restart_pods",
+                "final_conclusion": "recovered after restart",
+                "human_verified": True,
+                "updated_at": "2026-04-11T12:00:00Z",
+            }
+        )
+
+        self.assertEqual(payload["source_version"], "2026-04-11T12:00:00Z")
+        self.assertEqual(len(payload["content_checksum"]), 64)
+        self.assertTrue(all(ch in "0123456789abcdef" for ch in payload["content_checksum"]))
 
 
 if __name__ == "__main__":

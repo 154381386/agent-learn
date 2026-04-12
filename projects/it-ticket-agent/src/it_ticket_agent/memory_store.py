@@ -67,6 +67,8 @@ class IncidentCaseStore:
         self,
         *,
         service: str | None = None,
+        failure_mode: str | None = None,
+        root_cause_taxonomy: str | None = None,
         final_action: str | None = None,
         approval_required: bool | None = None,
         verification_passed: bool | None = None,
@@ -77,6 +79,8 @@ class IncidentCaseStore:
             record.model_dump()
             for record in self.v2_store.list_cases(
                 service=service,
+                failure_mode=failure_mode,
+                root_cause_taxonomy=root_cause_taxonomy,
                 final_action=final_action,
                 approval_required=approval_required,
                 verification_passed=verification_passed,
