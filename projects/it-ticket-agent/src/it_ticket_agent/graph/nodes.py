@@ -25,6 +25,7 @@ from ..orchestration import (
     ParallelVerifier,
     Ranker,
     RetrievalPlanner,
+    SupervisorAgent,
     VerificationAgent,
 )
 from ..knowledge import KnowledgeService
@@ -53,6 +54,7 @@ from ..state.models import (
 )
 from ..state.transformers import build_initial_incident_state
 from ..skills import SkillRegistry
+from ..skills.local_executor import LocalSkillExecutor
 from .state import ApprovalGraphState, TicketGraphState
 
 
@@ -76,6 +78,7 @@ class OrchestratorGraphNodes:
         hypothesis_generator: HypothesisGenerator | None = None,
         parallel_verifier: ParallelVerifier | None = None,
         ranker: Ranker | None = None,
+        supervisor_agent: SupervisorAgent | None = None,
         case_retriever: CaseRetriever | None = None,
         knowledge_service: KnowledgeService | None = None,
         retrieval_planner: RetrievalPlanner | None = None,
@@ -93,9 +96,21 @@ class OrchestratorGraphNodes:
         self.case_retriever = case_retriever
         self.knowledge_service = knowledge_service
         self.retrieval_planner = retrieval_planner
-        verification_agent = VerificationAgent(self.skill_registry)
-        self.parallel_verifier = parallel_verifier or ParallelVerifier(verification_agent)
         self.ranker_impl = ranker or Ranker()
+        self.supervisor_agent = supervisor_agent or (
+            SupervisorAgent(
+                hypothesis_generator=hypothesis_generator,
+                ranker=self.ranker_impl,
+            )
+            if hypothesis_generator is not None
+            else None
+        )
+        verification_agent = VerificationAgent(
+            self.skill_registry,
+            knowledge_service=knowledge_service,
+            case_retriever=case_retriever,
+        )
+        self.parallel_verifier = parallel_verifier or ParallelVerifier(verification_agent)
         self.checkpoint_store = CheckpointStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None
         self.execution_store = execution_store or (ExecutionStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None)
         self.system_event_store = system_event_store or (SystemEventStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None)
@@ -323,8 +338,8 @@ class OrchestratorGraphNodes:
         context_snapshot = state.get("context_snapshot") or incident_state.context_snapshot
         if context_snapshot is None:
             raise ValueError("context_snapshot is required before hypothesis generation")
-        if self.hypothesis_generator_impl is None:
-            raise ValueError("hypothesis generator is not configured")
+        if self.supervisor_agent is None and self.hypothesis_generator_impl is None:
+            raise ValueError("supervisor agent / hypothesis generator is not configured")
         observability = get_observability()
         with observability.start_span(
             name="graph.hypothesis_generator",
@@ -332,9 +347,20 @@ class OrchestratorGraphNodes:
             input={"ticket_id": request.ticket_id, "service": request.service},
             metadata={"node": "hypothesis_generator", "skill_count": len(context_snapshot.available_skills)},
         ) as span:
-            hypotheses = await self.hypothesis_generator_impl.generate(context_snapshot)
+            supervisor_plan = (
+                await self.supervisor_agent.plan_verification(context_snapshot)
+                if self.supervisor_agent is not None
+                else None
+            )
+            hypotheses = (
+                list(supervisor_plan.hypotheses)
+                if supervisor_plan is not None
+                else await self.hypothesis_generator_impl.generate(context_snapshot)
+            )
             incident_state.hypotheses = hypotheses
             incident_state.metadata["hypotheses"] = [item.model_dump() for item in hypotheses]
+            if supervisor_plan is not None:
+                incident_state.metadata["supervisor_plan"] = dict(supervisor_plan.metadata)
             incident_state.status = "hypotheses_generated"
             self._append_process_entry(
                 session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
@@ -347,6 +373,7 @@ class OrchestratorGraphNodes:
                 payload={
                     "hypothesis_ids": [item.hypothesis_id for item in hypotheses],
                     "root_causes": [item.root_cause for item in hypotheses],
+                    "planner": incident_state.metadata.get("supervisor_plan", {}).get("planner"),
                 },
                 refs={},
             )
@@ -362,6 +389,7 @@ class OrchestratorGraphNodes:
                 output={
                     "hypothesis_count": len(hypotheses),
                     "hypothesis_ids": [item.hypothesis_id for item in hypotheses],
+                    "planner": incident_state.metadata.get("supervisor_plan", {}).get("planner"),
                 }
             )
             return {
@@ -440,14 +468,28 @@ class OrchestratorGraphNodes:
             input={"ticket_id": request.ticket_id, "verification_count": len(verification_results)},
             metadata={"node": "ranker"},
         ) as span:
-            ranked_result = self.ranker_impl.rank(
-                verification_results,
-                similar_cases=similar_cases,
-                feedback_cases=(
-                    self.incident_case_store.list_cases(service=str(request.service or incident_state.service or ""), limit=100)
-                    if self.incident_case_store is not None and (request.service or incident_state.service)
-                    else []
-                ),
+            feedback_cases = (
+                self.incident_case_store.list_cases(service=str(request.service or incident_state.service or ""), limit=100)
+                if self.incident_case_store is not None and (request.service or incident_state.service)
+                else []
+            )
+            supervisor_selection = (
+                self.supervisor_agent.select_primary_outcome(
+                    verification_results,
+                    similar_cases=similar_cases,
+                    feedback_cases=feedback_cases,
+                )
+                if self.supervisor_agent is not None
+                else None
+            )
+            ranked_result = (
+                supervisor_selection.ranked_result
+                if supervisor_selection is not None
+                else self.ranker_impl.rank(
+                    verification_results,
+                    similar_cases=similar_cases,
+                    feedback_cases=feedback_cases,
+                )
             )
             incident_state.ranked_result = ranked_result
             incident_state.status = "ranked"
@@ -461,6 +503,8 @@ class OrchestratorGraphNodes:
                 item.root_cause for item in ranked_result.rejected
             ]
             incident_state.metadata["ranked_result"] = ranked_result.model_dump()
+            if supervisor_selection is not None:
+                incident_state.metadata["supervisor_selection"] = dict(supervisor_selection.metadata)
             self._append_process_entry(
                 session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
                 thread_id=str(state.get("thread_id") or request.ticket_id),
@@ -477,6 +521,7 @@ class OrchestratorGraphNodes:
                     "primary_hypothesis_id": ranked_result.primary.hypothesis_id if ranked_result.primary is not None else None,
                     "secondary_count": len(ranked_result.secondary),
                     "rejected_count": len(ranked_result.rejected),
+                    "selected_by": incident_state.metadata.get("supervisor_selection", {}).get("selected_by"),
                 },
                 refs={},
             )
@@ -497,6 +542,7 @@ class OrchestratorGraphNodes:
                     "primary_hypothesis_id": ranked_result.primary.hypothesis_id if ranked_result.primary is not None else None,
                     "secondary_count": len(ranked_result.secondary),
                     "rejected_count": len(ranked_result.rejected),
+                    "selected_by": incident_state.metadata.get("supervisor_selection", {}).get("selected_by"),
                 }
             )
             return {
@@ -2054,6 +2100,28 @@ class OrchestratorGraphNodes:
         tool_params = dict(validated_binding.get("tool_params") or {})
         action = str(validated_binding.get("action") or action)
         mcp_server = validated_binding.get("mcp_server") or params.get("mcp_server")
+        if not mcp_server:
+            try:
+                local_result = await LocalSkillExecutor().execute_action(
+                    action,
+                    params=tool_params,
+                    incident_state=None,
+                )
+                return {
+                    "ticket_id": approval_request["ticket_id"],
+                    "status": local_result.get("status", "completed"),
+                    "message": local_result.get("message") or f"审批已通过；已执行 {action}。",
+                    "diagnosis": {
+                        "approval": {
+                            "approval_id": approval_request["approval_id"],
+                            "action": action,
+                            "status": "approved",
+                        },
+                        "execution": (local_result.get("diagnosis") or {}).get("execution", local_result.get("structuredContent", {})),
+                    },
+                }
+            except RuntimeError:
+                pass
         if not mcp_server:
             raise ValueError("approval params missing mcp_server")
 

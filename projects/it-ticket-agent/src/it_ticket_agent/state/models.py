@@ -80,6 +80,13 @@ class SkillSignature(BaseModel):
     description: str
     risk_level: RiskLevel = "low"
     category: str
+    executor: str = ""
+    planning_mode: str = ""
+    tool_names: List[str] = Field(default_factory=list)
+    when_to_use: str = ""
+    sop_summary: str = ""
+    pack_name: str = ""
+    guide_path: str = ""
 
 
 class ContextSnapshot(BaseModel):
@@ -108,6 +115,7 @@ class Hypothesis(BaseModel):
     recommended_action: str = ""
     action_risk: RiskLevel = "low"
     action_params: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SkillResult(BaseModel):

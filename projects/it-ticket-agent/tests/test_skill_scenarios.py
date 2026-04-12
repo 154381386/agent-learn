@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from it_ticket_agent.approval_store import ApprovalStore
 from it_ticket_agent.case_retrieval import CaseRetriever
@@ -17,6 +17,7 @@ from it_ticket_agent.memory.models import IncidentCase
 from it_ticket_agent.orchestration.ranker_weights import estimate_adaptive_weights
 from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager
 from it_ticket_agent.orchestration.retrieval_planner import RetrievalPlanner
+from it_ticket_agent.orchestration.supervisor_agent import SupervisorAgent
 from it_ticket_agent.orchestration.verification_agent import VerificationAgent
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
 from it_ticket_agent.schemas import ConversationCreateRequest
@@ -106,7 +107,8 @@ class SkillScenarioExecutionTest(unittest.IsolatedAsyncioTestCase):
         result = await agent.verify(hypothesis, snapshot)
 
         self.assertEqual(result.status, "passed")
-        self.assertEqual(result.metadata["verification_mode"], "skill_executor")
+        self.assertEqual(result.metadata["verification_mode"], "subagent_react")
+        self.assertGreaterEqual(result.metadata["react_rounds"], 1)
         self.assertTrue(result.evidence_items[0].result["payload"]["inspect_pod_logs"]["oom_detected"])
 
 
@@ -165,7 +167,9 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
             item for item in verification_results if "Pod 健康异常" in str(item.get("root_cause") or "")
         )
         memory_item = next(
-            item for item in k8s_result["evidence_items"] if item.get("skill") == "check_memory_trend"
+            item
+            for item in k8s_result["evidence_items"]
+            if item.get("skill") in {"check_memory_trend", "diagnose_pod_crash"}
         )
         self.assertTrue(memory_item["result"]["payload"]["inspect_pod_logs"]["oom_detected"])
         self.assertEqual(memory_item["result"]["payload"]["inspect_pod_events"]["last_termination_reason"], "OOMKilled")
@@ -440,6 +444,36 @@ class RetrievalPlannerTest(unittest.IsolatedAsyncioTestCase):
         queries = [item.query for item in expansion.subqueries]
         self.assertTrue(any("OOMKilled" in item or "heap" in item for item in queries))
         self.assertTrue(any("upstream" in item or "ingress" in item for item in queries))
+
+
+class SupervisorAgentTest(unittest.IsolatedAsyncioTestCase):
+    async def test_supervisor_agent_plans_and_selects_primary(self) -> None:
+        hypothesis_generator = AsyncMock(
+            return_value=[
+                Hypothesis(
+                    hypothesis_id="H1",
+                    root_cause="网络链路异常",
+                    confidence_prior=0.6,
+                    verification_plan=[],
+                )
+            ]
+        )
+        supervisor = SupervisorAgent(
+            hypothesis_generator=SimpleNamespace(generate=hypothesis_generator),
+            ranker=SimpleNamespace(
+                rank=lambda verification_results, **kwargs: SimpleNamespace(
+                    primary=verification_results[0],
+                    secondary=[],
+                    rejected=[],
+                    ranking_metadata={},
+                )
+            ),
+        )
+        snapshot = ContextSnapshot(request={"service": "order-service"})
+        plan = await supervisor.plan_verification(snapshot)
+        self.assertEqual(plan.hypotheses[0].hypothesis_id, "H1")
+        self.assertIn(plan.metadata["planner"], {"supervisor_agent_rules", "supervisor_agent_llm"})
+        self.assertIn("supervisor", plan.hypotheses[0].metadata)
 
 
 if __name__ == "__main__":

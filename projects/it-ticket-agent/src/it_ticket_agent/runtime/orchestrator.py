@@ -27,6 +27,7 @@ from ..orchestration import HypothesisGenerator
 from ..orchestration.ranker import Ranker
 from ..orchestration.ranker_weights import RankerWeightsManager
 from ..orchestration.retrieval_planner import RetrievalPlanner
+from ..orchestration.supervisor_agent import SupervisorAgent
 from ..case_retrieval import CaseRetriever, infer_failure_mode, infer_root_cause_taxonomy
 from ..case_vector_indexer import CaseVectorIndexer
 from ..schemas import (
@@ -93,6 +94,10 @@ class SupervisorOrchestrator:
             postgres_dsn=settings.postgres_dsn,
         )
         self.ranker = Ranker(weights_manager=self.ranker_weights_manager)
+        self.supervisor_agent = SupervisorAgent(
+            hypothesis_generator=self.hypothesis_generator,
+            ranker=self.ranker,
+        )
         self.graph_nodes = OrchestratorGraphNodes(
             approval_store=self.approval_store,
             session_store=self.session_store,
@@ -106,6 +111,7 @@ class SupervisorOrchestrator:
             skill_registry=self.skill_registry,
             hypothesis_generator=self.hypothesis_generator,
             ranker=self.ranker,
+            supervisor_agent=self.supervisor_agent,
             case_retriever=self.case_retriever,
             knowledge_service=self.knowledge_service,
             retrieval_planner=self.retrieval_planner,

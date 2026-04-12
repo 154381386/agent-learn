@@ -238,6 +238,269 @@
 建议交付物：
 
 - `automation` 或 `cron` 模块
+
+### T13. 上下文解析 Agent（前置实体解析 / 槽位补全 / 软硬澄清）
+
+推荐阶段：**Phase 4**
+
+当前处理方式：**仅设计，不实现**
+
+目标：
+
+- 将当前规则驱动的前置解析层，继续演进为受控的上下文解析 agent
+- 对服务类、机器类、数据库类问题统一做实体识别、槽位补全与缺失分级
+- 在进入 `hypothesis_graph` 前，就决定是：
+  - 直接进入诊断
+  - 先给通用建议再软澄清
+  - 直接进入硬澄清
+
+建议步骤：
+
+1. 先尝试解析实体
+   - service
+   - host_identifier
+   - db_name / db_type
+
+2. 不确定时查询外部上下文源
+   - `CMDB`
+   - `Service Registry`
+   - `DB Registry`
+
+3. 基于返回结果更新判断
+   - 合并推测槽位
+   - 标记推测来源与置信度
+
+4. 必要时发起下一轮查询
+   - 允许有限轮数的上下文补全
+
+5. 最终决定处理方式
+   - 直接答
+   - 软澄清：给通用建议 + 提示补槽位
+   - 硬澄清：缺关键定位字段，必须中断
+
+完成标准：
+
+- 前置解析层不再只是静态规则集合
+- 推测出的 `environment / cluster / namespace` 等值必须支持“要求用户确认或覆盖”
+- 对不同问题类型有明确的 `required_slots_for_diagnosis`
+- clarification policy 支持软澄清与硬澄清分流
+
+### T14. 统一多环节并行 Tool 调度（Skill 抽象层 + 受控 Tool Fan-out）
+
+推荐阶段：**Phase 4**
+
+当前处理方式：**仅设计，不实现**
+
+目标：
+
+- 让 `Supervisor`、`SubAgent` 等各环节都具备“单轮并行 fan-out 多个 tool”的能力
+- 保留 `Skill` 作为 Tool 的组织层和 SOP 抽象层，而不是唯一入口
+- 避免让所有 agent 直接面对同一个全量 tool 池
+
+设计原则：
+
+1. 所有 agent 环节都应支持：
+   - 一轮规划
+   - 多个 tool calls
+   - 并行执行
+   - 汇总 observation
+   - 再进入下一轮规划
+
+2. `Skill` 的定位应收敛为：
+   - 默认 SOP
+   - 推荐工具集合
+   - Tool 白名单组织层
+
+3. 不同 agent 看到的 tool 子集必须隔离：
+   - `Supervisor`：检索 / 上下文类工具
+   - `SubAgent`：本领域验证类工具
+   - `Executor`：动作类工具
+
+4. 并行执行的失败处理需要统一：
+   - 单个 tool 失败不应直接打穿整个 skill / agent round
+   - 需返回结构化 partial failure
+
+5. 工具体系要分层：
+   - 公共工具：检索、CMDB、Registry、状态、告警等只读能力
+   - Skill 工具：按领域或 SOP 组织的专属工具集合
+
+6. `Skill` 要承担渐进式加载角色：
+   - 默认不向 agent 暴露全量 tool schema
+   - 先加载当前任务相关的公共工具和 `skill` 对应工具
+   - 只有在证据不足或任务扩展时，才按需加载新的 `skill / tool`
+
+7. `SubAgent` 不应绑定固定领域身份：
+   - `SubAgent` 是任务执行单元
+   - tool 可见集合应按当前任务动态裁剪
+   - 不应简单静态绑定为 `k8s agent / db agent / network agent`
+
+建议步骤：
+
+1. 为各 agent 层统一抽象“单轮 fan-out”执行器
+2. 收敛 `Skill` 为 tool 组织层，而不是唯一调用入口
+3. 建立公共工具层
+   - `search_knowledge`
+   - `search_case_memory`
+   - `lookup_cmdb_host`
+   - `lookup_service_registry`
+   - `lookup_db_registry`
+   - `check_status / alerts`
+4. 显式配置不同 agent 的 tool 可见子集
+4. 对并行执行增加 partial failure / timeout / retry 策略
+
+完成标准：
+
+- `Supervisor` 和 `SubAgent` 都支持单轮并行 tool fan-out
+- `Skill` 仍然保留，但角色从“唯一执行入口”降级为“默认 SOP / Tool 组织层”
+- agent 不会共享一个无边界的全量 tool 池
+- 公共工具层与 skill 工具层职责清晰
+- `Skill` 支持渐进式加载，不再一次性暴露全量工具
+- 并行 tool 调用具备统一容错和审计记录
+
+### T15. Supervisor 从 Plan-and-Execute 演进到 ReAct Supervisor
+
+推荐阶段：**Phase 4 / Phase 5**
+
+当前处理方式：**仅设计，不实现**
+
+当前现状：
+
+- `Supervisor` 仍然是典型 `Plan-and-Execute`
+- 先生成完整验证计划
+- 并发交给 `SubAgent`
+- 最后统一收敛结果
+
+目标：
+
+- 将 `Supervisor` 从一次性计划器，演进成多轮调度的 `ReAct Supervisor`
+- 支持在执行过程中根据部分 observation 动态调整验证策略
+- 让系统具备更强的任务级自主推进能力
+
+设计演进方向：
+
+当前模式：
+
+1. 先出完整计划
+2. `SubAgents` 执行
+3. 最后统一收敛
+
+目标模式：
+
+1. 先出一个初始计划
+2. 根据部分 observation 再改计划
+3. 动态增删 `hypothesis / subagents`
+4. 多轮调度直到收敛
+
+建议步骤：
+
+1. 为 `Supervisor` 增加中途重规划能力
+2. 支持根据局部验证结果提升 / 降低 hypothesis 优先级
+3. 支持取消无价值 `subagent`
+4. 支持在必要时新增 hypothesis 并启动新的 `subagent`
+5. 对多轮 supervisor 决策补齐 trace / event / audit
+
+完成标准：
+
+- `Supervisor` 不再只是一次性计划器
+- 能根据中途 observation 重排验证顺序
+- 能动态增删 hypothesis 和 subagent
+- 多轮调度过程可观测、可回放、可测试
+
+### T16. Skill 机制彻底落地（Skill Pack / SOP / Tool 组织层）
+
+推荐阶段：**Phase 4 / Phase 5**
+
+当前处理方式：**仅设计，不实现**
+
+当前现状：
+
+- 已有 `SkillRegistry + SkillPackLoader + Skill Pack` 的最小能力
+- `SkillSignature` 已能承载 `planning_mode / tool_names / sop_summary / guide_path`
+- 但当前 pack 数量很少，`Skill` 仍未完全收敛成稳定的 Tool 组织层和 SOP 层
+
+目标：
+
+- 将 `Skill` 从“部分代码内建能力”升级成完整的领域执行抽象
+- 让 `Skill` 成为：
+  - 默认 SOP
+  - Tool 白名单组织层
+  - 规划与执行的稳定边界
+
+建议步骤：
+
+1. 补齐 `Skill Pack` 机制
+   - pack manifest
+   - guide / SOP
+   - tool 白名单
+   - pack 级测试
+
+2. 明确 `Skill` 的角色
+   - 不是唯一执行入口
+   - 而是 Tool 的组织层和默认执行模板
+
+3. 收敛 skill 执行模式
+   - `serial`
+   - `llm_parallel`
+   - `react_subagent`
+
+4. 为常见领域补 pack
+   - k8s / pod crash
+   - network / timeout
+   - db / slow query / pool saturation
+   - cicd / deploy regression
+
+完成标准：
+
+- `Skill Pack` 不再只是单个示例
+- 不同领域已有稳定的 skill/SOP/tool 组织方式
+- `Skill` 在 supervisor / subagent / executor 三层中的角色清晰
+- skill 级测试和回归样例可覆盖核心领域
+
+### T17. Agentic RAG 完整化（动态检索 / Query Rewrite / 多轮补检索）
+
+推荐阶段：**Phase 4 / Phase 5**
+
+当前处理方式：**仅设计，不实现**
+
+当前现状：
+
+- 已有最小版本的 Agentic RAG
+  - 初始检索
+  - query rewrite
+  - 二次补检索
+  - 合并上下文
+- 但仍然偏向受控扩展层，距离完整 Agentic RAG 还有差距
+
+目标：
+
+- 让检索真正成为推理过程的一部分
+- 让 `Supervisor` 和 `SubAgent` 都能基于证据缺口动态补检索
+- 在不破坏边界的前提下，把 `rag-service` 变成统一检索执行端
+
+建议步骤：
+
+1. 强化 query rewrite
+   - 基于 hypothesis / subagent 类型生成更聚焦的子查询
+
+2. 支持多轮补检索
+   - 不只一次扩展
+   - 允许根据 observation 再次检索
+
+3. 检索源统一
+   - knowledge
+   - case-memory
+   - 后续可扩展到 registry / cmdb / db metadata
+
+4. 完善检索回流
+   - 记录哪些 query 命中有效
+   - 为后续检索策略优化提供样本
+
+完成标准：
+
+- 检索不再只是固定前置步骤
+- `Supervisor / SubAgent` 都可基于缺口动态补检索
+- query rewrite 和补检索过程可观测、可回放
+- `rag-service` 成为统一检索执行层
 - 定时任务配置模型与持久化
 - 预置任务模板：`SLO 巡检`、`错误预算检查`、`高风险服务健康扫描`
 - 自动化任务执行日志、失败重试与结果审计
