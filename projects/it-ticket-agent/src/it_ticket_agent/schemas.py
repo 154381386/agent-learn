@@ -8,6 +8,10 @@ class TicketRequest(BaseModel):
     user_id: str
     message: str
     service: Optional[str] = None
+    environment: Optional[str] = None
+    host_identifier: Optional[str] = None
+    db_name: Optional[str] = None
+    db_type: Optional[str] = None
     cluster: str = "prod-shanghai-1"
     namespace: str = "default"
     channel: str = "feishu"
@@ -113,6 +117,10 @@ class ConversationCreateRequest(BaseModel):
     message: str
     ticket_id: Optional[str] = None
     service: Optional[str] = None
+    environment: Optional[str] = None
+    host_identifier: Optional[str] = None
+    db_name: Optional[str] = None
+    db_type: Optional[str] = None
     cluster: str = "prod-shanghai-1"
     namespace: str = "default"
     channel: str = "feishu"
@@ -123,6 +131,10 @@ class ConversationCreateRequest(BaseModel):
 
 class ConversationMessageRequest(BaseModel):
     message: str
+    environment: Optional[str] = None
+    host_identifier: Optional[str] = None
+    db_name: Optional[str] = None
+    db_type: Optional[str] = None
     mock_scenario: Optional[str] = None
     mock_scenarios: Dict[str, str] = Field(default_factory=dict)
     mock_tool_responses: Dict[str, Dict[str, Any]] = Field(default_factory=dict)

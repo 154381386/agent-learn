@@ -25,7 +25,19 @@ class KnowledgeService:
         *,
         top_k: int | None = None,
     ) -> RAGContextBundle:
-        query = str(request.message or "").strip()
+        return await self.retrieve_query(
+            query=str(request.message or "").strip(),
+            service=str(request.service or ""),
+            top_k=top_k,
+        )
+
+    async def retrieve_query(
+        self,
+        *,
+        query: str,
+        service: str = "",
+        top_k: int | None = None,
+    ) -> RAGContextBundle:
         if not query:
             return RAGContextBundle(
                 query="",
@@ -36,7 +48,7 @@ class KnowledgeService:
         try:
             payload = await self.client.search(
                 query=query,
-                service=str(request.service or ""),
+                service=service,
                 top_k=top_k or self.default_top_k,
             )
             bundle = RAGContextBundle.model_validate(payload)

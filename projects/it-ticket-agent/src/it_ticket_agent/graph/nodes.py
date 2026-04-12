@@ -24,8 +24,10 @@ from ..orchestration import (
     HypothesisGenerator,
     ParallelVerifier,
     Ranker,
+    RetrievalPlanner,
     VerificationAgent,
 )
+from ..knowledge import KnowledgeService
 from ..runtime.contracts import SmartRouterDecision
 from ..runtime.smart_router import SmartRouter
 from ..schemas import ApprovalDecisionRequest, TicketRequest
@@ -75,6 +77,8 @@ class OrchestratorGraphNodes:
         parallel_verifier: ParallelVerifier | None = None,
         ranker: Ranker | None = None,
         case_retriever: CaseRetriever | None = None,
+        knowledge_service: KnowledgeService | None = None,
+        retrieval_planner: RetrievalPlanner | None = None,
     ) -> None:
         self.approval_store = approval_store
         self.session_store = session_store
@@ -87,6 +91,8 @@ class OrchestratorGraphNodes:
         self.skill_registry = skill_registry or SkillRegistry()
         self.hypothesis_generator_impl = hypothesis_generator
         self.case_retriever = case_retriever
+        self.knowledge_service = knowledge_service
+        self.retrieval_planner = retrieval_planner
         verification_agent = VerificationAgent(self.skill_registry)
         self.parallel_verifier = parallel_verifier or ParallelVerifier(verification_agent)
         self.ranker_impl = ranker or Ranker()
@@ -232,6 +238,16 @@ class OrchestratorGraphNodes:
                 incident_state=incident_state,
                 similar_cases=similar_cases,
             )
+            retrieval_expansion = await self._expand_context_retrieval(
+                request=request,
+                incident_state=incident_state,
+                similar_cases=similar_cases,
+                matched_categories=matched_categories,
+                session_id=str(state.get("session_id") or ""),
+            )
+            if retrieval_expansion["added_rag_context"] is not None:
+                incident_state.rag_context = retrieval_expansion["added_rag_context"]
+            similar_cases = retrieval_expansion["similar_cases"]
             available_skills = self.skill_registry.get_signatures(matched_categories)
             snapshot = ContextSnapshot(
                 request=request.model_dump(),
@@ -245,6 +261,7 @@ class OrchestratorGraphNodes:
                 ),
                 available_skills=available_skills,
                 matched_skill_categories=matched_categories,
+                retrieval_expansion=retrieval_expansion["expansion"],
             )
             incident_state.context_snapshot = snapshot
             incident_state.metadata["context_snapshot"] = snapshot.model_dump()
@@ -263,6 +280,9 @@ class OrchestratorGraphNodes:
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
+                    "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
+                    "added_rag_hits": snapshot.retrieval_expansion.added_rag_hits,
+                    "added_case_hits": snapshot.retrieval_expansion.added_case_hits,
                 },
                 refs={},
             )
@@ -277,6 +297,9 @@ class OrchestratorGraphNodes:
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
+                    "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
+                    "added_rag_hits": snapshot.retrieval_expansion.added_rag_hits,
+                    "added_case_hits": snapshot.retrieval_expansion.added_case_hits,
                 },
                 metadata={"source": "graph.context_collector"},
             )
@@ -285,6 +308,7 @@ class OrchestratorGraphNodes:
                     "matched_skill_categories": matched_categories,
                     "available_skill_count": len(available_skills),
                     "similar_case_count": len(similar_cases),
+                    "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
                 }
             )
             return {
@@ -694,6 +718,104 @@ class OrchestratorGraphNodes:
             message=message,
             session_id=session_id,
         )
+
+    async def _expand_context_retrieval(
+        self,
+        *,
+        request: TicketRequest,
+        incident_state: IncidentState,
+        similar_cases: list[SimilarIncidentCase],
+        matched_categories: list[str],
+        session_id: str,
+    ) -> dict[str, Any]:
+        from ..state.models import RetrievalExpansion
+
+        if self.retrieval_planner is None:
+            return {
+                "expansion": RetrievalExpansion(),
+                "similar_cases": similar_cases,
+                "added_rag_context": None,
+            }
+
+        rag_context = self._normalize_rag_context(incident_state.rag_context)
+        expansion = await self.retrieval_planner.plan(
+            request=request.model_dump(),
+            rag_context=rag_context.model_dump(),
+            similar_cases=similar_cases,
+            matched_skill_categories=matched_categories,
+        )
+        if not expansion.subqueries:
+            return {
+                "expansion": expansion,
+                "similar_cases": similar_cases,
+                "added_rag_context": None,
+            }
+
+        merged_rag = rag_context.model_copy(deep=True)
+        merged_cases = {case.case_id: case for case in similar_cases}
+        added_rag_hits = 0
+        added_case_hits = 0
+        service = str(request.service or incident_state.service or "")
+        cluster = str(request.cluster or incident_state.cluster or "")
+        namespace = str(request.namespace or incident_state.namespace or "")
+
+        for subquery in expansion.subqueries:
+            if subquery.target in {"knowledge", "both"} and self.knowledge_service is not None:
+                extra_bundle = await self.knowledge_service.retrieve_query(
+                    query=subquery.query,
+                    service=service,
+                    top_k=2,
+                )
+                merged_rag, delta = self._merge_rag_bundles(merged_rag, extra_bundle)
+                added_rag_hits += delta
+            if subquery.target in {"cases", "both"} and self.case_retriever is not None:
+                extra_cases = await self.case_retriever.recall(
+                    service=service,
+                    cluster=cluster,
+                    namespace=namespace,
+                    message=subquery.query,
+                    session_id=session_id,
+                    limit=3,
+                    failure_mode=subquery.failure_mode,
+                    root_cause_taxonomy=subquery.root_cause_taxonomy,
+                )
+                for case in extra_cases:
+                    existing = merged_cases.get(case.case_id)
+                    if existing is None:
+                        merged_cases[case.case_id] = case
+                        added_case_hits += 1
+                        continue
+                    if case.recall_score > existing.recall_score:
+                        merged_cases[case.case_id] = case
+        expansion.added_rag_hits = added_rag_hits
+        expansion.added_case_hits = added_case_hits
+        return {
+            "expansion": expansion,
+            "similar_cases": list(merged_cases.values()),
+            "added_rag_context": merged_rag,
+        }
+
+    @staticmethod
+    def _merge_rag_bundles(base: RAGContextBundle, extra: RAGContextBundle) -> tuple[RAGContextBundle, int]:
+        merged = base.model_copy(deep=True)
+        seen = {(item.chunk_id, item.path, item.section) for item in list(merged.context or merged.hits)}
+        added = 0
+        for item in list(extra.context or extra.hits):
+            key = (item.chunk_id, item.path, item.section)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.hits.append(item)
+            merged.context.append(item)
+            added += 1
+        merged.citations = list(dict.fromkeys([*merged.citations, *extra.citations]))
+        merged.facts = list(merged.facts) + [fact for fact in extra.facts if fact not in merged.facts]
+        merged.index_info = {
+            **dict(merged.index_info or {}),
+            "agentic_expansion": True,
+            "subquery_expansion_count": dict(merged.index_info or {}).get("subquery_expansion_count", 0) + 1,
+        }
+        return merged, added
 
     def _match_skill_categories(
         self,

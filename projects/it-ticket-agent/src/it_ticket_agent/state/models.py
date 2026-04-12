@@ -52,6 +52,21 @@ class SimilarIncidentCase(BaseModel):
     recall_score: float = 0.0
 
 
+class RetrievalSubquery(BaseModel):
+    query: str
+    target: Literal["knowledge", "cases", "both"] = "both"
+    reason: str = ""
+    failure_mode: str = ""
+    root_cause_taxonomy: str = ""
+
+
+class RetrievalExpansion(BaseModel):
+    subqueries: List[RetrievalSubquery] = Field(default_factory=list)
+    added_rag_hits: int = 0
+    added_case_hits: int = 0
+    missing_evidence: List[str] = Field(default_factory=list)
+
+
 class SkillCategory(BaseModel):
     name: str
     description: str
@@ -75,6 +90,7 @@ class ContextSnapshot(BaseModel):
     context_quality: float = 0.0
     available_skills: List[SkillSignature] = Field(default_factory=list)
     matched_skill_categories: List[str] = Field(default_factory=list)
+    retrieval_expansion: RetrievalExpansion = Field(default_factory=RetrievalExpansion)
 
 
 class VerificationStep(BaseModel):

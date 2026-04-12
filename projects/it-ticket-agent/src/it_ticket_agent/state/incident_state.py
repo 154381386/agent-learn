@@ -23,6 +23,10 @@ class IncidentState(BaseModel):
     message: str
     thread_id: Optional[str] = None
     service: Optional[str] = None
+    environment: Optional[str] = None
+    host_identifier: Optional[str] = None
+    db_name: Optional[str] = None
+    db_type: Optional[str] = None
     cluster: str = "prod-shanghai-1"
     namespace: str = "default"
     channel: str = "feishu"

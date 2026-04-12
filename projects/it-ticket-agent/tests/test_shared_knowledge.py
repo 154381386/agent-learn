@@ -46,7 +46,7 @@ class KnowledgeServiceTest(unittest.IsolatedAsyncioTestCase):
         service = KnowledgeService(client)
 
         bundle = await service.retrieve_for_request(
-            TicketRequest(ticket_id="T-1", user_id="u-1", message="支付服务发布失败", service="支付服务")
+            TicketRequest(ticket_id="T-1", user_id="u-1", message="支付服务发布失败", service="支付服务", environment="prod")
         )
 
         self.assertEqual(bundle.hits[0].title, "支付服务发布手册")
@@ -171,6 +171,7 @@ class SharedKnowledgeOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u-shared-rag",
                 message="支付服务发布流程是什么？",
                 service="支付服务",
+                environment="prod",
             )
         )
 

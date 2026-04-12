@@ -26,6 +26,7 @@ from ..observability import configure_observability
 from ..orchestration import HypothesisGenerator
 from ..orchestration.ranker import Ranker
 from ..orchestration.ranker_weights import RankerWeightsManager
+from ..orchestration.retrieval_planner import RetrievalPlanner
 from ..case_retrieval import CaseRetriever, infer_failure_mode, infer_root_cause_taxonomy
 from ..case_vector_indexer import CaseVectorIndexer
 from ..schemas import (
@@ -43,6 +44,7 @@ from ..skills import SkillRegistry
 from ..state.incident_state import IncidentState
 from ..runtime.topic_shift_detector import TopicShiftDetector
 from ..service_names import infer_service_name
+from ..slot_resolution import infer_host_identifier, resolve_slots
 from .smart_router import SmartRouter
 
 
@@ -82,6 +84,7 @@ class SupervisorOrchestrator:
         self.topic_shift_detector = TopicShiftDetector()
         self.skill_registry = SkillRegistry()
         self.hypothesis_generator = HypothesisGenerator(settings)
+        self.retrieval_planner = RetrievalPlanner(settings)
         self.case_vector_indexer = CaseVectorIndexer(settings, self.incident_case_store, self.knowledge_client)
         self.case_retriever = CaseRetriever(self.knowledge_client, settings)
         self.ranker_weights_manager = RankerWeightsManager(
@@ -104,6 +107,8 @@ class SupervisorOrchestrator:
             hypothesis_generator=self.hypothesis_generator,
             ranker=self.ranker,
             case_retriever=self.case_retriever,
+            knowledge_service=self.knowledge_service,
+            retrieval_planner=self.retrieval_planner,
         )
         self.graph_builder = OrchestratorGraphBuilder(self.graph_nodes)
         self.ticket_graph = self.graph_builder.build_ticket_graph()
@@ -464,6 +469,10 @@ class SupervisorOrchestrator:
                 session,
                 key_entities={
                     "service": restored_state.get("service"),
+                    "environment": restored_state.get("environment"),
+                    "host_identifier": restored_state.get("host_identifier"),
+                    "db_name": restored_state.get("db_name"),
+                    "db_type": restored_state.get("db_type"),
                     "cluster": restored_state.get("cluster"),
                     "namespace": restored_state.get("namespace"),
                 },
@@ -477,6 +486,10 @@ class SupervisorOrchestrator:
             user_id=str(session.get("user_id") or ""),
             message=str(restored_state.get("message") or "补充澄清信息"),
             service=restored_state.get("service"),
+            environment=restored_state.get("environment"),
+            host_identifier=restored_state.get("host_identifier"),
+            db_name=restored_state.get("db_name"),
+            db_type=restored_state.get("db_type"),
             cluster=str(restored_state.get("cluster") or "prod-shanghai-1"),
             namespace=str(restored_state.get("namespace") or "default"),
             channel=str(restored_state.get("channel") or "feishu"),
@@ -652,6 +665,68 @@ class SupervisorOrchestrator:
             "pending_interrupt": pending_interrupt,
         }
 
+    def _build_clarification_schema(self, missing_fields: list[dict[str, str]]) -> dict[str, Any]:
+        properties = {
+            str(field["name"]): {
+                "type": "string",
+                "title": str(field["label"]),
+                "description": str(field["description"]),
+            }
+            for field in missing_fields
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": [str(field["name"]) for field in missing_fields if bool(field.get("required", True))],
+        }
+
+    async def _build_generic_guidance(self, request: TicketRequest, *, issue_type: str) -> str:
+        try:
+            bundle = await self.knowledge_service.retrieve_query(
+                query=request.message,
+                service=str(request.service or ""),
+                top_k=2,
+            )
+            answer = await self.smart_router.generate_direct_answer(request, rag_context=bundle)
+            if str(answer or "").strip():
+                return str(answer).strip()
+        except Exception:
+            pass
+        defaults = {
+            "host": "可以先检查实例状态、控制台启动日志、最近变更、系统盘与网络挂载情况。",
+            "database": "可以先检查数据库实例状态、连接数、慢查询、复制延迟和最近变更。",
+            "service": "可以先确认是否存在发布变更、资源异常、网络抖动或上游依赖问题。",
+        }
+        return defaults.get(issue_type, "可以先从最近变更、运行状态和错误信息入手做初步排查。")
+
+    def _build_clarification_response(
+        self,
+        *,
+        session: dict[str, Any],
+        request: TicketRequest,
+        interrupt: dict[str, Any],
+        guidance: str = "",
+    ) -> dict[str, Any]:
+        followup = str(interrupt.get("question") or "请先补充关键信息后再继续分析。")
+        message = (
+            f"{guidance}\n\n{followup}".strip()
+            if guidance
+            else followup
+        )
+        assistant_turn = self._append_assistant_turn(
+            str(session["session_id"]),
+            response={"status": "awaiting_clarification", "message": message, "diagnosis": {"clarification": interrupt}},
+        )
+        return {
+            "session": session,
+            "status": "awaiting_clarification",
+            "message": message,
+            "diagnosis": {"clarification": interrupt},
+            "approval_request": None,
+            "pending_interrupt": interrupt,
+            "assistant_turn": assistant_turn,
+        }
+
     async def _retrieve_rag_context(self, request: TicketRequest):
         return await self.knowledge_service.retrieve_for_request(request)
 
@@ -788,6 +863,8 @@ class SupervisorOrchestrator:
                 "ticket_id": request.ticket_id,
                 "message": request.message,
                 "service": request.service,
+                "environment": request.environment,
+                "host_identifier": request.host_identifier,
                 "cluster": request.cluster,
                 "namespace": request.namespace,
             },
@@ -803,6 +880,206 @@ class SupervisorOrchestrator:
             incident_state=incident_state,
         )
         incident_state = graph_input["incident_state"]
+        slot_resolution = resolve_slots(
+            message=request.message,
+            service=request.service,
+            environment=request.environment,
+            cluster=request.cluster,
+            namespace=request.namespace,
+            host_identifier=request.host_identifier,
+            db_name=request.db_name,
+            db_type=request.db_type,
+        )
+        if slot_resolution.resolved.get("service"):
+            incident_state.service = str(slot_resolution.resolved.get("service") or "")
+        if slot_resolution.resolved.get("environment"):
+            incident_state.environment = str(slot_resolution.resolved.get("environment") or "") or None
+        if slot_resolution.resolved.get("host_identifier"):
+            incident_state.host_identifier = str(slot_resolution.resolved.get("host_identifier") or "") or None
+        if slot_resolution.resolved.get("db_name"):
+            incident_state.db_name = str(slot_resolution.resolved.get("db_name") or "") or None
+        if slot_resolution.resolved.get("db_type"):
+            incident_state.db_type = str(slot_resolution.resolved.get("db_type") or "") or None
+        if slot_resolution.resolved.get("cluster"):
+            incident_state.cluster = str(slot_resolution.resolved.get("cluster") or "") or incident_state.cluster
+        if slot_resolution.resolved.get("namespace"):
+            incident_state.namespace = str(slot_resolution.resolved.get("namespace") or "") or incident_state.namespace
+        clarification_fields = [
+            {
+                "name": field.name,
+                "label": field.label,
+                "description": field.description,
+                "required": field.required,
+                "inferred_value": field.inferred_value,
+                "source": field.source,
+            }
+            for field in [*slot_resolution.missing_fields, *slot_resolution.inferred_fields]
+        ]
+        if slot_resolution.inferred_fields:
+            clarification_fields.append(
+                {
+                    "name": "confirm_inferred_context",
+                    "label": "确认推测信息",
+                    "description": "如果当前推测信息正确，请填写 true；如果不正确，请直接覆盖对应字段。",
+                    "required": False,
+                }
+            )
+        if slot_resolution.needs_clarification:
+            incident_state.shared_context.update(
+                {
+                    "service": incident_state.service or "",
+                    "environment": incident_state.environment or "",
+                    "host_identifier": incident_state.host_identifier or "",
+                    "db_name": incident_state.db_name or "",
+                    "db_type": incident_state.db_type or "",
+                }
+            )
+            if create_session:
+                self.session_service.create_initial_session(
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    request=request,
+                    incident_state=incident_state,
+                    session_memory={
+                        "original_user_message": request.message,
+                        "current_intent": {},
+                        "key_entities": {
+                            "service": incident_state.service,
+                            "environment": incident_state.environment,
+                            "host_identifier": incident_state.host_identifier,
+                            "db_name": incident_state.db_name,
+                            "db_type": incident_state.db_type,
+                            "cluster": request.cluster,
+                            "namespace": request.namespace,
+                        },
+                        "clarification_answers": {},
+                        "pending_approval": None,
+                        "current_stage": "awaiting_clarification",
+                        "pending_interrupt": None,
+                    },
+                )
+            current_session = self.session_service.get_session(session_id)
+            if current_session is None:
+                raise ValueError("session not found during clarification setup")
+            self._append_user_turn(
+                session_id,
+                content=request.message,
+                structured_payload=user_turn_payload
+                or {
+                    "ticket_id": request.ticket_id,
+                    "user_id": request.user_id,
+                    "service": request.service,
+                    "environment": request.environment,
+                    "host_identifier": request.host_identifier,
+                    "db_name": request.db_name,
+                    "db_type": request.db_type,
+                    "cluster": request.cluster,
+                    "namespace": request.namespace,
+                    "channel": request.channel,
+                },
+            )
+            self._append_system_event(
+                session_id=session_id,
+                thread_id=thread_id,
+                ticket_id=request.ticket_id,
+                event_type="message.received",
+                payload={
+                    "entrypoint": entrypoint,
+                    "message": request.message,
+                    "service": request.service,
+                    "environment": request.environment,
+                    "host_identifier": request.host_identifier,
+                    "db_name": request.db_name,
+                    "db_type": request.db_type,
+                },
+                metadata={"source": "orchestrator"},
+            )
+            guidance = await self._build_generic_guidance(request, issue_type=slot_resolution.issue_type)
+            if slot_resolution.inferred_fields:
+                inferred_lines = "；".join(
+                    f"{field.label}={field.inferred_value}（来源 {field.source}）" for field in slot_resolution.inferred_fields
+                )
+                guidance = f"{guidance}\n\n我当前推测：{inferred_lines}。请确认或直接覆盖。".strip()
+            if slot_resolution.missing_fields:
+                required_labels = "、".join(field.label for field in slot_resolution.missing_fields)
+                guidance = f"{guidance}\n\n如果您能补充 {required_labels}，我可以继续深入排查。".strip()
+            interrupt = self.interrupt_store.create_clarification_interrupt(
+                session_id=session_id,
+                ticket_id=request.ticket_id,
+                reason="missing_required_fields",
+                question="请确认或补充继续诊断所需的关键信息。",
+                expected_input_schema=self._build_clarification_schema(clarification_fields),
+                metadata={
+                    "clarification_fields": clarification_fields,
+                    "issue_type": slot_resolution.issue_type,
+                },
+            )
+            incident_state.metadata["clarification_interrupt"] = interrupt
+            self._append_process_entry(
+                session_id=session_id,
+                thread_id=thread_id,
+                ticket_id=request.ticket_id,
+                event_type="clarification_created",
+                stage="routing",
+                source="orchestrator",
+                summary=(
+                    "缺少或推测了继续诊断所需信息，已触发澄清："
+                    + ", ".join(item["name"] for item in clarification_fields)
+                ),
+                payload={
+                    "missing_fields": [field.name for field in slot_resolution.missing_fields],
+                    "inferred_fields": [field.name for field in slot_resolution.inferred_fields],
+                    "issue_type": slot_resolution.issue_type,
+                },
+                refs={"interrupt_id": interrupt.get("interrupt_id")},
+            )
+            self._append_system_event(
+                session_id=session_id,
+                thread_id=thread_id,
+                ticket_id=request.ticket_id,
+                event_type="clarification.requested",
+                payload={
+                    "missing_fields": [field.name for field in slot_resolution.missing_fields],
+                    "inferred_fields": [field.name for field in slot_resolution.inferred_fields],
+                    "issue_type": slot_resolution.issue_type,
+                },
+                metadata={"source": "orchestrator", "interrupt_id": interrupt.get("interrupt_id")},
+            )
+            session = self.session_service.update_session_state(
+                session_id,
+                incident_state=incident_state.model_dump(),
+                status="awaiting_clarification",
+                current_stage="awaiting_clarification",
+                current_agent="clarification",
+                latest_approval_id=current_session.get("latest_approval_id"),
+                pending_interrupt_id=str(interrupt.get("interrupt_id") or ""),
+                last_checkpoint_id=current_session.get("last_checkpoint_id"),
+                session_memory=self._merge_session_memory(
+                    current_session,
+                    key_entities={
+                        "service": incident_state.service,
+                        "environment": incident_state.environment,
+                        "host_identifier": incident_state.host_identifier,
+                        "db_name": incident_state.db_name,
+                        "db_type": incident_state.db_type,
+                        "cluster": incident_state.cluster,
+                        "namespace": incident_state.namespace,
+                    },
+                    current_stage="awaiting_clarification",
+                    pending_interrupt={
+                        "interrupt_id": interrupt.get("interrupt_id"),
+                        "type": "clarification",
+                        "reason": interrupt.get("reason"),
+                        "question": interrupt.get("question"),
+                    },
+                ),
+            )
+            return self._build_clarification_response(
+                session=session or current_session,
+                request=request,
+                interrupt=interrupt,
+                guidance=guidance,
+            )
         incident_state.rag_context = await self._retrieve_rag_context(request)
         incident_state.shared_context["rag_context"] = incident_state.rag_context.model_dump()
         if create_session:
@@ -816,6 +1093,8 @@ class SupervisorOrchestrator:
                     "current_intent": {},
                     "key_entities": {
                         "service": request.service,
+                        "environment": request.environment,
+                        "host_identifier": request.host_identifier,
                         "cluster": request.cluster,
                         "namespace": request.namespace,
                     },
@@ -899,6 +1178,8 @@ class SupervisorOrchestrator:
                 "entrypoint": entrypoint,
                 "message": request.message,
                 "service": request.service,
+                "environment": request.environment,
+                "host_identifier": request.host_identifier,
             },
             metadata={"source": "orchestrator"},
         )
@@ -962,6 +1243,10 @@ class SupervisorOrchestrator:
                 current_intent=current_intent,
                 key_entities={
                     "service": final_incident_state.service,
+                    "environment": getattr(final_incident_state, "environment", None),
+                    "host_identifier": getattr(final_incident_state, "host_identifier", None),
+                    "db_name": getattr(final_incident_state, "db_name", None),
+                    "db_type": getattr(final_incident_state, "db_type", None),
                     "cluster": final_incident_state.cluster,
                     "namespace": final_incident_state.namespace,
                 },
@@ -1023,6 +1308,10 @@ class SupervisorOrchestrator:
                     current_intent=current_intent,
                     key_entities={
                         "service": final_incident_state.service,
+                        "environment": getattr(final_incident_state, "environment", None),
+                        "host_identifier": getattr(final_incident_state, "host_identifier", None),
+                        "db_name": getattr(final_incident_state, "db_name", None),
+                        "db_type": getattr(final_incident_state, "db_type", None),
                         "cluster": final_incident_state.cluster,
                         "namespace": final_incident_state.namespace,
                     },
@@ -1176,6 +1465,10 @@ class SupervisorOrchestrator:
             user_id=request.user_id,
             message=request.message,
             service=request.service or infer_service_name(request.message),
+            environment=request.environment,
+            host_identifier=request.host_identifier or infer_host_identifier(request.message),
+            db_name=request.db_name,
+            db_type=request.db_type,
             cluster=request.cluster,
             namespace=request.namespace,
             channel=request.channel,
@@ -1215,6 +1508,10 @@ class SupervisorOrchestrator:
             user_id=str(session.get("user_id") or ""),
             message=request.message,
             service=incident_state.get("service") or infer_service_name(request.message),
+            environment=request.environment or incident_state.get("environment"),
+            host_identifier=request.host_identifier or incident_state.get("host_identifier") or infer_host_identifier(request.message),
+            db_name=request.db_name or incident_state.get("db_name"),
+            db_type=request.db_type or incident_state.get("db_type"),
             cluster=str(incident_state.get("cluster") or "prod-shanghai-1"),
             namespace=str(incident_state.get("namespace") or "default"),
             channel=str(incident_state.get("channel") or "feishu"),

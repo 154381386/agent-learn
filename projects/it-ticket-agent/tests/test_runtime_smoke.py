@@ -68,6 +68,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
             message=f"{service} 发布后故障，待审批回滚",
             thread_id=session_id,
             service=service,
+            environment="prod",
             cluster="prod-shanghai-1",
             namespace="default",
             channel="feishu",
@@ -91,7 +92,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                         "mode": "router",
                         "route_source": "fixture",
                     },
-                    "key_entities": {"service": service, "cluster": "prod-shanghai-1", "namespace": "default"},
+                    "key_entities": {"service": service, "environment": "prod", "cluster": "prod-shanghai-1", "namespace": "default"},
                     "clarification_answers": {},
                     "pending_approval": None,
                     "current_stage": "awaiting_approval",
@@ -200,6 +201,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u1",
                 message="发布流程是什么？",
                 service="checkout-service",
+                environment="prod",
             )
         )
         self.assertEqual(result["status"], "completed")
@@ -215,12 +217,47 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         summary = self.process_memory_store.summarize(session_id)
         self.assertEqual(summary["latest_execution"]["event_type"], "run_summary")
 
+    async def test_missing_environment_triggers_clarification_before_diagnosis(self) -> None:
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-clarify-env",
+                message="订单服务超时怎么办",
+                service="order-service",
+                cluster="",
+                namespace="",
+                environment=None,
+            )
+        )
+
+        self.assertEqual(result["status"], "awaiting_clarification")
+        pending = result["pending_interrupt"]
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["type"], "clarification")
+        self.assertIn("environment", str(pending.get("expected_input_schema") or ""))
+
+    async def test_missing_host_identifier_triggers_clarification(self) -> None:
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-clarify-host",
+                message="机器启动不了怎么办",
+                cluster="",
+                namespace="",
+            )
+        )
+
+        self.assertEqual(result["status"], "awaiting_clarification")
+        pending = result["pending_interrupt"]
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["type"], "clarification")
+        self.assertIn("host_identifier", str(pending.get("expected_input_schema") or ""))
+
     async def test_hypothesis_request_routes_to_new_entry_path(self) -> None:
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u-checkpoint",
                 message="帮我看 deploy 失败了",
                 service="checkout-service",
+                environment="prod",
             )
         )
         self.assertIn(result["status"], {"completed", "awaiting_approval"})
@@ -258,6 +295,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u-high-risk",
                 message="checkout-service 发布失败，需要排查最近变更",
                 service="checkout-service",
+                environment="prod",
             )
         )
 
@@ -306,6 +344,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                     user_id="u-auto-exec",
                     message="checkout-service 需要一个低风险自动修复动作",
                     service="checkout-service",
+                    environment="prod",
                 )
             )
 
@@ -368,6 +407,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u-feedback",
                 message="checkout-service 需要一个低风险自动修复动作",
                 service="checkout-service",
+                environment="prod",
             )
         )
         self.assertEqual(result["status"], "completed")
@@ -414,6 +454,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u-topic",
                 message="发布流程是什么？",
                 service="checkout-service",
+                environment="prod",
             )
         )
         session_id = created["session"]["session_id"]
@@ -722,6 +763,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u4",
                 message="帮我看 deploy 失败了",
                 service="checkout-service",
+                environment="prod",
             )
         )
         self.assertIn(result["status"], {"completed", "awaiting_approval"})

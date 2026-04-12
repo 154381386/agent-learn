@@ -42,6 +42,8 @@ class CaseRetriever:
         message: str,
         session_id: str,
         limit: int = 6,
+        failure_mode: str = "",
+        root_cause_taxonomy: str = "",
     ) -> list[SimilarIncidentCase]:
         if not self.settings.rag_enabled:
             return []
@@ -50,8 +52,8 @@ class CaseRetriever:
             service=service,
             cluster=cluster,
             namespace=namespace,
-            failure_mode=infer_failure_mode(message),
-            root_cause_taxonomy=infer_root_cause_taxonomy(message),
+            failure_mode=failure_mode or infer_failure_mode(message),
+            root_cause_taxonomy=root_cause_taxonomy or infer_root_cause_taxonomy(message),
             exclude_case_ids=[],
             top_k=limit,
         )

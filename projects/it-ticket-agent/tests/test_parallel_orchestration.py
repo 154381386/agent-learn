@@ -73,6 +73,7 @@ class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u1",
                 message="K8s HPA 是什么？",
                 service="order-service",
+                environment="prod",
             )
         )
 
@@ -101,6 +102,7 @@ class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u2",
                 message="order-service 发布后 ingress 502 超时，帮我排查",
                 service="order-service",
+                environment="prod",
             )
         )
 
@@ -113,6 +115,9 @@ class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("network", snapshot.get("matched_skill_categories") or [])
         skill_names = [item.get("name") for item in snapshot.get("available_skills") or [] if isinstance(item, dict)]
         self.assertIn("check_ingress_rules", skill_names)
+        retrieval_expansion = dict(snapshot.get("retrieval_expansion") or {})
+        self.assertTrue(retrieval_expansion.get("subqueries"))
+        self.assertGreaterEqual(len(retrieval_expansion.get("subqueries") or []), 1)
         hypotheses = list(diagnosis.get("hypotheses") or [])
         self.assertTrue(hypotheses)
         first_plan = hypotheses[0].get("verification_plan") or []

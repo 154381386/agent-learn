@@ -16,6 +16,7 @@ from it_ticket_agent.memory_store import IncidentCaseStore, ProcessMemoryStore
 from it_ticket_agent.memory.models import IncidentCase
 from it_ticket_agent.orchestration.ranker_weights import estimate_adaptive_weights
 from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager
+from it_ticket_agent.orchestration.retrieval_planner import RetrievalPlanner
 from it_ticket_agent.orchestration.verification_agent import VerificationAgent
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
 from it_ticket_agent.schemas import ConversationCreateRequest
@@ -153,6 +154,7 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 user_id="u-skill",
                 message="checkout-service pod OOMKilled，帮我排查",
                 service="checkout-service",
+                environment="prod",
                 mock_scenario="oom",
             )
         )
@@ -174,6 +176,7 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 ConversationCreateRequest(
                     user_id="u-case1",
                     message="order service为什么总是超时",
+                    environment="prod",
                 )
             )
 
@@ -193,6 +196,7 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 ConversationCreateRequest(
                     user_id="u-case2",
                     message="order service为什么总是超时",
+                    environment="prod",
                 )
             )
 
@@ -417,6 +421,25 @@ class CaseVectorIndexerTest(unittest.TestCase):
         self.assertEqual(payload["source_version"], "2026-04-11T12:00:00Z")
         self.assertEqual(len(payload["content_checksum"]), 64)
         self.assertTrue(all(ch in "0123456789abcdef" for ch in payload["content_checksum"]))
+
+
+class RetrievalPlannerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_rule_planner_generates_focused_subqueries(self) -> None:
+        planner = RetrievalPlanner(Settings(llm_base_url="", llm_api_key="", llm_model=""))
+        expansion = await planner.plan(
+            request={
+                "message": "order service 为什么总是超时，最近还有 OOMKilled",
+                "service": "order-service",
+            },
+            rag_context={"hits": []},
+            similar_cases=[],
+            matched_skill_categories=["network", "k8s", "db"],
+        )
+
+        self.assertTrue(expansion.subqueries)
+        queries = [item.query for item in expansion.subqueries]
+        self.assertTrue(any("OOMKilled" in item or "heap" in item for item in queries))
+        self.assertTrue(any("upstream" in item or "ingress" in item for item in queries))
 
 
 if __name__ == "__main__":
