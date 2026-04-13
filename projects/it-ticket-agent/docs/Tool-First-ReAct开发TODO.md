@@ -2,6 +2,45 @@
 
 > 对应方案：`docs/Tool-First-ReAct迁移方案.md`
 
+## Phase 1 当前状态
+
+已完成的骨架：
+
+- [x] 新增 `react_supervisor.py`
+- [x] 新增 `react_state.py`
+- [x] 新增 `react_nodes.py`
+- [x] 新增 `react_builder.py`
+- [x] 新增 `orchestration_mode`
+- [x] 新 graph 与旧 graph 并存
+- [x] `light_router -> direct_answer -> finalize`
+- [x] `supervisor_loop` 已具备 tool-first ReAct 雏形
+- [x] 普通 Tool 在 `supervisor_loop` 内部执行
+
+当前剩余项：
+
+- [x] `confidence_threshold` 已接入 `ReactSupervisor` 的终止判断
+- [ ] `await_user` 的完整恢复闭环仍主要复用旧逻辑
+- [ ] 真实 LLM 端到端联调未完成
+- [x] 已接入最小版 `ToolExecutionMiddleware` 到 `supervisor_loop` 执行链路
+- [x] `execute_approved_action` 已接到统一 action middleware 入口
+
+## Phase 2 当前状态
+
+已完成的最小版：
+
+- [x] `BaseTool` 最小元数据：`risk_level / retryable / timeout_sec`
+- [x] 新增 `ToolExecutionMiddleware`
+- [x] 普通 tool 已接入 middleware
+- [x] action 执行已接入统一 action middleware 入口
+- [x] tool / action 执行都已具备最小版 timeout / retry / structured error envelope
+- [x] action registry 已从 `execution/security.py` 独立拆分
+
+当前剩余项：
+
+- [ ] 还没有把更多 tool 的 `risk_level` 系统性梳理完整
+- [ ] action 执行仍是最小封装，尚未完全统一到更完整的 execution envelope
+- [ ] timeout / retry / structured error 仍属于最小版，还没做成最终形态
+
 ## Phase 1：ReAct Supervisor + 7 节点新 Graph
 
 - [ ] 新建 `runtime/react_supervisor.py`

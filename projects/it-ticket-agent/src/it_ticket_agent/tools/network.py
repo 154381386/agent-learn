@@ -12,9 +12,12 @@ ENV_VAR = "IT_TICKET_AGENT_MOCK_NETWORK_PROFILES_PATH"
 
 
 class InspectDNSResolutionTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_dns_resolution"
     summary = "Inspect DNS resolution and record consistency"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -34,9 +37,12 @@ class InspectDNSResolutionTool(BaseTool):
 
 
 class InspectIngressRouteTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_ingress_route"
     summary = "Inspect ingress, gateway, and route matching status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -56,9 +62,12 @@ class InspectIngressRouteTool(BaseTool):
 
 
 class InspectVpcConnectivityTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_vpc_connectivity"
     summary = "Inspect VPC, subnet, and east-west connectivity"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -78,9 +87,12 @@ class InspectVpcConnectivityTool(BaseTool):
 
 
 class InspectLoadBalancerStatusTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_load_balancer_status"
     summary = "Inspect load balancer backend health and listener status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -100,9 +112,12 @@ class InspectLoadBalancerStatusTool(BaseTool):
 
 
 class InspectUpstreamDependencyTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_upstream_dependency"
     summary = "Inspect upstream dependency health and timeout ratio"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -124,9 +139,12 @@ class InspectUpstreamDependencyTool(BaseTool):
 
 
 class InspectEgressPolicyTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_egress_policy"
     summary = "Inspect egress policy and outbound access restrictions"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)

@@ -21,6 +21,9 @@ class BaseTool(ABC):
     name: str
     summary: str
     input_schema: Dict[str, Any] = {"type": "object", "properties": {}}
+    risk_level: str = "low"
+    retryable: bool = False
+    timeout_sec: int = 30
 
     @abstractmethod
     async def run(self, task: TaskEnvelope, arguments: Dict[str, Any] | None = None) -> ToolExecutionResult:

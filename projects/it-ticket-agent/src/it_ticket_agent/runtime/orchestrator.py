@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict
 from uuid import uuid4
 
+from ..approval.adapters import legacy_decision_to_record
 from ..approval_store import ApprovalStore
 from ..checkpoint_store import CheckpointStore
 from ..execution_store import ExecutionStore
@@ -16,6 +17,9 @@ from ..graph import (
     build_ticket_graph_input,
     extract_graph_response,
 )
+from ..graph.react_builder import ReactGraphBuilder
+from ..graph.react_nodes import ReactGraphNodes
+from ..graph.react_state import build_react_graph_input, extract_react_graph_response
 from ..interrupt_store import InterruptStore
 from ..knowledge import KnowledgeService
 from ..mcp import MCPConnectionManager
@@ -42,10 +46,12 @@ from ..session.models import ConversationTurn
 from ..session_store import SessionStore
 from ..settings import Settings
 from ..skills import SkillRegistry
+from ..state.approval_transformers import apply_approval_resume_result_to_state
 from ..state.incident_state import IncidentState
 from ..runtime.topic_shift_detector import TopicShiftDetector
 from ..service_names import infer_service_name
 from ..slot_resolution import infer_host_identifier, resolve_slots
+from .react_supervisor import ReactSupervisor
 from .smart_router import SmartRouter
 
 
@@ -117,7 +123,24 @@ class SupervisorOrchestrator:
             retrieval_planner=self.retrieval_planner,
         )
         self.graph_builder = OrchestratorGraphBuilder(self.graph_nodes)
-        self.ticket_graph = self.graph_builder.build_ticket_graph()
+        self.legacy_ticket_graph = self.graph_builder.build_ticket_graph()
+        self.react_supervisor = ReactSupervisor(
+            self.graph_nodes,
+            settings=settings,
+            max_iterations=settings.react_max_iterations,
+            max_tool_calls=settings.react_max_tool_calls,
+            confidence_threshold=settings.react_confidence_threshold,
+        )
+        self.react_graph_nodes = ReactGraphNodes(
+            smart_router=self.smart_router,
+            legacy_nodes=self.graph_nodes,
+            supervisor=self.react_supervisor,
+            tool_middleware=self.react_supervisor.tool_middleware,
+            action_executor=self.react_supervisor.local_executor,
+        )
+        self.react_graph_builder = ReactGraphBuilder(self.react_graph_nodes)
+        self.react_ticket_graph = self.react_graph_builder.build_ticket_graph()
+        self.ticket_graph = self.react_ticket_graph if settings.orchestration_mode == "react_tool_first" else self.legacy_ticket_graph
         self.approval_graph = self.graph_builder.build_approval_graph()
 
     def _append_process_entry(
@@ -879,11 +902,20 @@ class SupervisorOrchestrator:
         incident_state = None
         if incident_state_override is not None:
             incident_state = IncidentState.model_validate(incident_state_override)
-        graph_input = build_ticket_graph_input(
-            request,
-            session_id=session_id,
-            thread_id=thread_id,
-            incident_state=incident_state,
+        graph_input = (
+            build_react_graph_input(
+                request,
+                session_id=session_id,
+                thread_id=thread_id,
+                incident_state=incident_state,
+            )
+            if self.settings.orchestration_mode == "react_tool_first"
+            else build_ticket_graph_input(
+                request,
+                session_id=session_id,
+                thread_id=thread_id,
+                incident_state=incident_state,
+            )
         )
         incident_state = graph_input["incident_state"]
         slot_resolution = resolve_slots(
@@ -1199,7 +1231,7 @@ class SupervisorOrchestrator:
                 current_agent=self._resolve_current_agent(current_session, incident_state=incident_state.model_dump()),
             )
             raise
-        response = extract_graph_response(state)
+        response = extract_react_graph_response(state) if self.settings.orchestration_mode == "react_tool_first" else extract_graph_response(state)
         final_incident_state = state.get("incident_state") or incident_state
         latest_approval_id = None
         approval_request = state.get("approval_request")
@@ -1559,6 +1591,7 @@ class SupervisorOrchestrator:
             raise RuntimeError("resume interrupt does not match the current pending interrupt")
         answer_payload = self._normalize_resume_answer(request)
         interrupt_type = pending_interrupt.get("type")
+        resume_target = self._resume_target_for_interrupt(str(interrupt_type or ""))
         self._append_system_event(
             session_id=session_id,
             thread_id=str(session.get("thread_id") or session_id),
@@ -1567,6 +1600,8 @@ class SupervisorOrchestrator:
             payload={
                 "interrupt_id": expected_interrupt_id,
                 "interrupt_type": interrupt_type,
+                "resume_target": resume_target,
+                "orchestration_mode": self.settings.orchestration_mode,
             },
             metadata={"source": "orchestrator"},
         )
@@ -1593,13 +1628,43 @@ class SupervisorOrchestrator:
                 approval = self.approval_store.get(str(approval_id))
                 if approval is None:
                     raise ValueError("approval not found")
+                decision_request = ApprovalDecisionRequest(
+                    approved=bool(answer_payload.get("approved")),
+                    approver_id=str(answer_payload.get("approver_id")),
+                    comment=answer_payload.get("comment"),
+                )
+                if self.settings.orchestration_mode == "react_tool_first":
+                    self.approval_store.decide(
+                        str(approval_id),
+                        decision_request.approved,
+                        decision_request.approver_id,
+                        decision_request.comment,
+                    )
+                    updated_approval = self.approval_store.get(str(approval_id))
+                    if updated_approval is not None:
+                        approval = updated_approval
+                    self.interrupt_store.answer(
+                        str(expected_interrupt_id),
+                        answer_payload={
+                            "approved": decision_request.approved,
+                            "approver_id": decision_request.approver_id,
+                            "comment": decision_request.comment,
+                            "approval_id": approval_id,
+                        },
+                    )
+                    approval_request_domain = self.approval_store.get_request(str(approval_id))
+                    payload = await self._resume_react_approval(
+                        session=session,
+                        approval=approval,
+                        approval_id=str(approval_id),
+                        pending_interrupt_id=str(expected_interrupt_id),
+                        request=decision_request,
+                        approval_request_domain=approval_request_domain,
+                    )
+                    return self._attach_observability(payload) or payload
                 response = await self.handle_approval_decision(
                     approval,
-                    ApprovalDecisionRequest(
-                        approved=bool(answer_payload.get("approved")),
-                        approver_id=str(answer_payload.get("approver_id")),
-                        comment=answer_payload.get("comment"),
-                    ),
+                    decision_request,
                 )
                 updated_session = self.session_service.get_session(session_id)
                 payload = {
@@ -1619,6 +1684,119 @@ class SupervisorOrchestrator:
                 payload = await self._resume_feedback(session, pending_interrupt, answer_payload)
                 return self._attach_observability(payload) or payload
             raise RuntimeError(f"unsupported interrupt type for resume: {interrupt_type}")
+
+
+    @staticmethod
+    def _resume_target_for_interrupt(interrupt_type: str | None) -> str:
+        mapping = {
+            "clarification": "supervisor_loop",
+            "approval": "execute_approved_action",
+            "feedback": "finalize",
+        }
+        return mapping.get(str(interrupt_type or ""), "supervisor_loop")
+
+    async def _resume_react_approval(
+        self,
+        *,
+        session: dict[str, Any],
+        approval: dict[str, Any],
+        approval_id: str,
+        pending_interrupt_id: str,
+        request: ApprovalDecisionRequest,
+        approval_request_domain,
+    ) -> dict[str, Any]:
+        decision_record = legacy_decision_to_record(request, approval_id=approval_id)
+        current_incident_state = IncidentState.model_validate(dict(session.get("incident_state") or {}))
+        next_incident_state = apply_approval_resume_result_to_state(
+            current_incident_state,
+            approval_request_domain,
+            decision_record,
+        )
+        if not request.approved:
+            response = {
+                "ticket_id": str(session.get("ticket_id") or session.get("session_id") or ""),
+                "status": "completed",
+                "message": "审批已拒绝，未执行任何高风险动作。",
+                "diagnosis": {
+                    "approval": {
+                        "approval_id": approval_id,
+                        "action": approval.get("action"),
+                        "status": "rejected",
+                        "comment": request.comment,
+                    }
+                },
+            }
+            return self._finalize_approval_resolution(
+                session=session,
+                approval=approval,
+                approval_id=approval_id,
+                pending_interrupt_id=pending_interrupt_id,
+                response=response,
+                next_incident_state=next_incident_state.model_dump(),
+                actor_id=request.approver_id,
+                process_summary="审批已拒绝，react tool-first 链路未执行高风险动作",
+                user_turn_content=(f"拒绝审批动作：{request.comment}" if request.comment else "拒绝审批动作"),
+                user_turn_payload={
+                    "approval_id": approval_id,
+                    "interrupt_id": pending_interrupt_id,
+                    "approved": False,
+                    "approver_id": request.approver_id,
+                    "comment": request.comment,
+                },
+                process_payload={
+                    "approved": False,
+                    "approver_id": request.approver_id,
+                    "comment": request.comment,
+                },
+            )
+
+        synthetic_request = TicketRequest(
+            ticket_id=str(session.get("ticket_id") or session.get("session_id") or ""),
+            user_id=str(session.get("user_id") or ""),
+            message=str(next_incident_state.message or dict(session.get("session_memory") or {}).get("original_user_message") or "approval resume"),
+            service=next_incident_state.service or None,
+            environment=getattr(next_incident_state, "environment", None),
+            host_identifier=getattr(next_incident_state, "host_identifier", None),
+            db_name=getattr(next_incident_state, "db_name", None),
+            db_type=getattr(next_incident_state, "db_type", None),
+            cluster=str(next_incident_state.cluster or "prod-shanghai-1"),
+            namespace=str(next_incident_state.namespace or "default"),
+            channel=str(next_incident_state.channel or "feishu"),
+        )
+        react_state = {
+            "request": synthetic_request,
+            "session_id": str(session.get("session_id") or session.get("thread_id") or synthetic_request.ticket_id),
+            "thread_id": str(session.get("thread_id") or session.get("session_id") or synthetic_request.ticket_id),
+            "incident_state": next_incident_state,
+            "transition_notes": ["approval resume routed through react execute_approved_action"],
+        }
+        execute_state = await self.react_graph_nodes.execute_approved_action(react_state)
+        final_state = await self.react_graph_nodes.finalize({**react_state, **execute_state})
+        response = extract_react_graph_response(final_state)
+        final_incident_state = final_state.get("incident_state") or next_incident_state
+        return self._finalize_approval_resolution(
+            session=session,
+            approval=approval,
+            approval_id=approval_id,
+            pending_interrupt_id=pending_interrupt_id,
+            response=response,
+            next_incident_state=final_incident_state.model_dump() if hasattr(final_incident_state, "model_dump") else dict(final_incident_state or {}),
+            actor_id=request.approver_id,
+            process_summary="审批已通过，react tool-first 链路已执行高风险动作",
+            user_turn_content=(f"批准审批动作：{request.comment}" if request.comment else "批准审批动作"),
+            user_turn_payload={
+                "approval_id": approval_id,
+                "interrupt_id": pending_interrupt_id,
+                "approved": True,
+                "approver_id": request.approver_id,
+                "comment": request.comment,
+            },
+            process_payload={
+                "approved": True,
+                "approver_id": request.approver_id,
+                "comment": request.comment,
+            },
+        )
 
     def get_conversation(self, session_id: str) -> dict[str, Any] | None:
         return self._build_conversation_detail(session_id)
@@ -1772,7 +1950,7 @@ class SupervisorOrchestrator:
                     approval_request_domain=(approval_request_domain.model_dump() if approval_request_domain is not None else None),
                 )
             )
-            response = extract_graph_response(state)
+            response = extract_react_graph_response(state) if self.settings.orchestration_mode == "react_tool_first" else extract_graph_response(state)
             final_incident_state = state.get("incident_state")
             next_incident_state = (
                 final_incident_state.model_dump()

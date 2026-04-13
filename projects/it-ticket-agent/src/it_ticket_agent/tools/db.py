@@ -12,9 +12,12 @@ ENV_VAR = "IT_TICKET_AGENT_MOCK_DB_PROFILES_PATH"
 
 
 class InspectDBInstanceHealthTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_db_instance_health"
     summary = "Inspect database instance health and role status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -34,9 +37,12 @@ class InspectDBInstanceHealthTool(BaseTool):
 
 
 class InspectReplicationStatusTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_replication_status"
     summary = "Inspect primary-replica replication lag and sync status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -56,9 +62,12 @@ class InspectReplicationStatusTool(BaseTool):
 
 
 class InspectSlowQueriesTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_slow_queries"
     summary = "Inspect slow query signals and top offenders"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -78,9 +87,12 @@ class InspectSlowQueriesTool(BaseTool):
 
 
 class InspectConnectionPoolTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_connection_pool"
     summary = "Inspect connection pool saturation and timeout signals"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -103,6 +115,7 @@ class InspectSchemaChangeRecordsTool(BaseTool):
     name = "inspect_schema_change_records"
     summary = "Inspect recent schema change records and migration status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -122,9 +135,12 @@ class InspectSchemaChangeRecordsTool(BaseTool):
 
 
 class InspectDeadlockSignalsTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_deadlock_signals"
     summary = "Inspect database deadlock and lock wait signals"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
@@ -144,9 +160,12 @@ class InspectDeadlockSignalsTool(BaseTool):
 
 
 class InspectTransactionRollbackRateTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_transaction_rollback_rate"
     summary = "Inspect transaction rollback rate and database abort ratio"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
+    retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
         mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)

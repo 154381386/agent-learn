@@ -283,6 +283,8 @@ class SearchKnowledgeBaseTool(BaseTool):
 
 
 class CheckRecentDeploymentsTool(BaseTool):
+    retryable = True
+    timeout_sec = 20
     name = "check_recent_deployments"
     summary = "Check recent deployment and rollback signals"
     input_schema = {
@@ -341,6 +343,8 @@ class CheckRecentDeploymentsTool(BaseTool):
 
 
 class CheckPipelineStatusTool(BaseTool):
+    retryable = True
+    timeout_sec = 20
     name = "check_pipeline_status"
     summary = "Check pipeline failure and build status signals"
     input_schema = {
@@ -401,6 +405,8 @@ class CheckPipelineStatusTool(BaseTool):
 
 
 class GetDeploymentStatusTool(BaseTool):
+    retryable = True
+    timeout_sec = 20
     name = "get_deployment_status"
     summary = "Check deployment rollout and active alerts"
     input_schema = {
@@ -450,6 +456,8 @@ class GetDeploymentStatusTool(BaseTool):
 
 
 class CheckServiceHealthTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "check_service_health"
     summary = "Check service health, replica readiness, and traffic symptom summary"
     input_schema = {
@@ -522,6 +530,8 @@ class CheckServiceHealthTool(BaseTool):
 
 
 class CheckRecentAlertsTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "check_recent_alerts"
     summary = "Check recent alert signals and summarize alert severity"
     input_schema = {
@@ -845,6 +855,8 @@ class GetChangeRecordsTool(BaseTool):
 
 
 class CheckPodStatusTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "check_pod_status"
     summary = "Check current pod status, readiness, and restart count"
     input_schema = {
@@ -901,6 +913,8 @@ class CheckPodStatusTool(BaseTool):
 
 
 class InspectPodLogsTool(BaseTool):
+    retryable = True
+    timeout_sec = 20
     name = "inspect_pod_logs"
     summary = "Inspect pod runtime logs and summarize major error patterns"
     input_schema = {
@@ -966,6 +980,8 @@ class InspectPodLogsTool(BaseTool):
 
 
 class InspectPodEventsTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_pod_events"
     summary = "Inspect pod events and termination reasons"
     input_schema = {
@@ -1017,6 +1033,8 @@ class InspectPodEventsTool(BaseTool):
 
 
 class InspectJvmMemoryTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_jvm_memory"
     summary = "Inspect JVM heap, GC, and memory pressure signals"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -1046,6 +1064,8 @@ class InspectJvmMemoryTool(BaseTool):
 
 
 class InspectCpuSaturationTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_cpu_saturation"
     summary = "Inspect CPU saturation and throttling signals"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -1071,6 +1091,8 @@ class InspectCpuSaturationTool(BaseTool):
 
 
 class InspectThreadPoolStatusTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_thread_pool_status"
     summary = "Inspect application thread pool queue depth and saturation"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -1096,6 +1118,8 @@ class InspectThreadPoolStatusTool(BaseTool):
 
 
 class InspectErrorBudgetBurnTool(BaseTool):
+    retryable = True
+    timeout_sec = 15
     name = "inspect_error_budget_burn"
     summary = "Inspect SLO error budget burn rate"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
