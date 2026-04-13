@@ -2,7 +2,7 @@
 
 > 对应方案：`docs/Tool-First-ReAct迁移方案.md`
 
-## Phase 1：ReAct Supervisor + 新 Graph
+## Phase 1：ReAct Supervisor + 7 节点新 Graph
 
 - [ ] 新建 `runtime/react_supervisor.py`
 - [ ] 定义 Supervisor state：`iterations/tool_calls/confidence/stop_reason`
@@ -10,15 +10,18 @@
 - [ ] 新建 `graph/react_nodes.py`
 - [ ] 新建 `graph/react_builder.py`
 - [ ] 实现 `light_router` 节点
+- [ ] 实现 `direct_answer` 节点
 - [ ] 实现 `supervisor_loop` 节点
 - [ ] 实现 `approval_gate` 节点
-- [ ] 实现 `execute_tool` 节点
 - [ ] 实现 `await_user` 节点
+- [ ] 实现 `execute_approved_action` 节点
 - [ ] 实现 `finalize` 节点
 - [ ] 增加 `orchestration_mode` 配置
 - [ ] 保留旧 graph，并实现新旧 graph 切换入口
-- [ ] 打通 FAQ / SOP fast path
+- [ ] 打通 FAQ / SOP fast path：`light_router -> direct_answer -> finalize`
 - [ ] 打通诊断路径进入 `supervisor_loop`
+- [ ] 明确普通 Tool 在 `supervisor_loop` 内部执行，不通过独立 graph 节点
+- [ ] 实现 `await_user` 恢复后的条件路由：clarification → `supervisor_loop` / approval → `execute_approved_action` / feedback → `finalize`
 
 ## Phase 2：ToolExecutionMiddleware + 风险控制
 
@@ -41,10 +44,10 @@
 - [ ] 增加 `stop_reason`
 - [ ] 增加 `max_parallel_branches`
 - [ ] 为每轮 observation 建立统一账本结构
-- [ ] 新增 observation summary 逻辑
-- [ ] 新增 `working_memory_summary`
+- [ ] 新增 `summary_after_n_steps`
 - [ ] 新增 `pinned_findings`
 - [ ] 增加 `max_context_tokens`
+- [ ] 增加 observation 摘要化策略
 - [ ] 增加上下文超限裁剪策略
 
 ## Phase 4：Tool 超时 / 重试 + 结果标准化

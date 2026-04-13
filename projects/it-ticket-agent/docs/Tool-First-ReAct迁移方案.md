@@ -46,25 +46,25 @@
 User Request
     ↓
 Light Router
-    ↓
-Supervisor Loop (ReAct)
-    ├─ call_tool(...)
-    ├─ parallel_call_tools([...])
-    ├─ ask_user(...)
-    ├─ output(...)
-    └─ re-think / replan (lightweight)
-    ↓
-ToolExecutionMiddleware
-    ├─ risk check
-    ├─ approval intercept
-    ├─ timeout / retry
-    └─ result normalization
-    ↓
-Tool Runtime
-    ↓
-Approval / Interrupt / Resume
-    ↓
-Finalize
+    ├─ direct_answer → Finalize
+    └─ Supervisor Loop (ReAct)
+         ├─ call_tool(...)
+         ├─ parallel_call_tools([...])
+         ├─ ask_user(...)
+         ├─ output(...)
+         └─ re-think / replan (lightweight)
+                ↓
+         ToolExecutionMiddleware
+           ├─ risk check
+           ├─ approval intercept
+           ├─ timeout / retry
+           └─ result normalization
+                ↓
+             Tool Runtime
+                ↓
+      approval_gate / await_user / execute_approved_action
+                ↓
+             Finalize
 ```
 
 ### 核心原则
@@ -95,13 +95,14 @@ Finalize
 
 ## 新 Graph 设计
 
-新 graph 采用 6 节点结构：
+新 graph 采用 7 节点结构：
 
 - `light_router`
+- `direct_answer`
 - `supervisor_loop`
 - `approval_gate`
-- `execute_tool`
 - `await_user`
+- `execute_approved_action`
 - `finalize`
 
 ### 节点职责
@@ -112,7 +113,10 @@ Finalize
 - FAQ / SOP / 直接问答 → fast path
 - 诊断问题 → `supervisor_loop`
 
-#### 2. `supervisor_loop`
+#### 2. `direct_answer`
+承载 FAQ / SOP / 明确知识问答的 fast path，并把结果交给 `finalize`。
+
+#### 3. `supervisor_loop`
 ReAct 主循环节点，负责：
 
 - think
@@ -122,39 +126,52 @@ ReAct 主循环节点，负责：
 - output
 - 判断是否继续下一轮
 
+普通只读 Tool 在这个节点内部直接调用，不离开 graph；但所有调用都必须经过统一的 `ToolExecutionMiddleware`。
+
 它是系统的主脑。
 
-#### 3. `approval_gate`
-处理高风险 tool 的审批拦截。
-
-#### 4. `execute_tool`
-真正执行 tool，并把执行结果标准化后返回给 Supervisor。
+#### 4. `approval_gate`
+处理高风险 tool / action 的审批拦截，并把审批等待统一交给 `await_user`。
 
 #### 5. `await_user`
 统一承载 clarification / approval / feedback 等 interrupt。
 
-#### 6. `finalize`
+恢复后的去向必须显式路由：
+
+- clarification → `supervisor_loop`
+- approval approved → `execute_approved_action`
+- feedback → `finalize`
+
+#### 6. `execute_approved_action`
+只负责审批通过后的高风险 tool / action 执行。
+
+注意：普通 Tool 不经过这个节点；这个节点只服务于审批后的执行动作。
+
+#### 7. `finalize`
 负责最终输出、事件落库、状态收敛。
 
 ---
 
 ## Phase 规划
 
-## Phase 1：ReAct Supervisor + 6 节点 Graph + 新旧并存
+## Phase 1：ReAct Supervisor + 7 节点 Graph + 新旧并存
 
 ### 目标
 
 - 新建 `ReActSupervisor`
-- 新建 6 节点 graph
+- 新建 7 节点 graph
 - 保留旧 graph，通过配置切换新旧模式
 - 保留轻路由
+- 增加 `direct_answer` fast path 节点
 - 让 Supervisor 直接可见 tool schema
 
 ### 关键点
 
 - 新增 `orchestration_mode = legacy | react_tool_first`
-- FAQ / SOP fast path 继续保留
+- FAQ / SOP fast path 继续保留：`light_router -> direct_answer -> finalize`
 - 诊断类请求进入 `supervisor_loop`
+- 普通 Tool 在 `supervisor_loop` 内直接调用，不经过独立 graph 节点
+- 高风险 Tool / Action 走：`supervisor_loop -> approval_gate -> await_user -> execute_approved_action`
 - 暂时不删旧代码
 
 ### 输出物
@@ -162,6 +179,7 @@ ReAct 主循环节点，负责：
 - `runtime/react_supervisor.py`
 - `graph/react_builder.py`
 - `graph/react_nodes.py`
+- `direct_answer` 节点实现
 - 配置切换入口
 
 ---
@@ -187,6 +205,11 @@ ReAct 主循环节点，负责：
 - `mutates_resource = (risk_level >= medium)`
 
 ### Middleware 职责
+
+`ToolExecutionMiddleware` 是**所有 Tool 调用的统一入口**，不论调用发生在：
+
+- `supervisor_loop` 内部
+- `execute_approved_action` 节点内部
 
 执行前统一做：
 
@@ -222,13 +245,16 @@ ReAct 主循环节点，负责：
 
 ### 上下文窗口管理
 
-ReAct 多轮执行时，旧 observation 会不断堆积，因此需要：
+ReAct 多轮执行时，旧 observation 会不断堆积，因此先收敛为两个机制：
+
+- 超过 `summary_after_n_steps` 的旧 observation 摘要化
+- `pinned_findings` 永远不被裁剪
+
+建议先保留一个核心预算字段：
 
 - `max_context_tokens`
-- `max_observation_history`
-- `summary_after_n_steps`
-- `working_memory_summary`
-- `pinned_findings`
+
+`working_memory_summary` 是运行时产物，不作为第一版配置项独立暴露。
 
 ### 原则
 
