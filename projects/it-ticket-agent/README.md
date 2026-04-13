@@ -207,6 +207,11 @@ uv run python scripts/migrate_sqlite_to_postgres.py \
 
 部署说明见 `docs/部署说明.md:1`。
 
+## 重构方案
+
+- Tool-first ReAct 迁移方案：`docs/Tool-First-ReAct迁移方案.md:1`
+- 开发 TODO 清单：`docs/Tool-First-ReAct开发TODO.md:1`
+
 ## API
 
 ```bash
