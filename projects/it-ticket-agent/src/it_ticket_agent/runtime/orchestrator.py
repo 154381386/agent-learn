@@ -130,6 +130,9 @@ class SupervisorOrchestrator:
             max_iterations=settings.react_max_iterations,
             max_tool_calls=settings.react_max_tool_calls,
             confidence_threshold=settings.react_confidence_threshold,
+            max_parallel_branches=settings.react_max_parallel_branches,
+            summary_after_n_steps=settings.react_summary_after_n_steps,
+            max_context_tokens=settings.react_max_context_tokens,
         )
         self.react_graph_nodes = ReactGraphNodes(
             smart_router=self.smart_router,

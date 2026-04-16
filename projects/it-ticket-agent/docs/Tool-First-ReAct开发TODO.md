@@ -26,6 +26,7 @@
 
 ## Phase 2 当前状态
 
+
 已完成的最小版：
 
 - [x] `BaseTool` 最小元数据：`risk_level / retryable / timeout_sec`
@@ -40,6 +41,24 @@
 - [ ] 还没有把更多 tool 的 `risk_level` 系统性梳理完整
 - [ ] action 执行仍是最小封装，尚未完全统一到更完整的 execution envelope
 - [ ] timeout / retry / structured error 仍属于最小版，还没做成最终形态
+
+## Phase 3 当前状态
+
+已完成的第一批：
+
+- [x] 新增 `react_max_parallel_branches`
+- [x] 新增 `react_summary_after_n_steps`
+- [x] 新增 `react_max_context_tokens`
+- [x] `ReactSupervisor` 改为每轮重建压缩上下文
+- [x] 已接入 `working_memory_summary`
+- [x] 已接入 `pinned_findings`
+- [x] 已接入 `observation_ledger`
+
+当前剩余项：
+
+- [x] 已做更细一层的上下文裁剪（保留 recent observations + summary + pinned findings）
+- [ ] 还没有把 Phase 3 状态结构系统性暴露到更多 API / 调试入口
+- [ ] 还没有把更强的 evidence evaluation 单独抽出来
 
 ## Phase 1：ReAct Supervisor + 7 节点新 Graph
 
@@ -82,11 +101,11 @@
 - [ ] 增加 `confidence_threshold`
 - [ ] 增加 `stop_reason`
 - [ ] 增加 `max_parallel_branches`
-- [ ] 为每轮 observation 建立统一账本结构
+- [x] 为每轮 observation 建立统一账本结构
 - [ ] 新增 `summary_after_n_steps`
-- [ ] 新增 `pinned_findings`
-- [ ] 增加 `max_context_tokens`
-- [ ] 增加 observation 摘要化策略
+- [x] 新增 `pinned_findings`
+- [x] 增加 `max_context_tokens`
+- [x] 增加 observation 摘要化策略
 - [ ] 增加上下文超限裁剪策略
 
 ## Phase 4：Tool 超时 / 重试 + 结果标准化

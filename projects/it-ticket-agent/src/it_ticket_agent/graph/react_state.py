@@ -31,6 +31,9 @@ class ReactTicketGraphState(TypedDict, total=False):
     confidence: float
     stop_reason: str
     tool_cache: Dict[str, Any]
+    observation_ledger: List[Dict[str, Any]]
+    working_memory_summary: str
+    pinned_findings: List[str]
 
 
 ReactGraphResponse = Dict[str, Any]
@@ -60,6 +63,9 @@ def build_react_graph_input(
         "confidence": 0.0,
         "stop_reason": "",
         "tool_cache": {},
+        "observation_ledger": [],
+        "working_memory_summary": "",
+        "pinned_findings": [],
     }
 
 

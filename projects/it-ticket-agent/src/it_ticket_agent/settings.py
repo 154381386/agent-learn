@@ -41,6 +41,9 @@ class Settings:
     react_max_iterations: int = int(os.getenv("REACT_MAX_ITERATIONS", "4"))
     react_max_tool_calls: int = int(os.getenv("REACT_MAX_TOOL_CALLS", "20"))
     react_confidence_threshold: float = float(os.getenv("REACT_CONFIDENCE_THRESHOLD", "0.65"))
+    react_max_parallel_branches: int = int(os.getenv("REACT_MAX_PARALLEL_BRANCHES", "4"))
+    react_summary_after_n_steps: int = int(os.getenv("REACT_SUMMARY_AFTER_N_STEPS", "3"))
+    react_max_context_tokens: int = int(os.getenv("REACT_MAX_CONTEXT_TOKENS", "6000"))
 
 
 def get_settings() -> Settings:
