@@ -88,7 +88,16 @@ class SessionService:
         }
         if current_agent is not None:
             payload["current_agent"] = current_agent
-        return self.store.update_status(session_id, **payload)
+        if hasattr(self.store, "update_status"):
+            return self.store.update_status(session_id, **payload)
+        current = self.store.get(session_id)
+        if current is None:
+            return None
+        return self.store.update_state(
+            session_id,
+            incident_state=dict(current.get("incident_state") or {}),
+            **payload,
+        )
 
     def append_turn(self, turn: ConversationTurn | dict[str, Any]) -> dict[str, Any]:
         return self.store.append_turn(turn)

@@ -96,7 +96,10 @@ class ReactSupervisor:
                         "sources": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
                         "context_snapshot": context_snapshot.model_dump() if context_snapshot is not None else None,
                         "observations": observations,
+                        "evidence": self._flatten_evidence(observations),
                         "tool_calls_used": tool_calls_used,
+                        "confidence": confidence,
+                        "stop_reason": next_state.get("stop_reason"),
                         "incident_state": incident_state.model_dump(),
                         "graph": {"transition_notes": list(next_state.get("transition_notes") or [])},
                     },
@@ -104,12 +107,49 @@ class ReactSupervisor:
                 next_state["pending_node"] = "finalize"
                 return next_state
 
-            assistant_message = {"role": "assistant", "content": content or "", "tool_calls": tool_calls}
-            messages.append(assistant_message)
             batch_calls = tool_calls[: max(0, self.max_tool_calls - tool_calls_used)]
-            if not batch_calls:
-                break
-            results = await asyncio.gather(*[self._run_tool_call(request=request, call=call, tool_cache=tool_cache) for call in batch_calls])
+            valid_calls = []
+            for call in batch_calls:
+                function = call.get("function") or {}
+                tool_name = str(function.get("name") or "")
+                if tool_name in self.tools:
+                    valid_calls.append(call)
+            if not valid_calls:
+                parsed_answer = self._parse_final_answer(content)
+                final_message = parsed_answer["final_answer"] or content.strip() or "已完成诊断，但模型未返回明确结论。"
+                confidence = parsed_answer["confidence"]
+                incident_state.status = "completed"
+                incident_state.final_summary = "react supervisor completed tool-first reasoning loop"
+                incident_state.final_message = final_message
+                next_state["confidence"] = confidence
+                next_state["stop_reason"] = "model_answered" if confidence >= self.confidence_threshold else "low_confidence"
+                if confidence < self.confidence_threshold:
+                    final_message = f"当前结论置信度仅为 {confidence:.2f}，建议继续补充线索或人工确认。\n\n{final_message}"
+                    incident_state.final_message = final_message
+                next_state["response"] = {
+                    "ticket_id": request.ticket_id,
+                    "status": "completed",
+                    "message": final_message,
+                    "diagnosis": {
+                        "summary": incident_state.final_summary,
+                        "conclusion": final_message,
+                        "route": "react_tool_first",
+                        "sources": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
+                        "context_snapshot": context_snapshot.model_dump() if context_snapshot is not None else None,
+                        "observations": observations,
+                        "evidence": self._flatten_evidence(observations),
+                        "tool_calls_used": tool_calls_used,
+                        "confidence": confidence,
+                        "stop_reason": next_state.get("stop_reason"),
+                        "incident_state": incident_state.model_dump(),
+                        "graph": {"transition_notes": list(next_state.get("transition_notes") or [])},
+                    },
+                }
+                next_state["pending_node"] = "finalize"
+                return next_state
+            assistant_message = {"role": "assistant", "content": content or "", "tool_calls": valid_calls}
+            messages.append(assistant_message)
+            results = await asyncio.gather(*[self._run_tool_call(request=request, call=call, tool_cache=tool_cache) for call in valid_calls])
             tool_calls_used += len(batch_calls)
             next_state["tool_calls_used"] = tool_calls_used
             next_state["tool_cache"] = tool_cache
@@ -137,7 +177,10 @@ class ReactSupervisor:
                 "sources": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
                 "context_snapshot": context_snapshot.model_dump() if context_snapshot is not None else None,
                 "observations": observations,
+                "evidence": self._flatten_evidence(observations),
                 "tool_calls_used": tool_calls_used,
+                "confidence": next_state.get("confidence", 0.0),
+                "stop_reason": next_state.get("stop_reason"),
                 "incident_state": incident_state.model_dump(),
                 "graph": {"transition_notes": list(next_state.get("transition_notes") or [])},
             },
@@ -174,6 +217,19 @@ class ReactSupervisor:
             },
         ]
 
+
+    @staticmethod
+    def _flatten_evidence(observations: list[dict[str, Any]]) -> list[str]:
+        evidence: list[str] = []
+        for item in observations:
+            result = dict(item.get("result") or {})
+            for entry in list(result.get("evidence") or []):
+                text = str(entry).strip()
+                if text and text not in evidence:
+                    evidence.append(text)
+                if len(evidence) >= 8:
+                    return evidence
+        return evidence
 
     def _parse_final_answer(self, content: str) -> dict[str, Any]:
         try:

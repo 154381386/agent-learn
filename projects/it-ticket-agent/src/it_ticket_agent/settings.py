@@ -39,7 +39,7 @@ class Settings:
     rag_service_timeout_sec: int = int(os.getenv("RAG_SERVICE_TIMEOUT_SEC", "30"))
     orchestration_mode: str = os.getenv("ORCHESTRATION_MODE", "legacy")
     react_max_iterations: int = int(os.getenv("REACT_MAX_ITERATIONS", "4"))
-    react_max_tool_calls: int = int(os.getenv("REACT_MAX_TOOL_CALLS", "8"))
+    react_max_tool_calls: int = int(os.getenv("REACT_MAX_TOOL_CALLS", "20"))
     react_confidence_threshold: float = float(os.getenv("REACT_CONFIDENCE_THRESHOLD", "0.65"))
 
 
