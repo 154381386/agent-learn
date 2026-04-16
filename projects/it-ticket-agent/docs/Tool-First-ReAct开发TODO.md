@@ -60,6 +60,21 @@
 - [ ] 还没有把 Phase 3 状态结构系统性暴露到更多 API / 调试入口
 - [ ] 还没有把更强的 evidence evaluation 单独抽出来
 
+## Phase 4 当前状态
+
+已完成的第一批：
+
+- [x] 已定义统一 `ToolExecutionEnvelope`
+- [x] 已统一 tool middleware 的 timeout / retry / retry_count / latency_ms / error_type
+- [x] 已把 action 执行结果也收敛到 execution envelope 结构
+- [x] 已验证 ReactSupervisor 能消费新的 envelope 结果
+
+当前剩余项：
+
+- [ ] action 执行 envelope 还可以继续细化得更完整
+- [x] 已新增 runtime 调试入口，暴露 `react_runtime` 与 `process_memory_summary`
+- [ ] 还没有做 Phase 4 的专项回归测试集合
+
 ## Phase 1：ReAct Supervisor + 7 节点新 Graph
 
 - [ ] 新建 `runtime/react_supervisor.py`
@@ -110,13 +125,13 @@
 
 ## Phase 4：Tool 超时 / 重试 + 结果标准化
 
-- [ ] 定义统一 `ToolExecutionEnvelope`
-- [ ] 实现 tool timeout
-- [ ] 实现 retryable tool 重试策略
-- [ ] 实现 retry count 记录
-- [ ] 为 tool 结果补充 `latency_ms`
-- [ ] 为失败结果补充 `error_type`
-- [ ] 确保 tool 失败返回结构化错误，而不是直接抛异常炸穿 supervisor
+- [x] 定义统一 `ToolExecutionEnvelope`
+- [x] 实现 tool timeout
+- [x] 实现 retryable tool 重试策略
+- [x] 实现 retry count 记录
+- [x] 为 tool 结果补充 `latency_ms`
+- [x] 为失败结果补充 `error_type`
+- [x] 确保 tool 失败返回结构化错误，而不是直接抛异常炸穿 supervisor
 - [ ] 不引入硬编码 fallback 链
 - [ ] 让 Supervisor 基于失败结果自行换 tool / ask user / stop
 

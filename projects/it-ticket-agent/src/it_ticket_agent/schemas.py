@@ -174,6 +174,14 @@ class ConversationMutationResponse(BaseModel):
     assistant_turn: Optional[ConversationTurnResponse] = None
 
 
+
+
+class RuntimeSnapshotResponse(BaseModel):
+    session_id: str
+    orchestration_mode: str
+    react_runtime: Dict[str, Any] = Field(default_factory=dict)
+    process_memory_summary: Dict[str, Any] = Field(default_factory=dict)
+    pending_interrupt: Optional["InterruptResponse"] = None
 class TicketResponse(BaseModel):
     ticket_id: str
     status: str

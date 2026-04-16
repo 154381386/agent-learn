@@ -1807,6 +1807,20 @@ class SupervisorOrchestrator:
     def list_approval_events(self, approval_id: str) -> list[dict[str, Any]]:
         return self.approval_store.list_events(approval_id)
 
+    def get_runtime_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        session = self.session_service.get_session(session_id)
+        if session is None:
+            return None
+        incident_state = dict(session.get("incident_state") or {})
+        metadata = dict(incident_state.get("metadata") or {})
+        return {
+            "session_id": session_id,
+            "orchestration_mode": self.settings.orchestration_mode,
+            "react_runtime": dict(metadata.get("react_runtime") or {}),
+            "process_memory_summary": self._summarize_process_memory(session_id),
+            "pending_interrupt": self._get_pending_interrupt(session),
+        }
+
     def list_system_events(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
         return self.system_event_store.list_for_session(session_id, limit=limit)
 

@@ -20,6 +20,7 @@ from .schemas import (
     ExecutionRecoveryResponse,
     IncidentCaseResponse,
     InterruptResponse,
+    RuntimeSnapshotResponse,
     SessionResponse,
     SystemEventResponse,
     TicketRequest,
@@ -199,6 +200,15 @@ async def list_system_events(session_id: str, http_request: Request, limit: int 
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     return [SystemEventResponse(**event) for event in supervisor_orchestrator.list_system_events(session_id, limit=limit)]
+
+
+@app.get("/api/v1/sessions/{session_id}/runtime", response_model=RuntimeSnapshotResponse)
+async def get_runtime_snapshot(session_id: str, http_request: Request):
+    supervisor_orchestrator = http_request.app.state.supervisor_orchestrator
+    snapshot = supervisor_orchestrator.get_runtime_snapshot(session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return RuntimeSnapshotResponse(**snapshot)
 
 
 @app.get("/api/v1/sessions/{session_id}", response_model=SessionResponse)

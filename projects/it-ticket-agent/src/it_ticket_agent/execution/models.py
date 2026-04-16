@@ -77,3 +77,17 @@ class ExecutionStep(BaseModel):
     finished_at: Optional[str] = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
+
+class ToolExecutionEnvelope(BaseModel):
+    kind: Literal["tool", "action"] = "tool"
+    name: str
+    status: str
+    summary: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    evidence: List[str] = Field(default_factory=list)
+    risk: str = "low"
+    retry_count: int = 0
+    latency_ms: int = 0
+    error_type: str = ""
+    approval_required: bool = False
+
