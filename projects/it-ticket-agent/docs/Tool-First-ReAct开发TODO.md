@@ -20,7 +20,7 @@
 
 - [x] `confidence_threshold` 已接入 `ReactSupervisor` 的终止判断
 - [ ] `await_user` 的完整恢复闭环仍主要复用旧逻辑
-- [ ] 真实 LLM 端到端联调未完成
+- [x] 真实 LLM 端到端联调已完成
 - [x] 已接入最小版 `ToolExecutionMiddleware` 到 `supervisor_loop` 执行链路
 - [x] `execute_approved_action` 已接到统一 action middleware 入口
 
@@ -68,60 +68,61 @@
 - [x] 已统一 tool middleware 的 timeout / retry / retry_count / latency_ms / error_type
 - [x] 已把 action 执行结果也收敛到 execution envelope 结构
 - [x] 已验证 ReactSupervisor 能消费新的 envelope 结果
+- [x] 已新增 tool / action execution envelope 回归测试第一批
 
 当前剩余项：
 
 - [ ] action 执行 envelope 还可以继续细化得更完整
 - [x] 已新增 runtime 调试入口，暴露 `react_runtime` 与 `process_memory_summary`
-- [ ] 还没有做 Phase 4 的专项回归测试集合
+- [ ] 还没有做完整的 Phase 4 专项回归测试集合
 
 ## Phase 1：ReAct Supervisor + 7 节点新 Graph
 
-- [ ] 新建 `runtime/react_supervisor.py`
-- [ ] 定义 Supervisor state：`iterations/tool_calls/confidence/stop_reason`
-- [ ] 新建 `graph/react_state.py`
-- [ ] 新建 `graph/react_nodes.py`
-- [ ] 新建 `graph/react_builder.py`
-- [ ] 实现 `light_router` 节点
-- [ ] 实现 `direct_answer` 节点
-- [ ] 实现 `supervisor_loop` 节点
-- [ ] 实现 `approval_gate` 节点
+- [x] 新建 `runtime/react_supervisor.py`
+- [x] 定义 Supervisor state：`iterations/tool_calls/confidence/stop_reason`
+- [x] 新建 `graph/react_state.py`
+- [x] 新建 `graph/react_nodes.py`
+- [x] 新建 `graph/react_builder.py`
+- [x] 实现 `light_router` 节点
+- [x] 实现 `direct_answer` 节点
+- [x] 实现 `supervisor_loop` 节点
+- [x] 实现 `approval_gate` 节点
 - [ ] 实现 `await_user` 节点
-- [ ] 实现 `execute_approved_action` 节点
-- [ ] 实现 `finalize` 节点
-- [ ] 增加 `orchestration_mode` 配置
-- [ ] 保留旧 graph，并实现新旧 graph 切换入口
-- [ ] 打通 FAQ / SOP fast path：`light_router -> direct_answer -> finalize`
-- [ ] 打通诊断路径进入 `supervisor_loop`
-- [ ] 明确普通 Tool 在 `supervisor_loop` 内部执行，不通过独立 graph 节点
+- [x] 实现 `execute_approved_action` 节点
+- [x] 实现 `finalize` 节点
+- [x] 增加 `orchestration_mode` 配置
+- [x] 保留旧 graph，并实现新旧 graph 切换入口
+- [x] 打通 FAQ / SOP fast path：`light_router -> direct_answer -> finalize`
+- [x] 打通诊断路径进入 `supervisor_loop`
+- [x] 明确普通 Tool 在 `supervisor_loop` 内部执行，不通过独立 graph 节点
 - [ ] 实现 `await_user` 恢复后的条件路由：clarification → `supervisor_loop` / approval → `execute_approved_action` / feedback → `finalize`
 
 ## Phase 2：ToolExecutionMiddleware + 风险控制
 
-- [ ] 给 `BaseTool` 增加 `risk_level`
-- [ ] 给 `BaseTool` 增加 `retryable`
-- [ ] 给 `BaseTool` 增加 `timeout_sec`
+- [x] 给 `BaseTool` 增加 `risk_level`
+- [x] 给 `BaseTool` 增加 `retryable`
+- [x] 给 `BaseTool` 增加 `timeout_sec`
 - [ ] 梳理现有 tool 的 `risk_level`
-- [ ] 新建 `execution/tool_middleware.py`
-- [ ] 实现 tool 注册检查
-- [ ] 实现高风险 tool 审批拦截
-- [ ] 复用现有 approval / execution binding 能力
+- [x] 新建 `execution/tool_middleware.py`
+- [x] 实现 tool 注册检查
+- [x] 实现高风险 tool 审批拦截
+- [x] 复用现有 approval / execution binding 能力
 - [ ] 保留 ApprovalPolicy 兜底校验
-- [ ] 明确 `risk_level >= high` 的工具不直接执行
+- [x] 明确 `risk_level >= high` 的工具不直接执行
 
 ## Phase 3：Supervisor 护栏 + 上下文窗口管理
 
-- [ ] 增加 `max_iterations`
-- [ ] 增加 `max_tool_calls`
-- [ ] 增加 `confidence_threshold`
-- [ ] 增加 `stop_reason`
-- [ ] 增加 `max_parallel_branches`
+- [x] 增加 `max_iterations`
+- [x] 增加 `max_tool_calls`
+- [x] 增加 `confidence_threshold`
+- [x] 增加 `stop_reason`
+- [x] 增加 `max_parallel_branches`
 - [x] 为每轮 observation 建立统一账本结构
-- [ ] 新增 `summary_after_n_steps`
+- [x] 新增 `summary_after_n_steps`
 - [x] 新增 `pinned_findings`
 - [x] 增加 `max_context_tokens`
 - [x] 增加 observation 摘要化策略
-- [ ] 增加上下文超限裁剪策略
+- [x] 增加上下文超限裁剪策略
 
 ## Phase 4：Tool 超时 / 重试 + 结果标准化
 
@@ -132,8 +133,8 @@
 - [x] 为 tool 结果补充 `latency_ms`
 - [x] 为失败结果补充 `error_type`
 - [x] 确保 tool 失败返回结构化错误，而不是直接抛异常炸穿 supervisor
-- [ ] 不引入硬编码 fallback 链
-- [ ] 让 Supervisor 基于失败结果自行换 tool / ask user / stop
+- [x] 不引入硬编码 fallback 链
+- [x] 让 Supervisor 基于失败结果自行换 tool / ask user / stop
 
 ## Phase 5：删除旧 Skill 体系
 
@@ -155,4 +156,3 @@
 - [ ] 多轮 observation 不会导致上下文无限膨胀
 - [ ] tool timeout / retry / structured error 生效
 - [ ] 新旧链路可配置切换
-
