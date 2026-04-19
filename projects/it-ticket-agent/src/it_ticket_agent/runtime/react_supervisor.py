@@ -13,7 +13,7 @@ from ..graph.react_state import ReactTicketGraphState
 from ..llm_client import OpenAICompatToolLLM
 from ..runtime.contracts import TaskEnvelope
 from ..settings import Settings
-from ..skills.local_executor import LocalSkillExecutor
+from ..tools.runtime import LocalToolRuntime
 
 
 logger = logging.getLogger(__name__)
@@ -41,8 +41,8 @@ class ReactSupervisor:
         self.summary_after_n_steps = summary_after_n_steps
         self.max_context_tokens = max_context_tokens
         self.llm = OpenAICompatToolLLM(settings)
-        self.local_executor = LocalSkillExecutor(settings=settings)
-        self.tools = self.local_executor.tools
+        self.tool_runtime = LocalToolRuntime()
+        self.tools = self.tool_runtime.tools
         self.tool_middleware = ToolExecutionMiddleware(self.tools)
 
     async def run_loop(self, state: ReactTicketGraphState) -> Dict[str, Any]:

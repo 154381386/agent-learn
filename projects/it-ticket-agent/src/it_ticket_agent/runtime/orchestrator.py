@@ -89,7 +89,7 @@ class SupervisorOrchestrator:
         self.knowledge_service = KnowledgeService(self.knowledge_client)
         self.smart_router = SmartRouter(settings)
         self.topic_shift_detector = TopicShiftDetector()
-        self.skill_registry = SkillRegistry()
+        self.skill_registry = None if settings.orchestration_mode == "react_tool_first" else SkillRegistry()
         self.hypothesis_generator = HypothesisGenerator(settings)
         self.retrieval_planner = RetrievalPlanner(settings)
         self.case_vector_indexer = CaseVectorIndexer(settings, self.incident_case_store, self.knowledge_client)
@@ -139,7 +139,7 @@ class SupervisorOrchestrator:
             legacy_nodes=self.graph_nodes,
             supervisor=self.react_supervisor,
             tool_middleware=self.react_supervisor.tool_middleware,
-            action_executor=self.react_supervisor.local_executor,
+            action_executor=self.react_supervisor.tool_runtime,
         )
         self.react_graph_builder = ReactGraphBuilder(self.react_graph_nodes)
         self.react_ticket_graph = self.react_graph_builder.build_ticket_graph()
@@ -787,6 +787,8 @@ class SupervisorOrchestrator:
 
     def _infer_skill_categories_from_message(self, message: str) -> list[str]:
         lowered = str(message or "").lower()
+        if self.skill_registry is None:
+            return []
         matched: list[str] = []
         for category in self.skill_registry.get_categories():
             if any(str(keyword).lower() in lowered for keyword in category.match_keywords):

@@ -55,10 +55,21 @@ from ..state.models import (
 from ..state.transformers import build_initial_incident_state
 from ..skills import SkillRegistry
 from ..skills.local_executor import LocalSkillExecutor
+from ..tools.runtime import LocalToolRuntime
 from .state import ApprovalGraphState, TicketGraphState
 
 
 logger = logging.getLogger(__name__)
+
+TOOL_DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "k8s": ("pod", "k8s", "oom", "container", "重启", "副本", "资源"),
+    "cicd": ("deploy", "release", "pipeline", "rollback", "发布", "变更", "构建"),
+    "network": ("dns", "ingress", "gateway", "vpc", "timeout", "502", "网络"),
+    "db": ("mysql", "postgres", "数据库", "slow query", "deadlock", "连接池"),
+    "monitor": ("alert", "slo", "burn rate", "日志", "监控", "告警"),
+    "sde": ("quota", "bootstrap", "provision", "资源开通", "配额", "容量"),
+    "finops": ("cost", "budget", "账单", "费用", "降本"),
+}
 
 
 class OrchestratorGraphNodes:
@@ -91,7 +102,7 @@ class OrchestratorGraphNodes:
         self.connection_manager = connection_manager
         self.approval_coordinator = approval_coordinator or ApprovalCoordinator()
         self.smart_router_impl = smart_router
-        self.skill_registry = skill_registry or SkillRegistry()
+        self.skill_registry = skill_registry
         self.hypothesis_generator_impl = hypothesis_generator
         self.case_retriever = case_retriever
         self.knowledge_service = knowledge_service
@@ -105,15 +116,39 @@ class OrchestratorGraphNodes:
             if hypothesis_generator is not None
             else None
         )
-        verification_agent = VerificationAgent(
-            self.skill_registry,
-            knowledge_service=knowledge_service,
-            case_retriever=case_retriever,
-        )
-        self.parallel_verifier = parallel_verifier or ParallelVerifier(verification_agent)
+        self.parallel_verifier = parallel_verifier
         self.checkpoint_store = CheckpointStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None
         self.execution_store = execution_store or (ExecutionStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None)
         self.system_event_store = system_event_store or (SystemEventStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None)
+
+    def _get_skill_registry(self) -> SkillRegistry:
+        if self.skill_registry is None:
+            self.skill_registry = SkillRegistry()
+        return self.skill_registry
+
+    def _get_parallel_verifier(self) -> ParallelVerifier:
+        if self.parallel_verifier is None:
+            verification_agent = VerificationAgent(
+                self._get_skill_registry(),
+                knowledge_service=self.knowledge_service,
+                case_retriever=self.case_retriever,
+            )
+            self.parallel_verifier = ParallelVerifier(verification_agent)
+        return self.parallel_verifier
+
+    @staticmethod
+    def _infer_tool_domains_from_haystack(haystack: str, *, has_service: bool, incremental: list[str]) -> list[str]:
+        matched = [
+            category
+            for category, keywords in TOOL_DOMAIN_KEYWORDS.items()
+            if any(keyword.lower() in haystack for keyword in keywords)
+        ]
+        if matched:
+            if has_service:
+                matched = sorted(set(matched) | {"monitor", "k8s"})
+            return sorted(set(matched) | set(incremental or []))
+        base = ["k8s", "cicd", "monitor"] if has_service else ["monitor", "cicd"]
+        return sorted(set(base) | set(incremental or []))
 
     @staticmethod
     def _require_approval_request_domain(state: ApprovalGraphState) -> ApprovalRequest:
@@ -263,7 +298,7 @@ class OrchestratorGraphNodes:
             if retrieval_expansion["added_rag_context"] is not None:
                 incident_state.rag_context = retrieval_expansion["added_rag_context"]
             similar_cases = retrieval_expansion["similar_cases"]
-            available_skills = self.skill_registry.get_signatures(matched_categories)
+            available_skills = self._get_skill_registry().get_signatures(matched_categories) if self.skill_registry is not None else []
             snapshot = ContextSnapshot(
                 request=request.model_dump(),
                 rag_context=self._normalize_rag_context(incident_state.rag_context),
@@ -413,7 +448,7 @@ class OrchestratorGraphNodes:
             input={"ticket_id": request.ticket_id, "hypothesis_count": len(hypotheses)},
             metadata={"node": "parallel_verification"},
         ) as span:
-            verification_results = await self.parallel_verifier.verify_all(
+            verification_results = await self._get_parallel_verifier().verify_all(
                 hypotheses=hypotheses,
                 context_snapshot=context_snapshot,
             )
@@ -883,20 +918,21 @@ class OrchestratorGraphNodes:
             message_parts.extend([case.symptom, case.root_cause, case.final_action, case.summary])
         haystack = " ".join(part.lower() for part in message_parts if part).strip()
         matched: list[str] = []
-        for category in self.skill_registry.get_categories():
-            if any(str(keyword).lower() in haystack for keyword in category.match_keywords):
-                matched.append(category.name)
-        if matched:
-            if request.service:
-                matched = sorted(set(matched) | {"monitor", "k8s"})
-            incremental = incident_state.shared_context.get("incremental_skill_categories") if isinstance(incident_state.shared_context, dict) else []
-            return sorted(set(matched) | set(incremental or []))
-        if request.service:
-            base = ["k8s", "cicd", "monitor"]
-        else:
-            base = ["monitor", "cicd"]
         incremental = incident_state.shared_context.get("incremental_skill_categories") if isinstance(incident_state.shared_context, dict) else []
-        return sorted(set(base) | set(incremental or []))
+        if self.skill_registry is not None:
+            matched: list[str] = []
+            for category in self._get_skill_registry().get_categories():
+                if any(str(keyword).lower() in haystack for keyword in category.match_keywords):
+                    matched.append(category.name)
+            if matched:
+                if request.service:
+                    matched = sorted(set(matched) | {"monitor", "k8s"})
+                return sorted(set(matched) | set(incremental or []))
+        return self._infer_tool_domains_from_haystack(
+            haystack,
+            has_service=bool(request.service),
+            incremental=list(incremental or []),
+        )
 
     @staticmethod
     def _score_context_quality(
@@ -2102,7 +2138,7 @@ class OrchestratorGraphNodes:
         mcp_server = validated_binding.get("mcp_server") or params.get("mcp_server")
         if not mcp_server:
             try:
-                local_result = await LocalSkillExecutor().execute_action(
+                local_result = await LocalToolRuntime().execute_action(
                     action,
                     params=tool_params,
                     incident_state=None,

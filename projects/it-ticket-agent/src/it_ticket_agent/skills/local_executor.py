@@ -11,41 +11,8 @@ from ..runtime.contracts import TaskEnvelope
 from ..settings import Settings
 from ..state.incident_state import IncidentState
 from ..state.models import ContextSnapshot, SkillResult
-from ..tools.cicd import (
-    CheckPipelineStatusTool,
-    CheckPodStatusTool,
-    CheckRecentAlertsTool,
-    CheckRecentDeploymentsTool,
-    CheckServiceHealthTool,
-    GetChangeRecordsTool,
-    GetDeploymentStatusTool,
-    GetRollbackHistoryTool,
-    InspectBuildFailureLogsTool,
-    InspectCpuSaturationTool,
-    InspectErrorBudgetBurnTool,
-    InspectJvmMemoryTool,
-    InspectPodEventsTool,
-    InspectPodLogsTool,
-    InspectThreadPoolStatusTool,
-)
 from ..tools.contracts import BaseTool, ToolExecutionResult
-from ..tools.db import (
-    InspectConnectionPoolTool,
-    InspectDBInstanceHealthTool,
-    InspectDeadlockSignalsTool,
-    InspectReplicationStatusTool,
-    InspectTransactionRollbackRateTool,
-    InspectSlowQueriesTool,
-)
-from ..tools.network import (
-    InspectDNSResolutionTool,
-    InspectEgressPolicyTool,
-    InspectIngressRouteTool,
-    InspectLoadBalancerStatusTool,
-    InspectUpstreamDependencyTool,
-    InspectVpcConnectivityTool,
-)
-from ..tools.sde import GetQuotaStatusTool
+from ..tools.runtime import build_default_tools
 from .registry import SkillRegistry
 
 
@@ -184,36 +151,7 @@ class LocalSkillExecutor:
         self.settings = settings or Settings()
         self.skill_registry = skill_registry
         self.llm = llm or OpenAICompatToolLLM(self.settings)
-        self.tools: dict[str, BaseTool] = {
-            "check_recent_deployments": CheckRecentDeploymentsTool(),
-            "check_pipeline_status": CheckPipelineStatusTool(),
-            "get_deployment_status": GetDeploymentStatusTool(),
-            "check_service_health": CheckServiceHealthTool(),
-            "check_recent_alerts": CheckRecentAlertsTool(),
-            "inspect_build_failure_logs": InspectBuildFailureLogsTool(),
-            "get_rollback_history": GetRollbackHistoryTool(),
-            "get_change_records": GetChangeRecordsTool(),
-            "check_pod_status": CheckPodStatusTool(),
-            "inspect_pod_logs": InspectPodLogsTool(),
-            "inspect_pod_events": InspectPodEventsTool(),
-            "inspect_jvm_memory": InspectJvmMemoryTool(),
-            "inspect_cpu_saturation": InspectCpuSaturationTool(),
-            "inspect_thread_pool_status": InspectThreadPoolStatusTool(),
-            "inspect_error_budget_burn": InspectErrorBudgetBurnTool(),
-            "inspect_dns_resolution": InspectDNSResolutionTool(),
-            "inspect_ingress_route": InspectIngressRouteTool(),
-            "inspect_vpc_connectivity": InspectVpcConnectivityTool(),
-            "inspect_load_balancer_status": InspectLoadBalancerStatusTool(),
-            "inspect_upstream_dependency": InspectUpstreamDependencyTool(),
-            "inspect_egress_policy": InspectEgressPolicyTool(),
-            "inspect_db_instance_health": InspectDBInstanceHealthTool(),
-            "inspect_replication_status": InspectReplicationStatusTool(),
-            "inspect_slow_queries": InspectSlowQueriesTool(),
-            "inspect_connection_pool": InspectConnectionPoolTool(),
-            "inspect_deadlock_signals": InspectDeadlockSignalsTool(),
-            "inspect_transaction_rollback_rate": InspectTransactionRollbackRateTool(),
-            "get_quota_status": GetQuotaStatusTool(),
-        }
+        self.tools: dict[str, BaseTool] = build_default_tools()
 
     def _get_skill_registry(self) -> SkillRegistry:
         if self.skill_registry is None:
