@@ -24,6 +24,7 @@ class ReactTicketGraphState(TypedDict, total=False):
     approval_request: Dict[str, Any] | None
     response: Dict[str, Any]
     pending_node: str | None
+    resume_target: str | None
     resume_kind: Literal["ticket"]
     transition_notes: List[str]
     iterations: int
@@ -45,6 +46,7 @@ def build_react_graph_input(
     session_id: str | None = None,
     thread_id: str | None = None,
     incident_state: IncidentState | None = None,
+    resume_target: str | None = None,
 ) -> ReactTicketGraphState:
     next_incident_state = incident_state or build_initial_incident_state(request)
     resolved_session_id = session_id or next_incident_state.thread_id or request.ticket_id
@@ -56,6 +58,7 @@ def build_react_graph_input(
         "thread_id": resolved_thread_id,
         "incident_state": next_incident_state,
         "pending_node": "light_router",
+        "resume_target": resume_target,
         "resume_kind": "ticket",
         "transition_notes": [],
         "iterations": 0,

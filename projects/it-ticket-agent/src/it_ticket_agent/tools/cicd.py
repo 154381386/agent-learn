@@ -9,7 +9,7 @@ from ..mcp import MCPClient
 from ..rag_client import RAGServiceClient
 from ..runtime.contracts import TaskEnvelope
 from ..service_names import canonical_service_name, infer_service_name
-from .contracts import BaseTool, ToolExecutionResult
+from .contracts import ReadOnlyTool, ToolExecutionResult
 
 
 SCENARIO_ALIASES = {
@@ -233,7 +233,7 @@ def _resolve_mock_result(task: TaskEnvelope, tool_name: str, arguments: dict | N
     )
 
 
-class SearchKnowledgeBaseTool(BaseTool):
+class SearchKnowledgeBaseTool(ReadOnlyTool):
     name = "search_knowledge_base"
     summary = "Search deployment and incident knowledge context"
     input_schema = {
@@ -282,7 +282,7 @@ class SearchKnowledgeBaseTool(BaseTool):
         )
 
 
-class CheckRecentDeploymentsTool(BaseTool):
+class CheckRecentDeploymentsTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 20
     name = "check_recent_deployments"
@@ -342,7 +342,7 @@ class CheckRecentDeploymentsTool(BaseTool):
         )
 
 
-class CheckPipelineStatusTool(BaseTool):
+class CheckPipelineStatusTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 20
     name = "check_pipeline_status"
@@ -404,7 +404,7 @@ class CheckPipelineStatusTool(BaseTool):
         )
 
 
-class GetDeploymentStatusTool(BaseTool):
+class GetDeploymentStatusTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 20
     name = "get_deployment_status"
@@ -455,7 +455,7 @@ class GetDeploymentStatusTool(BaseTool):
         )
 
 
-class CheckServiceHealthTool(BaseTool):
+class CheckServiceHealthTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "check_service_health"
@@ -529,7 +529,7 @@ class CheckServiceHealthTool(BaseTool):
         )
 
 
-class CheckRecentAlertsTool(BaseTool):
+class CheckRecentAlertsTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "check_recent_alerts"
@@ -615,7 +615,7 @@ class CheckRecentAlertsTool(BaseTool):
         )
 
 
-class CheckCanaryStatusTool(BaseTool):
+class CheckCanaryStatusTool(ReadOnlyTool):
     name = "check_canary_status"
     summary = "Check canary rollout status, traffic weight, and failing gates"
     input_schema = {
@@ -673,7 +673,7 @@ class CheckCanaryStatusTool(BaseTool):
         )
 
 
-class InspectBuildFailureLogsTool(BaseTool):
+class InspectBuildFailureLogsTool(ReadOnlyTool):
     name = "inspect_build_failure_logs"
     summary = "Inspect build or pipeline failure logs and summarize the likely failing stage"
     input_schema = {
@@ -726,7 +726,7 @@ class InspectBuildFailureLogsTool(BaseTool):
         )
 
 
-class GetRollbackHistoryTool(BaseTool):
+class GetRollbackHistoryTool(ReadOnlyTool):
     name = "get_rollback_history"
     summary = "Check recent rollback history and last known stable revision"
     input_schema = {
@@ -782,7 +782,7 @@ class GetRollbackHistoryTool(BaseTool):
         )
 
 
-class GetGitCommitHistoryTool(BaseTool):
+class GetGitCommitHistoryTool(ReadOnlyTool):
     name = "get_git_commit_history"
     summary = "Check recent git commit history and suspicious code changes"
     input_schema = {
@@ -818,7 +818,7 @@ class GetGitCommitHistoryTool(BaseTool):
         )
 
 
-class GetChangeRecordsTool(BaseTool):
+class GetChangeRecordsTool(ReadOnlyTool):
     name = "get_change_records"
     summary = "Check recent deployment or configuration change records"
     input_schema = {
@@ -854,7 +854,7 @@ class GetChangeRecordsTool(BaseTool):
         )
 
 
-class CheckPodStatusTool(BaseTool):
+class CheckPodStatusTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "check_pod_status"
@@ -912,7 +912,7 @@ class CheckPodStatusTool(BaseTool):
         )
 
 
-class InspectPodLogsTool(BaseTool):
+class InspectPodLogsTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 20
     name = "inspect_pod_logs"
@@ -979,7 +979,7 @@ class InspectPodLogsTool(BaseTool):
         )
 
 
-class InspectPodEventsTool(BaseTool):
+class InspectPodEventsTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_pod_events"
@@ -1032,7 +1032,7 @@ class InspectPodEventsTool(BaseTool):
         )
 
 
-class InspectJvmMemoryTool(BaseTool):
+class InspectJvmMemoryTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_jvm_memory"
@@ -1063,7 +1063,7 @@ class InspectJvmMemoryTool(BaseTool):
         )
 
 
-class InspectCpuSaturationTool(BaseTool):
+class InspectCpuSaturationTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_cpu_saturation"
@@ -1090,7 +1090,7 @@ class InspectCpuSaturationTool(BaseTool):
         )
 
 
-class InspectThreadPoolStatusTool(BaseTool):
+class InspectThreadPoolStatusTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_thread_pool_status"
@@ -1117,7 +1117,7 @@ class InspectThreadPoolStatusTool(BaseTool):
         )
 
 
-class InspectErrorBudgetBurnTool(BaseTool):
+class InspectErrorBudgetBurnTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_error_budget_burn"

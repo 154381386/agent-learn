@@ -31,6 +31,24 @@ class ReactGraphNodes:
     async def light_router(self, state: ReactTicketGraphState) -> Dict[str, Any]:
         request = state["request"]
         incident_state = state.get("incident_state") or build_initial_incident_state(request)
+        resume_target = str(state.get("resume_target") or "")
+        if resume_target == "supervisor_loop":
+            decision = SmartRouterDecision(
+                intent="hypothesis_graph",
+                route_source="resume",
+                reason="clarification resume continues from react supervisor loop",
+                confidence=1.0,
+                matched_signals=["clarification_resume"],
+                should_respond_directly=False,
+            )
+            incident_state.routing = decision.model_dump()
+            incident_state.status = "resumed"
+            return {
+                "incident_state": incident_state,
+                "route_decision": decision,
+                "pending_node": "supervisor_loop",
+                "resume_target": None,
+            }
         decision = self.smart_router.route(request, rag_context=incident_state.rag_context)
         incident_state.routing = decision.model_dump()
         incident_state.status = "routed"

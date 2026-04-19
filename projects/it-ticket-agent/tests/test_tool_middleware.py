@@ -128,6 +128,17 @@ class ToolMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.risk, "high")
         self.assertEqual(result.error_type, "approval_required")
 
+    async def test_run_returns_structured_error_for_unregistered_tool(self) -> None:
+        middleware = ToolExecutionMiddleware({})
+
+        result = await middleware.run("missing_tool", task=self.task, arguments={"service": "checkout-service"})
+
+        self.assertEqual(result.kind, "tool")
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.error_type, "tool_not_registered")
+        self.assertEqual(result.payload["arguments"], {"service": "checkout-service"})
+        self.assertFalse(result.approval_required)
+
     async def test_run_action_requires_approval_for_high_risk_action(self) -> None:
         middleware = ToolExecutionMiddleware({})
 
@@ -145,6 +156,43 @@ class ToolMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execution["status"], "approval_required")
         self.assertTrue(execution["approval_required"])
         self.assertEqual(execution["risk"], "high")
+
+    async def test_run_action_returns_registration_error_for_unknown_action(self) -> None:
+        middleware = ToolExecutionMiddleware({})
+
+        result = await middleware.run_action(
+            "missing.action",
+            params={"service": "checkout-service"},
+            incident_state=self.incident_state,
+            executor=self._unexpected_executor,
+            approved=True,
+        )
+
+        execution = result["diagnosis"]["execution"]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(execution["kind"], "action")
+        self.assertEqual(execution["status"], "failed")
+        self.assertEqual(execution["error_type"], "registration_error")
+        self.assertEqual(execution["risk"], "unknown")
+
+    async def test_run_action_returns_validation_error_for_bad_params(self) -> None:
+        middleware = ToolExecutionMiddleware({})
+
+        result = await middleware.run_action(
+            "scale_replicas",
+            params={"service": "checkout-service", "count": "two"},
+            incident_state=self.incident_state,
+            executor=self._unexpected_executor,
+            approved=True,
+        )
+
+        execution = result["diagnosis"]["execution"]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(execution["kind"], "action")
+        self.assertEqual(execution["status"], "failed")
+        self.assertEqual(execution["error_type"], "validation_error")
+        self.assertEqual(execution["risk"], "unknown")
+        self.assertIn("count", execution["summary"])
 
     async def test_run_action_wraps_executor_result_in_envelope(self) -> None:
         middleware = ToolExecutionMiddleware({})

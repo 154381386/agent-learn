@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..runtime.contracts import TaskEnvelope
-from .contracts import BaseTool, ToolExecutionResult
+from .contracts import ReadOnlyTool, ToolExecutionResult
 from .mock_helpers import build_context, match_any, resolve_profile_mock
 
 
@@ -11,7 +11,7 @@ DEFAULT_MOCK_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "moc
 ENV_VAR = "IT_TICKET_AGENT_MOCK_NETWORK_PROFILES_PATH"
 
 
-class InspectDNSResolutionTool(BaseTool):
+class InspectDNSResolutionTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_dns_resolution"
@@ -36,7 +36,7 @@ class InspectDNSResolutionTool(BaseTool):
         )
 
 
-class InspectIngressRouteTool(BaseTool):
+class InspectIngressRouteTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_ingress_route"
@@ -61,7 +61,7 @@ class InspectIngressRouteTool(BaseTool):
         )
 
 
-class InspectVpcConnectivityTool(BaseTool):
+class InspectVpcConnectivityTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_vpc_connectivity"
@@ -86,7 +86,7 @@ class InspectVpcConnectivityTool(BaseTool):
         )
 
 
-class InspectLoadBalancerStatusTool(BaseTool):
+class InspectLoadBalancerStatusTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_load_balancer_status"
@@ -111,7 +111,7 @@ class InspectLoadBalancerStatusTool(BaseTool):
         )
 
 
-class InspectUpstreamDependencyTool(BaseTool):
+class InspectUpstreamDependencyTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_upstream_dependency"
@@ -138,7 +138,7 @@ class InspectUpstreamDependencyTool(BaseTool):
         )
 
 
-class InspectEgressPolicyTool(BaseTool):
+class InspectEgressPolicyTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_egress_policy"

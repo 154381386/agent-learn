@@ -19,7 +19,7 @@
 当前剩余项：
 
 - [x] `confidence_threshold` 已接入 `ReactSupervisor` 的终止判断
-- [ ] `await_user` 的完整恢复闭环仍主要复用旧逻辑
+- [x] clarification / approval / feedback 已具备明确恢复目标，恢复闭环已打通
 - [x] 真实 LLM 端到端联调已完成
 - [x] 已接入最小版 `ToolExecutionMiddleware` 到 `supervisor_loop` 执行链路
 - [x] `execute_approved_action` 已接到统一 action middleware 入口
@@ -38,7 +38,7 @@
 
 当前剩余项：
 
-- [ ] 还没有把更多 tool 的 `risk_level` 系统性梳理完整
+- [x] 现有 tool 已完成显式 `risk_level` 梳理（当前全部为只读低风险 tool）
 - [ ] action 执行仍是最小封装，尚未完全统一到更完整的 execution envelope
 - [ ] timeout / retry / structured error 仍属于最小版，还没做成最终形态
 
@@ -67,6 +67,7 @@
 - [x] 已定义统一 `ToolExecutionEnvelope`
 - [x] 已统一 tool middleware 的 timeout / retry / retry_count / latency_ms / error_type
 - [x] 已把 action 执行结果也收敛到 execution envelope 结构
+- [x] action envelope 已补充 `target / approved / metadata`
 - [x] 已验证 ReactSupervisor 能消费新的 envelope 结果
 - [x] 已新增 tool / action execution envelope 回归测试第一批
 
@@ -87,7 +88,7 @@
 - [x] 实现 `direct_answer` 节点
 - [x] 实现 `supervisor_loop` 节点
 - [x] 实现 `approval_gate` 节点
-- [ ] 实现 `await_user` 节点
+- [x] 实现 `await_user` 节点
 - [x] 实现 `execute_approved_action` 节点
 - [x] 实现 `finalize` 节点
 - [x] 增加 `orchestration_mode` 配置
@@ -95,14 +96,14 @@
 - [x] 打通 FAQ / SOP fast path：`light_router -> direct_answer -> finalize`
 - [x] 打通诊断路径进入 `supervisor_loop`
 - [x] 明确普通 Tool 在 `supervisor_loop` 内部执行，不通过独立 graph 节点
-- [ ] 实现 `await_user` 恢复后的条件路由：clarification → `supervisor_loop` / approval → `execute_approved_action` / feedback → `finalize`
+- [x] 实现 clarification → `supervisor_loop` / approval → `execute_approved_action` / feedback → `finalize`
 
 ## Phase 2：ToolExecutionMiddleware + 风险控制
 
 - [x] 给 `BaseTool` 增加 `risk_level`
 - [x] 给 `BaseTool` 增加 `retryable`
 - [x] 给 `BaseTool` 增加 `timeout_sec`
-- [ ] 梳理现有 tool 的 `risk_level`
+- [x] 梳理现有 tool 的 `risk_level`
 - [x] 新建 `execution/tool_middleware.py`
 - [x] 实现 tool 注册检查
 - [x] 实现高风险 tool 审批拦截

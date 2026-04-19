@@ -29,7 +29,7 @@ from .db import (
     InspectSlowQueriesTool,
     InspectTransactionRollbackRateTool,
 )
-from .contracts import BaseTool, ToolExecutionResult
+from .contracts import BaseTool, ReadOnlyTool, ToolExecutionResult
 from .finops import (
     InspectBudgetGuardrailTool,
     InspectCommitmentCoverageTool,
@@ -53,6 +53,7 @@ from .sde import (
 
 __all__ = [
     "BaseTool",
+    "ReadOnlyTool",
     "CheckCanaryStatusTool",
     "CheckPipelineStatusTool",
     "CheckPodStatusTool",

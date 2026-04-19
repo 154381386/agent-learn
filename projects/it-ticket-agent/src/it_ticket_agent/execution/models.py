@@ -83,11 +83,13 @@ class ToolExecutionEnvelope(BaseModel):
     name: str
     status: str
     summary: str
+    target: str = ""
+    approved: bool = False
     payload: Dict[str, Any] = Field(default_factory=dict)
     evidence: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     risk: str = "low"
     retry_count: int = 0
     latency_ms: int = 0
     error_type: str = ""
     approval_required: bool = False
-

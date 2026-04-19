@@ -541,6 +541,7 @@ class SupervisorOrchestrator:
                 "interrupt_type": interrupt.get("type"),
                 "answer_payload": answer_payload,
             },
+            react_resume_target=("supervisor_loop" if self.settings.orchestration_mode == "react_tool_first" else None),
         )
 
     async def _resume_feedback(
@@ -886,6 +887,7 @@ class SupervisorOrchestrator:
         incident_state_override: dict[str, Any] | None = None,
         entrypoint: str = "ticket_message",
         user_turn_payload: dict[str, Any] | None = None,
+        react_resume_target: str | None = None,
     ) -> dict[str, Any]:
         self.observability.update_current_trace(
             name=entrypoint,
@@ -911,6 +913,7 @@ class SupervisorOrchestrator:
                 session_id=session_id,
                 thread_id=thread_id,
                 incident_state=incident_state,
+                resume_target=react_resume_target,
             )
             if self.settings.orchestration_mode == "react_tool_first"
             else build_ticket_graph_input(

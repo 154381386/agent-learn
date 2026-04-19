@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..runtime.contracts import TaskEnvelope
-from .contracts import BaseTool, ToolExecutionResult
+from .contracts import ReadOnlyTool, ToolExecutionResult
 from .mock_helpers import build_context, match_any, resolve_profile_mock
 
 
@@ -11,7 +11,7 @@ DEFAULT_MOCK_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "moc
 ENV_VAR = "IT_TICKET_AGENT_MOCK_DB_PROFILES_PATH"
 
 
-class InspectDBInstanceHealthTool(BaseTool):
+class InspectDBInstanceHealthTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_db_instance_health"
@@ -36,7 +36,7 @@ class InspectDBInstanceHealthTool(BaseTool):
         )
 
 
-class InspectReplicationStatusTool(BaseTool):
+class InspectReplicationStatusTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_replication_status"
@@ -61,7 +61,7 @@ class InspectReplicationStatusTool(BaseTool):
         )
 
 
-class InspectSlowQueriesTool(BaseTool):
+class InspectSlowQueriesTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_slow_queries"
@@ -86,7 +86,7 @@ class InspectSlowQueriesTool(BaseTool):
         )
 
 
-class InspectConnectionPoolTool(BaseTool):
+class InspectConnectionPoolTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_connection_pool"
@@ -111,7 +111,7 @@ class InspectConnectionPoolTool(BaseTool):
         )
 
 
-class InspectSchemaChangeRecordsTool(BaseTool):
+class InspectSchemaChangeRecordsTool(ReadOnlyTool):
     name = "inspect_schema_change_records"
     summary = "Inspect recent schema change records and migration status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -134,7 +134,7 @@ class InspectSchemaChangeRecordsTool(BaseTool):
         )
 
 
-class InspectDeadlockSignalsTool(BaseTool):
+class InspectDeadlockSignalsTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_deadlock_signals"
@@ -159,7 +159,7 @@ class InspectDeadlockSignalsTool(BaseTool):
         )
 
 
-class InspectTransactionRollbackRateTool(BaseTool):
+class InspectTransactionRollbackRateTool(ReadOnlyTool):
     retryable = True
     timeout_sec = 15
     name = "inspect_transaction_rollback_rate"

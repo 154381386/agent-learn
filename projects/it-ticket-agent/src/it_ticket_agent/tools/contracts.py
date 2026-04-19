@@ -38,3 +38,7 @@ class BaseTool(ABC):
                 "parameters": self.input_schema,
             },
         }
+
+
+class ReadOnlyTool(BaseTool):
+    risk_level: str = "low"

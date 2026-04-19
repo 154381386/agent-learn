@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..runtime.contracts import TaskEnvelope
-from .contracts import BaseTool, ToolExecutionResult
+from .contracts import ReadOnlyTool, ToolExecutionResult
 from .mock_helpers import build_context, match_any, resolve_profile_mock
 
 
@@ -11,7 +11,7 @@ DEFAULT_MOCK_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "moc
 ENV_VAR = "IT_TICKET_AGENT_MOCK_FINOPS_PROFILES_PATH"
 
 
-class InspectCostAnomalyTool(BaseTool):
+class InspectCostAnomalyTool(ReadOnlyTool):
     name = "inspect_cost_anomaly"
     summary = "Inspect recent cost anomaly signals"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -33,7 +33,7 @@ class InspectCostAnomalyTool(BaseTool):
         )
 
 
-class InspectBudgetGuardrailTool(BaseTool):
+class InspectBudgetGuardrailTool(ReadOnlyTool):
     name = "inspect_budget_guardrail"
     summary = "Inspect budget guardrail and limit status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -55,7 +55,7 @@ class InspectBudgetGuardrailTool(BaseTool):
         )
 
 
-class InspectIdleResourceCandidatesTool(BaseTool):
+class InspectIdleResourceCandidatesTool(ReadOnlyTool):
     name = "inspect_idle_resource_candidates"
     summary = "Inspect idle resource candidates for cost optimization"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}
@@ -77,7 +77,7 @@ class InspectIdleResourceCandidatesTool(BaseTool):
         )
 
 
-class InspectCommitmentCoverageTool(BaseTool):
+class InspectCommitmentCoverageTool(ReadOnlyTool):
     name = "inspect_commitment_coverage"
     summary = "Inspect reserved instance or commitment coverage status"
     input_schema = {"type": "object", "properties": {"service": {"type": "string"}}}

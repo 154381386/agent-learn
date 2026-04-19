@@ -48,29 +48,104 @@ class ToolExecutionMiddleware:
         executor,
         approved: bool = False,
     ) -> dict[str, Any]:
-        from ..execution.action_registry import ExecutionSafetyError, get_action_registration, normalize_executable_params
+        from ..execution.action_registry import ExecutionSafetyError, get_action_registration, infer_target, normalize_executable_params
 
         normalized_action = str(action or "")
         registration = get_action_registration(normalized_action)
         if registration is None:
-            envelope = ToolExecutionEnvelope(kind="action", name=normalized_action, status="failed", summary=f"动作 {normalized_action} 未在执行注册表中登记。", payload={"params": dict(params), "approved": approved}, evidence=[], risk="unknown", retry_count=0, latency_ms=0, error_type="registration_error", approval_required=False)
+            envelope = ToolExecutionEnvelope(
+                kind="action",
+                name=normalized_action,
+                status="failed",
+                summary=f"动作 {normalized_action} 未在执行注册表中登记。",
+                target="",
+                approved=approved,
+                payload={"params": dict(params), "approved": approved},
+                evidence=[],
+                metadata={"registered": False, "validation_passed": False},
+                risk="unknown",
+                retry_count=0,
+                latency_ms=0,
+                error_type="registration_error",
+                approval_required=False,
+            )
             return {"ticket_id": incident_state.ticket_id if incident_state is not None else "", "status": "failed", "message": envelope.summary, "diagnosis": {"execution": envelope.model_dump()}}
         try:
             validated_params = normalize_executable_params(normalized_action, params)
         except ExecutionSafetyError as exc:
-            envelope = ToolExecutionEnvelope(kind="action", name=normalized_action, status="failed", summary=str(exc), payload={"params": dict(params), "approved": approved}, evidence=[], risk="unknown", retry_count=0, latency_ms=0, error_type="validation_error", approval_required=False)
+            envelope = ToolExecutionEnvelope(
+                kind="action",
+                name=normalized_action,
+                status="failed",
+                summary=str(exc),
+                target=infer_target(normalized_action, None, params),
+                approved=approved,
+                payload={"params": dict(params), "approved": approved},
+                evidence=[],
+                metadata={
+                    "registered": True,
+                    "validation_passed": False,
+                    "allowed_risks": sorted(registration.allowed_risks),
+                },
+                risk="unknown",
+                retry_count=0,
+                latency_ms=0,
+                error_type="validation_error",
+                approval_required=False,
+            )
             return {"ticket_id": incident_state.ticket_id if incident_state is not None else "", "status": "failed", "message": envelope.summary, "diagnosis": {"execution": envelope.model_dump()}}
         high_risk = bool(registration.allowed_risks & {"high", "critical"})
+        target = infer_target(normalized_action, None, validated_params)
         if high_risk and not approved:
-            envelope = ToolExecutionEnvelope(kind="action", name=normalized_action, status="approval_required", summary=f"动作 {normalized_action} 需要审批后才能执行。", payload={"params": validated_params, "approved": False}, evidence=[], risk="high", retry_count=0, latency_ms=0, error_type="approval_required", approval_required=True)
+            envelope = ToolExecutionEnvelope(
+                kind="action",
+                name=normalized_action,
+                status="approval_required",
+                summary=f"动作 {normalized_action} 需要审批后才能执行。",
+                target=target,
+                approved=False,
+                payload={"params": validated_params, "approved": False},
+                evidence=[],
+                metadata={
+                    "registered": True,
+                    "validation_passed": True,
+                    "allowed_risks": sorted(registration.allowed_risks),
+                },
+                risk="high",
+                retry_count=0,
+                latency_ms=0,
+                error_type="approval_required",
+                approval_required=True,
+            )
             return {"ticket_id": incident_state.ticket_id if incident_state is not None else "", "status": "awaiting_approval", "message": envelope.summary, "diagnosis": {"execution": envelope.model_dump()}}
         started_at = time.perf_counter()
         response = await executor(normalized_action, params=validated_params, incident_state=incident_state)
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         diagnosis = dict(response.get("diagnosis") or {})
         execution = dict(diagnosis.get("execution") or {})
-        envelope = ToolExecutionEnvelope(kind="action", name=normalized_action, status=str(execution.get("status") or response.get("status") or "completed"), summary=str(response.get("message") or execution.get("status") or normalized_action), payload={"params": validated_params, "approved": approved, **{k: v for k, v in execution.items() if k not in {"action", "params", "approved", "latency_ms"}}}, evidence=[], risk="high" if high_risk else "low", retry_count=0, latency_ms=latency_ms, error_type="", approval_required=False)
+        envelope = ToolExecutionEnvelope(
+            kind="action",
+            name=normalized_action,
+            status=str(execution.get("status") or response.get("status") or "completed"),
+            summary=str(response.get("message") or execution.get("status") or normalized_action),
+            target=target,
+            approved=approved,
+            payload={"params": validated_params, "approved": approved, **{k: v for k, v in execution.items() if k not in {"action", "params", "approved", "latency_ms", "evidence", "metadata"}}},
+            evidence=list(execution.get("evidence") or []),
+            metadata={
+                "registered": True,
+                "validation_passed": True,
+                "allowed_risks": sorted(registration.allowed_risks),
+                "executor_status": str(response.get("status") or ""),
+                "executor_message": str(response.get("message") or ""),
+                **dict(execution.get("metadata") or {}),
+            },
+            risk="high" if high_risk else "low",
+            retry_count=0,
+            latency_ms=latency_ms,
+            error_type="",
+            approval_required=False,
+        )
         diagnosis["execution"] = envelope.model_dump()
         response["diagnosis"] = diagnosis
         return response
-
