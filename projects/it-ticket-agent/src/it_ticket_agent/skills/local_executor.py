@@ -182,7 +182,7 @@ class LocalSkillExecutor:
         llm: OpenAICompatToolLLM | None = None,
     ) -> None:
         self.settings = settings or Settings()
-        self.skill_registry = skill_registry or SkillRegistry()
+        self.skill_registry = skill_registry
         self.llm = llm or OpenAICompatToolLLM(self.settings)
         self.tools: dict[str, BaseTool] = {
             "check_recent_deployments": CheckRecentDeploymentsTool(),
@@ -214,6 +214,11 @@ class LocalSkillExecutor:
             "inspect_transaction_rollback_rate": InspectTransactionRollbackRateTool(),
             "get_quota_status": GetQuotaStatusTool(),
         }
+
+    def _get_skill_registry(self) -> SkillRegistry:
+        if self.skill_registry is None:
+            self.skill_registry = SkillRegistry()
+        return self.skill_registry
 
     async def execute_skill(
         self,
@@ -484,7 +489,7 @@ class LocalSkillExecutor:
         fallback_calls: list[tuple[str, dict[str, Any]]],
         tool_names: list[str] | None = None,
     ) -> list[ToolExecutionResult]:
-        signature = self.skill_registry.get_signature(skill_name)
+        signature = self._get_skill_registry().get_signature(skill_name)
         declared_tool_names = list(tool_names or [])
         if signature and signature.tool_names:
             declared_tool_names = list(signature.tool_names)
