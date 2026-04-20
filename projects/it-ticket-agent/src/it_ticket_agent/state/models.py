@@ -67,35 +67,13 @@ class RetrievalExpansion(BaseModel):
     missing_evidence: List[str] = Field(default_factory=list)
 
 
-class SkillCategory(BaseModel):
-    name: str
-    description: str
-    skill_count: int = 0
-    match_keywords: List[str] = Field(default_factory=list)
-
-
-class SkillSignature(BaseModel):
-    name: str
-    params: str
-    description: str
-    risk_level: RiskLevel = "low"
-    category: str
-    executor: str = ""
-    planning_mode: str = ""
-    tool_names: List[str] = Field(default_factory=list)
-    when_to_use: str = ""
-    sop_summary: str = ""
-    pack_name: str = ""
-    guide_path: str = ""
-
-
 class ContextSnapshot(BaseModel):
     request: Dict[str, Any] = Field(default_factory=dict)
     rag_context: Optional[RAGContextBundle] = None
     similar_cases: List[SimilarIncidentCase] = Field(default_factory=list)
     live_signals: Dict[str, Any] = Field(default_factory=dict)
     context_quality: float = 0.0
-    available_skills: List[SkillSignature] = Field(default_factory=list)
+    available_skills: List[Dict[str, Any]] = Field(default_factory=list)
     matched_skill_categories: List[str] = Field(default_factory=list)
     retrieval_expansion: RetrievalExpansion = Field(default_factory=RetrievalExpansion)
 
@@ -116,14 +94,6 @@ class Hypothesis(BaseModel):
     action_risk: RiskLevel = "low"
     action_params: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class SkillResult(BaseModel):
-    skill_name: str
-    status: str
-    summary: str
-    evidence: List[str] = Field(default_factory=list)
-    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class EvidenceItem(BaseModel):

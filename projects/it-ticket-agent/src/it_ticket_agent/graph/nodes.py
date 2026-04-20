@@ -20,14 +20,7 @@ from ..execution.security import ExecutionSafetyError, validate_execution_bindin
 from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..mcp import MCPClient, MCPConnectionManager
 from ..observability import get_observability
-from ..orchestration import (
-    HypothesisGenerator,
-    ParallelVerifier,
-    Ranker,
-    RetrievalPlanner,
-    SupervisorAgent,
-    VerificationAgent,
-)
+from ..orchestration import RetrievalPlanner
 from ..knowledge import KnowledgeService
 from ..runtime.contracts import SmartRouterDecision
 from ..runtime.smart_router import SmartRouter
@@ -53,8 +46,6 @@ from ..state.models import (
     VerificationResult,
 )
 from ..state.transformers import build_initial_incident_state
-from ..skills import SkillRegistry
-from ..skills.local_executor import LocalSkillExecutor
 from ..tools.runtime import LocalToolRuntime
 from .state import ApprovalGraphState, TicketGraphState
 
@@ -85,11 +76,6 @@ class OrchestratorGraphNodes:
         execution_store: ExecutionStore | None = None,
         system_event_store: SystemEventStore | None = None,
         smart_router: SmartRouter | None = None,
-        skill_registry: SkillRegistry | None = None,
-        hypothesis_generator: HypothesisGenerator | None = None,
-        parallel_verifier: ParallelVerifier | None = None,
-        ranker: Ranker | None = None,
-        supervisor_agent: SupervisorAgent | None = None,
         case_retriever: CaseRetriever | None = None,
         knowledge_service: KnowledgeService | None = None,
         retrieval_planner: RetrievalPlanner | None = None,
@@ -102,39 +88,12 @@ class OrchestratorGraphNodes:
         self.connection_manager = connection_manager
         self.approval_coordinator = approval_coordinator or ApprovalCoordinator()
         self.smart_router_impl = smart_router
-        self.skill_registry = skill_registry
-        self.hypothesis_generator_impl = hypothesis_generator
         self.case_retriever = case_retriever
         self.knowledge_service = knowledge_service
         self.retrieval_planner = retrieval_planner
-        self.ranker_impl = ranker or Ranker()
-        self.supervisor_agent = supervisor_agent or (
-            SupervisorAgent(
-                hypothesis_generator=hypothesis_generator,
-                ranker=self.ranker_impl,
-            )
-            if hypothesis_generator is not None
-            else None
-        )
-        self.parallel_verifier = parallel_verifier
         self.checkpoint_store = CheckpointStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None
         self.execution_store = execution_store or (ExecutionStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None)
         self.system_event_store = system_event_store or (SystemEventStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None)
-
-    def _get_skill_registry(self) -> SkillRegistry:
-        if self.skill_registry is None:
-            self.skill_registry = SkillRegistry()
-        return self.skill_registry
-
-    def _get_parallel_verifier(self) -> ParallelVerifier:
-        if self.parallel_verifier is None:
-            verification_agent = VerificationAgent(
-                self._get_skill_registry(),
-                knowledge_service=self.knowledge_service,
-                case_retriever=self.case_retriever,
-            )
-            self.parallel_verifier = ParallelVerifier(verification_agent)
-        return self.parallel_verifier
 
     @staticmethod
     def _infer_tool_domains_from_haystack(haystack: str, *, has_service: bool, incremental: list[str]) -> list[str]:
@@ -298,7 +257,7 @@ class OrchestratorGraphNodes:
             if retrieval_expansion["added_rag_context"] is not None:
                 incident_state.rag_context = retrieval_expansion["added_rag_context"]
             similar_cases = retrieval_expansion["similar_cases"]
-            available_skills = self._get_skill_registry().get_signatures(matched_categories) if self.skill_registry is not None else []
+            available_skills: list[dict[str, Any]] = []
             snapshot = ContextSnapshot(
                 request=request.model_dump(),
                 rag_context=self._normalize_rag_context(incident_state.rag_context),
@@ -323,10 +282,10 @@ class OrchestratorGraphNodes:
                 event_type="run_summary",
                 stage="context_collection",
                 source="graph.context_collector",
-                summary=f"已完成上下文采集，匹配到 {len(matched_categories)} 个 Skill 分类和 {len(available_skills)} 个 Skill 签名",
+                summary=f"已完成上下文采集，匹配到 {len(matched_categories)} 个工具域",
                 payload={
                     "matched_skill_categories": matched_categories,
-                    "available_skill_names": [item.name for item in available_skills],
+                    "available_skill_names": [],
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
@@ -343,7 +302,7 @@ class OrchestratorGraphNodes:
                 event_type="context.collected",
                 payload={
                     "matched_skill_categories": matched_categories,
-                    "available_skill_names": [item.name for item in available_skills],
+                    "available_skill_names": [],
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
@@ -368,304 +327,16 @@ class OrchestratorGraphNodes:
             }
 
     async def hypothesis_generator(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        incident_state = state["incident_state"]
-        context_snapshot = state.get("context_snapshot") or incident_state.context_snapshot
-        if context_snapshot is None:
-            raise ValueError("context_snapshot is required before hypothesis generation")
-        if self.supervisor_agent is None and self.hypothesis_generator_impl is None:
-            raise ValueError("supervisor agent / hypothesis generator is not configured")
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.hypothesis_generator",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "service": request.service},
-            metadata={"node": "hypothesis_generator", "skill_count": len(context_snapshot.available_skills)},
-        ) as span:
-            supervisor_plan = (
-                await self.supervisor_agent.plan_verification(context_snapshot)
-                if self.supervisor_agent is not None
-                else None
-            )
-            hypotheses = (
-                list(supervisor_plan.hypotheses)
-                if supervisor_plan is not None
-                else await self.hypothesis_generator_impl.generate(context_snapshot)
-            )
-            incident_state.hypotheses = hypotheses
-            incident_state.metadata["hypotheses"] = [item.model_dump() for item in hypotheses]
-            if supervisor_plan is not None:
-                incident_state.metadata["supervisor_plan"] = dict(supervisor_plan.metadata)
-            incident_state.status = "hypotheses_generated"
-            self._append_process_entry(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="run_summary",
-                stage="hypothesis_generation",
-                source="graph.hypothesis_generator",
-                summary=f"已生成 {len(hypotheses)} 个根因假设",
-                payload={
-                    "hypothesis_ids": [item.hypothesis_id for item in hypotheses],
-                    "root_causes": [item.root_cause for item in hypotheses],
-                    "planner": incident_state.metadata.get("supervisor_plan", {}).get("planner"),
-                },
-                refs={},
-            )
-            self._append_system_event(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="hypotheses.generated",
-                payload={"hypothesis_count": len(hypotheses)},
-                metadata={"source": "graph.hypothesis_generator"},
-            )
-            span.update(
-                output={
-                    "hypothesis_count": len(hypotheses),
-                    "hypothesis_ids": [item.hypothesis_id for item in hypotheses],
-                    "planner": incident_state.metadata.get("supervisor_plan", {}).get("planner"),
-                }
-            )
-            return {
-                "incident_state": incident_state,
-                "context_snapshot": context_snapshot,
-                "hypotheses": hypotheses,
-                "pending_node": "parallel_verification",
-            }
+        raise RuntimeError("legacy hypothesis_generator 已移除；请使用 react_tool_first 诊断链路。")
 
     async def parallel_verification(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        incident_state = state["incident_state"]
-        context_snapshot = state.get("context_snapshot") or incident_state.context_snapshot
-        hypotheses = list(state.get("hypotheses") or incident_state.hypotheses or [])
-        if context_snapshot is None:
-            raise ValueError("context_snapshot is required before parallel verification")
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.parallel_verification",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "hypothesis_count": len(hypotheses)},
-            metadata={"node": "parallel_verification"},
-        ) as span:
-            verification_results = await self._get_parallel_verifier().verify_all(
-                hypotheses=hypotheses,
-                context_snapshot=context_snapshot,
-            )
-            incident_state.verification_results = verification_results
-            incident_state.status = "verified"
-            self._append_process_entry(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="verification_result",
-                stage="parallel_verification",
-                source="graph.parallel_verification",
-                summary=f"已并行完成 {len(verification_results)} 个假设验证",
-                payload={
-                    "hypothesis_ids": [item.hypothesis_id for item in verification_results],
-                    "statuses": [item.status for item in verification_results],
-                },
-                refs={},
-            )
-            self._append_system_event(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="verification.completed",
-                payload={"verification_count": len(verification_results)},
-                metadata={"source": "graph.parallel_verification"},
-            )
-            span.update(
-                output={
-                    "verification_count": len(verification_results),
-                    "statuses": [item.status for item in verification_results],
-                }
-            )
-            return {
-                "incident_state": incident_state,
-                "context_snapshot": context_snapshot,
-                "hypotheses": hypotheses,
-                "verification_results": verification_results,
-                "pending_node": "ranker",
-            }
+        raise RuntimeError("legacy parallel_verification 已移除；请使用 react_tool_first 诊断链路。")
 
     async def ranker(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        incident_state = state["incident_state"]
-        context_snapshot = state.get("context_snapshot") or incident_state.context_snapshot
-        verification_results = list(state.get("verification_results") or incident_state.verification_results or [])
-        similar_cases = list(context_snapshot.similar_cases or []) if context_snapshot is not None else []
-        observability = get_observability()
-        with observability.start_span(
-            name="graph.ranker",
-            as_type="span",
-            input={"ticket_id": request.ticket_id, "verification_count": len(verification_results)},
-            metadata={"node": "ranker"},
-        ) as span:
-            feedback_cases = (
-                self.incident_case_store.list_cases(service=str(request.service or incident_state.service or ""), limit=100)
-                if self.incident_case_store is not None and (request.service or incident_state.service)
-                else []
-            )
-            supervisor_selection = (
-                self.supervisor_agent.select_primary_outcome(
-                    verification_results,
-                    similar_cases=similar_cases,
-                    feedback_cases=feedback_cases,
-                )
-                if self.supervisor_agent is not None
-                else None
-            )
-            ranked_result = (
-                supervisor_selection.ranked_result
-                if supervisor_selection is not None
-                else self.ranker_impl.rank(
-                    verification_results,
-                    similar_cases=similar_cases,
-                    feedback_cases=feedback_cases,
-                )
-            )
-            incident_state.ranked_result = ranked_result
-            incident_state.status = "ranked"
-            incident_state.approval_proposals = self._build_primary_approval_proposals(ranked_result)
-            if ranked_result.primary is not None:
-                incident_state.final_summary = f"主根因候选：{ranked_result.primary.root_cause}"
-            incident_state.metadata["selected_root_cause"] = (
-                ranked_result.primary.root_cause if ranked_result.primary is not None else ""
-            )
-            incident_state.metadata["rejected_root_cause_candidates"] = [
-                item.root_cause for item in ranked_result.rejected
-            ]
-            incident_state.metadata["ranked_result"] = ranked_result.model_dump()
-            if supervisor_selection is not None:
-                incident_state.metadata["supervisor_selection"] = dict(supervisor_selection.metadata)
-            self._append_process_entry(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="run_summary",
-                stage="ranking",
-                source="graph.ranker",
-                summary=(
-                    f"已收敛主根因：{ranked_result.primary.root_cause}"
-                    if ranked_result.primary is not None
-                    else "验证结果已完成排序，但没有可选主根因"
-                ),
-                payload={
-                    "primary_hypothesis_id": ranked_result.primary.hypothesis_id if ranked_result.primary is not None else None,
-                    "secondary_count": len(ranked_result.secondary),
-                    "rejected_count": len(ranked_result.rejected),
-                    "selected_by": incident_state.metadata.get("supervisor_selection", {}).get("selected_by"),
-                },
-                refs={},
-            )
-            self._append_system_event(
-                session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-                thread_id=str(state.get("thread_id") or request.ticket_id),
-                ticket_id=request.ticket_id,
-                event_type="ranking.completed",
-                payload={
-                    "primary_hypothesis_id": ranked_result.primary.hypothesis_id if ranked_result.primary is not None else None,
-                    "secondary_count": len(ranked_result.secondary),
-                    "rejected_count": len(ranked_result.rejected),
-                },
-                metadata={"source": "graph.ranker"},
-            )
-            span.update(
-                output={
-                    "primary_hypothesis_id": ranked_result.primary.hypothesis_id if ranked_result.primary is not None else None,
-                    "secondary_count": len(ranked_result.secondary),
-                    "rejected_count": len(ranked_result.rejected),
-                    "selected_by": incident_state.metadata.get("supervisor_selection", {}).get("selected_by"),
-                }
-            )
-            return {
-                "incident_state": incident_state,
-                "context_snapshot": context_snapshot,
-                "verification_results": verification_results,
-                "ranked_result": ranked_result,
-                "pending_node": "approval_gate",
-            }
+        raise RuntimeError("legacy ranker 已移除；请使用 react_tool_first 诊断链路。")
 
     async def hypothesis_graph(self, state: TicketGraphState) -> Dict[str, Any]:
-        request = state["request"]
-        incident_state = state["incident_state"]
-        decision = state["route_decision"]
-        context_snapshot = state.get("context_snapshot") or incident_state.context_snapshot
-        hypotheses = list(state.get("hypotheses") or incident_state.hypotheses or [])
-        verification_results = list(state.get("verification_results") or incident_state.verification_results or [])
-        ranked_result = state.get("ranked_result") or incident_state.ranked_result
-        citations = list(incident_state.rag_context.citations if incident_state.rag_context is not None else [])
-        transition_notes = [
-            "smart router routed request to hypothesis_graph",
-            "context_collector completed RAG/case aggregation and skill filtering",
-            "hypothesis_generator produced structured root-cause hypotheses",
-            "parallel_verification executed verification plans across hypotheses",
-            "ranker selected a single primary root cause candidate",
-        ]
-        message = "已识别为需要排查或操作的问题，并完成上下文采集、Skill 过滤、假设生成、并行验证和结果收敛。"
-        if citations:
-            message += " 已保留检索到的知识上下文，供后续诊断节点继续使用。"
-        if context_snapshot is not None and list(context_snapshot.available_skills or []):
-            message += f" 当前已筛出 {len(context_snapshot.available_skills)} 个候选 Skill。"
-        if hypotheses:
-            message += f" 当前已生成 {len(hypotheses)} 个根因假设。"
-        if verification_results:
-            passed = len([item for item in verification_results if item.status == "passed"])
-            message += f" 其中 {passed} 个假设已获得主要验证支持。"
-        if ranked_result is not None and ranked_result.primary is not None:
-            message += f" 当前主根因已收敛为：{ranked_result.primary.root_cause}。"
-        incident_state.status = "completed"
-        incident_state.final_summary = "请求已进入 hypothesis_graph，并完成 Context Collector、Hypothesis Generator、Parallel Verification 与 Ranker。"
-        incident_state.final_message = message
-        self._append_process_entry(
-            session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-            thread_id=str(state.get("thread_id") or request.ticket_id),
-            ticket_id=request.ticket_id,
-            event_type="run_summary",
-            stage="routing",
-            source="graph.hypothesis_graph",
-            summary="请求已从入口层切换到 hypothesis_graph 主路径",
-            payload={"route_decision": decision.model_dump(), "citations": citations},
-            refs={},
-        )
-        self._append_system_event(
-            session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-            thread_id=str(state.get("thread_id") or request.ticket_id),
-            ticket_id=request.ticket_id,
-            event_type="hypothesis_graph.entered",
-            payload={"citations": citations},
-            metadata={"source": "graph.hypothesis_graph"},
-        )
-        feedback_interrupt = self._create_feedback_interrupt(
-            incident_state=incident_state,
-            session_id=str(state.get("session_id") or state.get("thread_id") or request.ticket_id),
-            thread_id=str(state.get("thread_id") or request.ticket_id),
-            ticket_id=request.ticket_id,
-        )
-        return {
-            "incident_state": incident_state,
-            "response": {
-                "ticket_id": request.ticket_id,
-                "status": "completed",
-                "message": message,
-                "diagnosis": {
-                    "summary": incident_state.final_summary,
-                    "conclusion": message,
-                    "routing": decision.model_dump(),
-                    "sources": citations,
-                    "context_snapshot": context_snapshot.model_dump() if context_snapshot is not None else None,
-                    "hypotheses": [item.model_dump() for item in hypotheses],
-                    "verification_results": [item.model_dump() for item in verification_results],
-                    "ranked_result": ranked_result.model_dump() if ranked_result is not None else None,
-                    "incident_state": incident_state.model_dump(),
-                    "graph": {"transition_notes": transition_notes, "next_node": "approval_gate"},
-                },
-            },
-            "feedback_interrupt": feedback_interrupt,
-            "pending_node": None,
-        }
+        raise RuntimeError("legacy hypothesis_graph 已移除；请使用 react_tool_first 诊断链路。")
 
     def _append_process_entry(
         self,
@@ -917,17 +588,7 @@ class OrchestratorGraphNodes:
         for case in similar_cases:
             message_parts.extend([case.symptom, case.root_cause, case.final_action, case.summary])
         haystack = " ".join(part.lower() for part in message_parts if part).strip()
-        matched: list[str] = []
         incremental = incident_state.shared_context.get("incremental_skill_categories") if isinstance(incident_state.shared_context, dict) else []
-        if self.skill_registry is not None:
-            matched: list[str] = []
-            for category in self._get_skill_registry().get_categories():
-                if any(str(keyword).lower() in haystack for keyword in category.match_keywords):
-                    matched.append(category.name)
-            if matched:
-                if request.service:
-                    matched = sorted(set(matched) | {"monitor", "k8s"})
-                return sorted(set(matched) | set(incremental or []))
         return self._infer_tool_domains_from_haystack(
             haystack,
             has_service=bool(request.service),

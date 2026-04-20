@@ -52,17 +52,21 @@ class ReactSupervisor:
         next_state.setdefault("transition_notes", []).append("react supervisor completed context collection")
 
         if not self.llm.enabled:
-            for step in (
-                self.legacy_nodes.hypothesis_generator,
-                self.legacy_nodes.parallel_verification,
-                self.legacy_nodes.ranker,
-            ):
-                updates = await step(next_state)
-                next_state.update(updates)
-            next_state["pending_node"] = "approval_gate"
-            next_state.setdefault("transition_notes", []).append(
-                "llm is disabled, fallback to legacy hypothesis pipeline inside supervisor_loop"
-            )
+            incident_state = next_state["incident_state"]
+            incident_state.status = "failed"
+            incident_state.final_summary = "react runtime requires llm configuration"
+            next_state["response"] = {
+                "ticket_id": str(next_state["request"].ticket_id),
+                "status": "failed",
+                "message": "当前已切换到 tool-first react 运行时，未配置 LLM 时不再回退到旧 skill 诊断链路。",
+                "diagnosis": {
+                    "summary": "react runtime requires llm configuration",
+                    "stop_reason": "llm_disabled",
+                    "evidence": [],
+                },
+            }
+            next_state["pending_node"] = None
+            next_state.setdefault("transition_notes", []).append("llm is disabled, react runtime stopped without legacy fallback")
             return next_state
 
         incident_state = next_state["incident_state"]
