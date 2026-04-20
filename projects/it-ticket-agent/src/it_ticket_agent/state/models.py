@@ -73,13 +73,13 @@ class ContextSnapshot(BaseModel):
     similar_cases: List[SimilarIncidentCase] = Field(default_factory=list)
     live_signals: Dict[str, Any] = Field(default_factory=dict)
     context_quality: float = 0.0
-    available_skills: List[Dict[str, Any]] = Field(default_factory=list)
-    matched_skill_categories: List[str] = Field(default_factory=list)
+    available_tools: List[Dict[str, Any]] = Field(default_factory=list)
+    matched_tool_domains: List[str] = Field(default_factory=list)
     retrieval_expansion: RetrievalExpansion = Field(default_factory=RetrievalExpansion)
 
 
 class VerificationStep(BaseModel):
-    skill_name: str
+    tool_name: str
     params: Dict[str, Any] = Field(default_factory=dict)
     purpose: str
 

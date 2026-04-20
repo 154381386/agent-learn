@@ -764,14 +764,19 @@ class SupervisorOrchestrator:
             entrypoint=entrypoint,
         )
 
-    def _infer_skill_categories_from_message(self, message: str) -> list[str]:
+    def _infer_tool_domains_from_message(self, message: str) -> list[str]:
         lowered = str(message or "").lower()
-        if self.skill_registry is None:
-            return []
         matched: list[str] = []
-        for category in self.skill_registry.get_categories():
-            if any(str(keyword).lower() in lowered for keyword in category.match_keywords):
-                matched.append(category.name)
+        if any(token in lowered for token in ("pod", "k8s", "oom", "container", "重启", "副本", "资源")):
+            matched.append("k8s")
+        if any(token in lowered for token in ("deploy", "release", "pipeline", "rollback", "发布", "变更", "构建")):
+            matched.append("cicd")
+        if any(token in lowered for token in ("dns", "ingress", "gateway", "vpc", "timeout", "502", "网络")):
+            matched.append("network")
+        if any(token in lowered for token in ("mysql", "postgres", "数据库", "slow query", "deadlock", "连接池")):
+            matched.append("db")
+        if any(token in lowered for token in ("alert", "slo", "burn rate", "日志", "监控", "告警")):
+            matched.append("monitor")
         return matched
 
     def _detect_topic_shift_for_session(
@@ -782,8 +787,8 @@ class SupervisorOrchestrator:
     ) -> dict[str, Any]:
         previous_incident_state = dict(session.get("incident_state") or {})
         previous_snapshot = dict(previous_incident_state.get("context_snapshot") or {})
-        previous_categories = list(previous_snapshot.get("matched_skill_categories") or [])
-        current_categories = self._infer_skill_categories_from_message(current_message)
+        previous_categories = list(previous_snapshot.get("matched_tool_domains") or [])
+        current_categories = self._infer_tool_domains_from_message(current_message)
         return self.topic_shift_detector.detect(
             previous_message=str(previous_incident_state.get("message") or ""),
             current_message=current_message,
@@ -1139,8 +1144,8 @@ class SupervisorOrchestrator:
         if not create_session:
             previous_incident_state = dict(current_session.get("incident_state") or {})
             previous_snapshot = dict(previous_incident_state.get("context_snapshot") or {})
-            previous_categories = list(previous_snapshot.get("matched_skill_categories") or [])
-            current_categories = self._infer_skill_categories_from_message(request.message)
+            previous_categories = list(previous_snapshot.get("matched_tool_domains") or [])
+            current_categories = self._infer_tool_domains_from_message(request.message)
             topic_shift = self.topic_shift_detector.detect(
                 previous_message=str(previous_incident_state.get("message") or ""),
                 current_message=request.message,
@@ -1151,7 +1156,7 @@ class SupervisorOrchestrator:
                 dict(current_session.get("session_memory") or {}).get("current_intent_history") or []
             )
             incident_state.shared_context["topic_shift"] = topic_shift
-            incident_state.shared_context["incremental_skill_categories"] = list(topic_shift.get("incremental_skill_categories") or [])
+            incident_state.shared_context["incremental_tool_domains"] = list(topic_shift.get("incremental_tool_domains") or [])
         graph_input["execution_context"] = self._assemble_execution_context(
             request=request,
             session=current_session,
@@ -1311,7 +1316,7 @@ class SupervisorOrchestrator:
                 {
                     "message": request.message,
                     "topic_shift_detected": bool(topic_shift.get("topic_shift_detected")),
-                    "incremental_skill_categories": list(topic_shift.get("incremental_skill_categories") or []),
+                    "incremental_tool_domains": list(topic_shift.get("incremental_tool_domains") or []),
                 }
             )
             session = self.session_service.update_session_state(

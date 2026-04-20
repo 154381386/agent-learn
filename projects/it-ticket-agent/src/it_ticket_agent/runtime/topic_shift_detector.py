@@ -25,9 +25,9 @@ class TopicShiftDetector:
         return {
             "topic_shift_detected": shifted,
             "similarity": similarity,
-            "previous_categories": sorted(previous_set),
-            "current_categories": sorted(current_set),
-            "incremental_skill_categories": incremental,
+            "previous_domains": sorted(previous_set),
+            "current_domains": sorted(current_set),
+            "incremental_tool_domains": incremental,
         }
 
     @staticmethod

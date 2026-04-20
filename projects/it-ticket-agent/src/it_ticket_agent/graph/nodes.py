@@ -242,7 +242,7 @@ class OrchestratorGraphNodes:
                 message=str(request.message or ""),
                 session_id=str(state.get("session_id") or ""),
             )
-            matched_categories = self._match_skill_categories(
+            matched_categories = self._match_tool_domains(
                 request=request,
                 incident_state=incident_state,
                 similar_cases=similar_cases,
@@ -257,7 +257,7 @@ class OrchestratorGraphNodes:
             if retrieval_expansion["added_rag_context"] is not None:
                 incident_state.rag_context = retrieval_expansion["added_rag_context"]
             similar_cases = retrieval_expansion["similar_cases"]
-            available_skills: list[dict[str, Any]] = []
+            available_tools: list[dict[str, Any]] = []
             snapshot = ContextSnapshot(
                 request=request.model_dump(),
                 rag_context=self._normalize_rag_context(incident_state.rag_context),
@@ -268,8 +268,8 @@ class OrchestratorGraphNodes:
                     rag_context=incident_state.rag_context,
                     similar_cases=similar_cases,
                 ),
-                available_skills=available_skills,
-                matched_skill_categories=matched_categories,
+                available_tools=available_tools,
+                matched_tool_domains=matched_categories,
                 retrieval_expansion=retrieval_expansion["expansion"],
             )
             incident_state.context_snapshot = snapshot
@@ -284,8 +284,8 @@ class OrchestratorGraphNodes:
                 source="graph.context_collector",
                 summary=f"已完成上下文采集，匹配到 {len(matched_categories)} 个工具域",
                 payload={
-                    "matched_skill_categories": matched_categories,
-                    "available_skill_names": [],
+                    "matched_tool_domains": matched_categories,
+                    "available_tool_names": [],
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
@@ -301,8 +301,8 @@ class OrchestratorGraphNodes:
                 ticket_id=request.ticket_id,
                 event_type="context.collected",
                 payload={
-                    "matched_skill_categories": matched_categories,
-                    "available_skill_names": [],
+                    "matched_tool_domains": matched_categories,
+                    "available_tool_names": [],
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "context_quality": snapshot.context_quality,
@@ -314,8 +314,8 @@ class OrchestratorGraphNodes:
             )
             span.update(
                 output={
-                    "matched_skill_categories": matched_categories,
-                    "available_skill_count": len(available_skills),
+                    "matched_tool_domains": matched_categories,
+                    "available_tool_count": len(available_tools),
                     "similar_case_count": len(similar_cases),
                     "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
                 }
@@ -494,7 +494,7 @@ class OrchestratorGraphNodes:
             request=request.model_dump(),
             rag_context=rag_context.model_dump(),
             similar_cases=similar_cases,
-            matched_skill_categories=matched_categories,
+            matched_tool_domains=matched_categories,
         )
         if not expansion.subqueries:
             return {
@@ -569,7 +569,7 @@ class OrchestratorGraphNodes:
         }
         return merged, added
 
-    def _match_skill_categories(
+    def _match_tool_domains(
         self,
         *,
         request: TicketRequest,
@@ -588,7 +588,7 @@ class OrchestratorGraphNodes:
         for case in similar_cases:
             message_parts.extend([case.symptom, case.root_cause, case.final_action, case.summary])
         haystack = " ".join(part.lower() for part in message_parts if part).strip()
-        incremental = incident_state.shared_context.get("incremental_skill_categories") if isinstance(incident_state.shared_context, dict) else []
+        incremental = incident_state.shared_context.get("incremental_tool_domains") if isinstance(incident_state.shared_context, dict) else []
         return self._infer_tool_domains_from_haystack(
             haystack,
             has_service=bool(request.service),

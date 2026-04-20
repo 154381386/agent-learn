@@ -24,14 +24,14 @@ class RetrievalPlanner:
         request: dict[str, Any],
         rag_context: dict[str, Any],
         similar_cases: list[SimilarIncidentCase],
-        matched_skill_categories: list[str],
+        matched_tool_domains: list[str],
     ) -> RetrievalExpansion:
         if self.llm.enabled:
             planned = await self._plan_with_llm(
                 request=request,
                 rag_context=rag_context,
                 similar_cases=similar_cases,
-                matched_skill_categories=matched_skill_categories,
+                matched_tool_domains=matched_tool_domains,
             )
             if planned.subqueries:
                 return planned
@@ -39,7 +39,7 @@ class RetrievalPlanner:
             request=request,
             rag_context=rag_context,
             similar_cases=similar_cases,
-            matched_skill_categories=matched_skill_categories,
+            matched_tool_domains=matched_tool_domains,
         )
 
     async def _plan_with_llm(
@@ -48,13 +48,13 @@ class RetrievalPlanner:
         request: dict[str, Any],
         rag_context: dict[str, Any],
         similar_cases: list[SimilarIncidentCase],
-        matched_skill_categories: list[str],
+        matched_tool_domains: list[str],
     ) -> RetrievalExpansion:
         payload = {
             "request": request,
             "rag_context": rag_context,
             "similar_cases": [case.model_dump() for case in similar_cases[:3]],
-            "matched_skill_categories": matched_skill_categories,
+            "matched_tool_domains": matched_tool_domains,
             "rules": {
                 "max_subqueries": 3,
                 "targets": ["knowledge", "cases", "both"],
@@ -99,7 +99,7 @@ class RetrievalPlanner:
         request: dict[str, Any],
         rag_context: dict[str, Any],
         similar_cases: list[SimilarIncidentCase],
-        matched_skill_categories: list[str],
+        matched_tool_domains: list[str],
     ) -> RetrievalExpansion:
         message = str(request.get("message") or "")
         service = str(request.get("service") or "")
@@ -125,7 +125,7 @@ class RetrievalPlanner:
                         root_cause_taxonomy="network_path_instability",
                     )
                 )
-            if "database" not in rag_titles and "database_degradation" not in case_haystack and "db" in " ".join(matched_skill_categories + [lowered]):
+            if "database" not in rag_titles and "database_degradation" not in case_haystack and "db" in " ".join(matched_tool_domains + [lowered]):
                 missing_evidence.append("是否存在数据库连接池或慢查询放大")
                 subqueries.append(
                     RetrievalSubquery(
