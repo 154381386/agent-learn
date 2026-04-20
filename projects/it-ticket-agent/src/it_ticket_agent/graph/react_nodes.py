@@ -111,23 +111,7 @@ class ReactGraphNodes:
         }
 
     async def execute_approved_action(self, state: ReactTicketGraphState) -> Dict[str, Any]:
-        incident_state = state.get("incident_state")
-        approved_actions = list(getattr(incident_state, "approved_actions", []) or []) if incident_state is not None else []
-        if not approved_actions:
-            return await self.legacy_nodes.execute(state)  # type: ignore[arg-type]
-        primary = approved_actions[0]
-        response = await self.tool_middleware.run_action(
-            str(primary.action),
-            params=dict(primary.params),
-            incident_state=incident_state,
-            executor=self.action_executor.execute_action,
-            approved=True,
-        )
-        return {
-            "incident_state": incident_state,
-            "response": response,
-            "pending_node": None,
-        }
+        return await self.legacy_nodes.execute(state)  # type: ignore[arg-type]
 
     async def finalize(self, state: ReactTicketGraphState) -> Dict[str, Any]:
         if state.get("response") is not None:

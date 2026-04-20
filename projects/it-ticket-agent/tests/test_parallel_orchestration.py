@@ -110,11 +110,9 @@ class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
         routing = dict(diagnosis.get("routing") or {})
         self.assertEqual(routing.get("intent"), "hypothesis_graph")
         self.assertEqual(response.get("status"), "completed")
-        self.assertIn("假设", response.get("message") or "")
+        self.assertIn("根因", response.get("message") or "")
         snapshot = dict(diagnosis.get("context_snapshot") or {})
-        self.assertIn("network", snapshot.get("matched_skill_categories") or [])
-        skill_names = [item.get("name") for item in snapshot.get("available_skills") or [] if isinstance(item, dict)]
-        self.assertIn("check_ingress_rules", skill_names)
+        self.assertIn("network", snapshot.get("matched_tool_domains") or [])
         retrieval_expansion = dict(snapshot.get("retrieval_expansion") or {})
         self.assertTrue(retrieval_expansion.get("subqueries"))
         self.assertGreaterEqual(len(retrieval_expansion.get("subqueries") or []), 1)
@@ -122,9 +120,8 @@ class SmartRouterGraphSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hypotheses)
         first_plan = hypotheses[0].get("verification_plan") or []
         self.assertTrue(first_plan)
-        used_skill_names = [item.get("skill_name") for item in first_plan if isinstance(item, dict)]
-        for name in used_skill_names:
-            self.assertIn(name, skill_names)
+        used_tool_names = [item.get("tool_name") for item in first_plan if isinstance(item, dict)]
+        self.assertTrue(all(name for name in used_tool_names))
         verification_results = list(diagnosis.get("verification_results") or [])
         self.assertEqual(len(verification_results), len(hypotheses))
         self.assertIn(verification_results[0].get("status"), {"passed", "inconclusive", "failed"})

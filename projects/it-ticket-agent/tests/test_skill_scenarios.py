@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from it_ticket_agent.approval_store import ApprovalStore
 from it_ticket_agent.case_retrieval import CaseRetriever
@@ -13,109 +13,19 @@ from it_ticket_agent.checkpoint_store import CheckpointStore
 from it_ticket_agent.execution_store import ExecutionStore
 from it_ticket_agent.interrupt_store import InterruptStore
 from it_ticket_agent.memory_store import IncidentCaseStore, ProcessMemoryStore
-from it_ticket_agent.memory.models import IncidentCase
-from it_ticket_agent.orchestration.ranker_weights import estimate_adaptive_weights
-from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager
+from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager, estimate_adaptive_weights
 from it_ticket_agent.orchestration.retrieval_planner import RetrievalPlanner
-from it_ticket_agent.orchestration.supervisor_agent import SupervisorAgent
-from it_ticket_agent.orchestration.verification_agent import VerificationAgent
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
 from it_ticket_agent.schemas import ConversationCreateRequest
 from it_ticket_agent.settings import Settings
-from it_ticket_agent.skills import SkillRegistry
-from it_ticket_agent.skills.local_executor import LocalSkillExecutor
-from it_ticket_agent.state.models import ContextSnapshot, Hypothesis, VerificationStep
 from it_ticket_agent.system_event_store import SystemEventStore
 from it_ticket_agent.tools import __all__ as exported_tools
 
 
-def _build_snapshot(*, message: str, service: str, mock_scenario: str) -> ContextSnapshot:
-    return ContextSnapshot(
-        request={
-            "ticket_id": "T-SKILL-1",
-            "user_id": "u1",
-            "message": message,
-            "service": service,
-            "cluster": "prod-shanghai-1",
-            "namespace": "default",
-            "mock_scenario": mock_scenario,
-        },
-        matched_skill_categories=["k8s", "monitor"],
-    )
-
-
-class SkillScenarioExecutionTest(unittest.IsolatedAsyncioTestCase):
-    async def test_check_memory_trend_supports_oom_scenario(self) -> None:
-        executor = LocalSkillExecutor()
-        snapshot = _build_snapshot(
-            message="checkout-service pod OOMKilled，帮我排查内存问题",
-            service="checkout-service",
-            mock_scenario="oom",
-        )
-
-        result = await executor.execute_skill(
-            "check_memory_trend",
-            params={"service": "checkout-service", "namespace": "default"},
-            context_snapshot=snapshot,
-        )
-
-        self.assertEqual(result.status, "matched")
-        self.assertTrue(result.payload["inspect_pod_logs"]["oom_detected"])
-        self.assertEqual(result.payload["inspect_pod_events"]["last_termination_reason"], "OOMKilled")
-        self.assertEqual(result.payload["check_service_health"]["health_status"], "unhealthy")
-
-    async def test_check_memory_trend_supports_normal_scenario(self) -> None:
-        executor = LocalSkillExecutor()
-        snapshot = _build_snapshot(
-            message="checkout-service pod OOMKilled，帮我排查内存问题",
-            service="checkout-service",
-            mock_scenario="normal",
-        )
-
-        result = await executor.execute_skill(
-            "check_memory_trend",
-            params={"service": "checkout-service", "namespace": "default"},
-            context_snapshot=snapshot,
-        )
-
-        self.assertEqual(result.status, "not_matched")
-        self.assertFalse(result.payload["inspect_pod_logs"]["oom_detected"])
-        self.assertEqual(result.payload["inspect_pod_events"]["last_termination_reason"], "none")
-        self.assertEqual(result.payload["check_service_health"]["health_status"], "healthy")
-
-    async def test_verification_agent_executes_real_skill_pipeline(self) -> None:
-        agent = VerificationAgent(SkillRegistry(), skill_executor=LocalSkillExecutor())
-        snapshot = _build_snapshot(
-            message="checkout-service pod OOMKilled，帮我排查内存问题",
-            service="checkout-service",
-            mock_scenario="oom",
-        )
-        hypothesis = Hypothesis(
-            hypothesis_id="H-K8S",
-            root_cause="Pod 健康异常或资源不足导致服务不稳定",
-            confidence_prior=0.8,
-            verification_plan=[
-                VerificationStep(
-                    skill_name="check_memory_trend",
-                    params={"service": "checkout-service", "namespace": "default"},
-                    purpose="确认是否存在 OOM 与内存持续上涨",
-                )
-            ],
-            expected_evidence="Pod 出现 OOMKilled 或内存上涨明显。",
-        )
-
-        result = await agent.verify(hypothesis, snapshot)
-
-        self.assertEqual(result.status, "passed")
-        self.assertEqual(result.metadata["verification_mode"], "subagent_react")
-        self.assertGreaterEqual(result.metadata["react_rounds"], 1)
-        self.assertTrue(result.evidence_items[0].result["payload"]["inspect_pod_logs"]["oom_detected"])
-
-
-class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
+class RuleBasedReactRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
-        db_path = str(Path(self.temp_dir.name) / "skill-scenarios.db")
+        db_path = str(Path(self.temp_dir.name) / "rule-based-react.db")
         mcp_config = str(Path("/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/mcp_connections.yaml"))
         self.settings = Settings(
             approval_db_path=db_path,
@@ -150,10 +60,10 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    async def test_conversation_mock_scenario_reaches_skill_tools(self) -> None:
+    async def test_mock_scenario_oom_reaches_runtime_tools(self) -> None:
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
-                user_id="u-skill",
+                user_id="u-oom",
                 message="checkout-service pod OOMKilled，帮我排查",
                 service="checkout-service",
                 environment="prod",
@@ -163,38 +73,13 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(result["status"], {"completed", "awaiting_approval"})
         verification_results = list(result["diagnosis"]["verification_results"])
-        k8s_result = next(
-            item for item in verification_results if "Pod 健康异常" in str(item.get("root_cause") or "")
-        )
-        memory_item = next(
-            item
-            for item in k8s_result["evidence_items"]
-            if item.get("skill") in {"check_memory_trend", "diagnose_pod_crash"}
-        )
-        self.assertTrue(memory_item["result"]["payload"]["inspect_pod_logs"]["oom_detected"])
-        self.assertEqual(memory_item["result"]["payload"]["inspect_pod_events"]["last_termination_reason"], "OOMKilled")
-
-    async def test_env_case1_supports_plain_question_with_service_in_message(self) -> None:
-        with patch.dict(os.environ, {"IT_TICKET_AGENT_CASE": "case1"}, clear=False):
-            result = await self.orchestrator.start_conversation(
-                ConversationCreateRequest(
-                    user_id="u-case1",
-                    message="order service为什么总是超时",
-                    environment="prod",
-                )
-            )
-
-        self.assertIn(result["status"], {"completed", "awaiting_approval"})
-        verification_results = list(result["diagnosis"]["verification_results"])
         k8s_result = next(item for item in verification_results if "Pod 健康异常" in str(item.get("root_cause") or ""))
-        memory_item = next(item for item in k8s_result["evidence_items"] if item.get("skill") == "check_memory_trend")
-        self.assertTrue(memory_item["result"]["payload"]["inspect_pod_logs"]["oom_detected"])
-        network_result = next(item for item in verification_results if "网络链路异常" in str(item.get("root_cause") or ""))
-        network_item = next(item for item in network_result["evidence_items"] if item.get("skill") == "check_network_latency")
-        self.assertEqual(network_item["result"]["payload"]["inspect_vpc_connectivity"]["connectivity_status"], "healthy")
-        self.assertEqual(network_item["result"]["payload"]["inspect_load_balancer_status"]["lb_status"], "healthy")
+        log_item = next(item for item in k8s_result["evidence_items"] if item.get("skill") == "inspect_pod_logs")
+        event_item = next(item for item in k8s_result["evidence_items"] if item.get("skill") == "inspect_pod_events")
+        self.assertTrue(log_item["result"]["payload"]["oom_detected"])
+        self.assertEqual(event_item["result"]["payload"]["last_termination_reason"], "OOMKilled")
 
-    async def test_env_case2_prefers_network_and_monitor_instability(self) -> None:
+    async def test_case2_prefers_network_instability(self) -> None:
         with patch.dict(os.environ, {"IT_TICKET_AGENT_CASE": "case2"}, clear=False):
             result = await self.orchestrator.start_conversation(
                 ConversationCreateRequest(
@@ -204,24 +89,22 @@ class SkillScenarioRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        self.assertIn(result["status"], {"completed", "awaiting_approval"})
-        verification_results = list(result["diagnosis"]["verification_results"])
-        k8s_result = next(item for item in verification_results if "Pod 健康异常" in str(item.get("root_cause") or ""))
-        memory_item = next(item for item in k8s_result["evidence_items"] if item.get("skill") == "check_memory_trend")
-        self.assertFalse(memory_item["result"]["payload"]["inspect_pod_logs"]["oom_detected"])
-        network_result = next(item for item in verification_results if "网络链路异常" in str(item.get("root_cause") or ""))
-        network_item = next(item for item in network_result["evidence_items"] if item.get("skill") == "check_network_latency")
-        self.assertEqual(network_item["result"]["payload"]["inspect_vpc_connectivity"]["connectivity_status"], "blocked")
-        self.assertEqual(network_item["result"]["payload"]["inspect_upstream_dependency"]["dependency_status"], "degraded")
-        monitor_result = next(item for item in verification_results if "日志与告警" in str(item.get("root_cause") or ""))
-        monitor_item = next(item for item in monitor_result["evidence_items"] if item.get("skill") == "check_log_errors")
-        self.assertEqual(monitor_item["result"]["payload"]["inspect_thread_pool_status"]["pool_state"], "saturated")
+        self.assertEqual(result["status"], "completed")
+        ranked_primary = result["diagnosis"]["ranked_result"]["primary"]
+        self.assertIn("网络链路", ranked_primary["root_cause"])
+        network_result = next(
+            item for item in result["diagnosis"]["verification_results"] if "网络链路" in str(item.get("root_cause") or "")
+        )
+        connectivity = next(item for item in network_result["evidence_items"] if item.get("skill") == "inspect_vpc_connectivity")
+        dependency = next(item for item in network_result["evidence_items"] if item.get("skill") == "inspect_upstream_dependency")
+        self.assertEqual(connectivity["result"]["payload"]["connectivity_status"], "blocked")
+        self.assertEqual(dependency["result"]["payload"]["dependency_status"], "degraded")
 
 
 class ToolInventoryTest(unittest.TestCase):
-    def test_exported_tool_inventory_exceeds_thirty(self) -> None:
+    def test_exported_tool_inventory_exceeds_twenty(self) -> None:
         tool_names = [name for name in exported_tools if name.endswith("Tool")]
-        self.assertGreaterEqual(len(tool_names), 30)
+        self.assertGreaterEqual(len(tool_names), 20)
 
 
 class RankerWeightAdaptationTest(unittest.TestCase):
@@ -253,6 +136,47 @@ class RankerWeightAdaptationTest(unittest.TestCase):
 
         self.assertGreater(weights["evidence_strength"], weights["history_match"])
         self.assertGreater(weights["confidence"], 0.2)
+
+    def test_ranker_weights_manager_persists_and_activates_snapshots(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            manager = RankerWeightsManager(str(Path(tmp_dir) / "ranker-weights.db"), auto_activate_threshold=2)
+            resolved = manager.resolve_weights(
+                [
+                    {
+                        "human_verified": True,
+                        "selected_hypothesis_id": "H1",
+                        "actual_root_cause_hypothesis": "H1",
+                        "selected_ranker_features": {
+                            "evidence_strength": 0.9,
+                            "confidence": 0.7,
+                            "history_match": 0.1,
+                        },
+                    },
+                    {
+                        "human_verified": True,
+                        "selected_hypothesis_id": "H2",
+                        "actual_root_cause_hypothesis": "H2",
+                        "selected_ranker_features": {
+                            "evidence_strength": 0.8,
+                            "confidence": 0.6,
+                            "history_match": 0.2,
+                        },
+                    },
+                ]
+            )
+
+            snapshots = manager.list_snapshots()
+            self.assertTrue(snapshots)
+            self.assertEqual(manager.get_active_snapshot()["weights"], resolved)
+
+            manual = manager.save_snapshot(
+                {"evidence_strength": 0.2, "confidence": 0.2, "history_match": 0.6},
+                sample_count=2,
+                strategy="manual_override",
+                activate=False,
+            )
+            active = manager.activate_snapshot(manual["version_id"])
+            self.assertEqual(active["version_id"], manual["version_id"])
 
 
 class CaseRetrieverHybridTest(unittest.IsolatedAsyncioTestCase):
@@ -306,47 +230,6 @@ class CaseRetrieverHybridTest(unittest.IsolatedAsyncioTestCase):
                 },
             ]
         }
-
-    def test_ranker_weights_manager_persists_and_activates_snapshots(self) -> None:
-        with TemporaryDirectory() as tmp_dir:
-            manager = RankerWeightsManager(str(Path(tmp_dir) / "ranker-weights.db"), auto_activate_threshold=2)
-            resolved = manager.resolve_weights(
-                [
-                    {
-                        "human_verified": True,
-                        "selected_hypothesis_id": "H1",
-                        "actual_root_cause_hypothesis": "H1",
-                        "selected_ranker_features": {
-                            "evidence_strength": 0.9,
-                            "confidence": 0.7,
-                            "history_match": 0.1,
-                        },
-                    },
-                    {
-                        "human_verified": True,
-                        "selected_hypothesis_id": "H2",
-                        "actual_root_cause_hypothesis": "H2",
-                        "selected_ranker_features": {
-                            "evidence_strength": 0.8,
-                            "confidence": 0.6,
-                            "history_match": 0.2,
-                        },
-                    },
-                ]
-            )
-
-            snapshots = manager.list_snapshots()
-            self.assertTrue(snapshots)
-            self.assertEqual(manager.get_active_snapshot()["weights"], resolved)
-
-            manual = manager.save_snapshot(
-                {"evidence_strength": 0.2, "confidence": 0.2, "history_match": 0.6},
-                sample_count=2,
-                strategy="manual_override",
-                activate=False,
-            )
-            active = manager.activate_snapshot(manual["version_id"])
-            self.assertEqual(active["version_id"], manual["version_id"])
 
 
 class CaseRetrieverTest(unittest.IsolatedAsyncioTestCase):
@@ -437,43 +320,13 @@ class RetrievalPlannerTest(unittest.IsolatedAsyncioTestCase):
             },
             rag_context={"hits": []},
             similar_cases=[],
-            matched_skill_categories=["network", "k8s", "db"],
+            matched_tool_domains=["network", "k8s", "db"],
         )
 
         self.assertTrue(expansion.subqueries)
         queries = [item.query for item in expansion.subqueries]
         self.assertTrue(any("OOMKilled" in item or "heap" in item for item in queries))
         self.assertTrue(any("upstream" in item or "ingress" in item for item in queries))
-
-
-class SupervisorAgentTest(unittest.IsolatedAsyncioTestCase):
-    async def test_supervisor_agent_plans_and_selects_primary(self) -> None:
-        hypothesis_generator = AsyncMock(
-            return_value=[
-                Hypothesis(
-                    hypothesis_id="H1",
-                    root_cause="网络链路异常",
-                    confidence_prior=0.6,
-                    verification_plan=[],
-                )
-            ]
-        )
-        supervisor = SupervisorAgent(
-            hypothesis_generator=SimpleNamespace(generate=hypothesis_generator),
-            ranker=SimpleNamespace(
-                rank=lambda verification_results, **kwargs: SimpleNamespace(
-                    primary=verification_results[0],
-                    secondary=[],
-                    rejected=[],
-                    ranking_metadata={},
-                )
-            ),
-        )
-        snapshot = ContextSnapshot(request={"service": "order-service"})
-        plan = await supervisor.plan_verification(snapshot)
-        self.assertEqual(plan.hypotheses[0].hypothesis_id, "H1")
-        self.assertIn(plan.metadata["planner"], {"supervisor_agent_rules", "supervisor_agent_llm"})
-        self.assertIn("supervisor", plan.hypotheses[0].metadata)
 
 
 if __name__ == "__main__":

@@ -269,8 +269,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["message"])
         snapshot = result["diagnosis"]["context_snapshot"]
         self.assertIsNotNone(snapshot)
-        self.assertIn("cicd", snapshot["matched_skill_categories"])
-        self.assertTrue(snapshot["available_skills"])
+        self.assertIn("cicd", snapshot["matched_tool_domains"])
         hypotheses = result["diagnosis"]["hypotheses"]
         self.assertTrue(hypotheses)
         self.assertIn("verification_plan", hypotheses[0])
@@ -311,49 +310,24 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_low_risk_primary_action_auto_executes_in_main_graph(self) -> None:
-        self.orchestrator.hypothesis_generator.generate = AsyncMock(
-            return_value=[
-                Hypothesis(
-                    hypothesis_id="H1",
-                    root_cause="低风险自动化动作即可恢复服务",
-                    confidence_prior=0.9,
-                    verification_plan=[
-                        VerificationStep(
-                            skill_name="check_log_errors",
-                            params={"service": "checkout-service", "window": "30m"},
-                            purpose="确认主要异常模式",
-                        )
-                    ],
-                    expected_evidence="存在明确的低风险修复入口。",
-                    recommended_action="observe_service",
-                    action_risk="low",
-                    action_params={"service": "checkout-service", "mcp_server": "http://fixture-mcp"},
-                )
-            ]
-        )
-
-        with patch(
-            "it_ticket_agent.graph.nodes.MCPClient.call_tool",
-            return_value={
-                "structuredContent": {"status": "completed", "job_id": "observe-123"},
-                "content": [{"text": "低风险动作已执行完成。"}],
-            },
-        ):
-            result = await self.orchestrator.start_conversation(
-                ConversationCreateRequest(
-                    user_id="u-auto-exec",
-                    message="checkout-service 需要一个低风险自动修复动作",
-                    service="checkout-service",
-                    environment="prod",
-                )
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-auto-exec",
+                message="checkout-service 需要一个低风险自动修复动作",
+                service="checkout-service",
+                environment="prod",
             )
+        )
 
         self.assertEqual(result["status"], "completed")
         self.assertIsNone(result["approval_request"])
         self.assertIn("审批已通过", result["message"])
+        self.assertIsNotNone(result["pending_interrupt"])
+        self.assertEqual(result["pending_interrupt"]["type"], "feedback")
         execution_results = result["diagnosis"]["incident_state"]["execution_results"]
         self.assertTrue(execution_results)
         self.assertEqual(execution_results[0]["status"], "completed")
+        self.assertEqual(execution_results[0]["action"], "observe_service")
 
     async def test_s2_approval_resume_after_decision(self) -> None:
         session_id = "s2-session"
@@ -471,7 +445,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(history)
         self.assertTrue(history[-1]["topic_shift_detected"])
         snapshot = updated["diagnosis"]["context_snapshot"]
-        self.assertIn("db", snapshot["matched_skill_categories"])
+        self.assertIn("db", snapshot["matched_tool_domains"])
 
     async def test_topic_shift_supersedes_pending_approval_and_restarts_analysis(self) -> None:
         session_id = "topic-shift-approval"

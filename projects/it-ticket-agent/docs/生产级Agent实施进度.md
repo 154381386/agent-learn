@@ -80,6 +80,10 @@ M1（session / interrupt）已进入代码落地
 M2（context / memory）已进入主体实现，B1~B4 已落地
 M3（approval workflow）已完成正式化收口
 M4（execution / event ledger）已完成 D1 ~ D4 收口
+Tool-first ReAct 已成为唯一默认主链
+legacy skill pipeline 已移出代码主干
+未配置 LLM 时已补齐最小 rule-based react fallback，用于本地开发与 smoke 回归
+最小回归测试已恢复到 unittest 绿态
 最小可观测性（system event + tracing spans）已完成第一版接入
 完整可观测性（metrics / alerts / 多 Agent 阶段覆盖）仍未完成
 ```
@@ -87,8 +91,9 @@ M4（execution / event ledger）已完成 D1 ~ D4 收口
 因此，从实施角度看：
 
 - 设计输入：**已具备**
-- 当前代码已完成当前收敛阶段主线能力，并补齐了最小可观测性与 tracing 第一版
-- 当前推荐继续推进点：**补齐完整可观测性缺口（metrics / alerts / 健康探针 / tracing 回归测试），并按下一阶段路线图继续推进多 Agent 主干**
+- 当前代码已完成当前收敛阶段主线能力，默认主链已收敛到 `react_tool_first`
+- 当前最优先推进点：**补齐完整可观测性缺口（metrics / alerts / 健康探针 / tracing 回归测试）**
+- 在主链稳定基础上，再按下一阶段路线图继续推进多 Agent / subagent 设计
 
 ---
 

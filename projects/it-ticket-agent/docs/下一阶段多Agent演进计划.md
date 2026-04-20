@@ -1,15 +1,27 @@
-# IT Ticket Agent 下一阶段 Hypothesis Graph 演进计划（代办版）
+# IT Ticket Agent 下一阶段 Tool-First ReAct 演进计划（代办版）
 
 ## 文档说明
 
-本文档以未完成事项为主；已经落地的关键项会在前面简记为“已完成”，避免和当前代码状态脱节。
+本文档以**下一阶段未完成事项**为主；已经落地的关键项会在前面简记为“已完成”，避免和当前代码状态脱节。
 
-本文档以 `projects/it-ticket-agent/docs/最新架构.md` 为准，所有待办均围绕最新的两条主路径展开：
+当前默认主链已经不再是旧的 `hypothesis_graph + skill` 固定流水线，而是：
+
+- `direct_answer`
+- `react_tool_first`
+
+也就是：
+
+- `smart_router -> direct_answer`
+- `smart_router -> supervisor_loop -> approval_gate -> await_user / execute_approved_action -> finalize`
+
+本文档保留一部分 `hypothesis_graph` 表述，主要用于解释已经落地的历史迁移步骤；**所有新增设计与待办项，均应以当前 `tool-first ReAct` 主线为准**。
+
+本文档以 `projects/it-ticket-agent/docs/最新架构.md` 与 `projects/it-ticket-agent/docs/Tool-First-ReAct迁移方案.md` 为准，所有待办均围绕当前两条主路径展开：
 
 - `direct_answer`：FAQ / 知识咨询直答
-- `hypothesis_graph`：`smart_router -> context_collector -> hypothesis_generator -> parallel_verification -> ranker -> approval_gate -> execute -> feedback_gate`
+- `react_tool_first`：`smart_router -> context_collector -> supervisor_loop -> approval_gate -> execute_approved_action -> feedback_gate`
 
-旧的 `subagent_results -> aggregated_result -> root cause selector` 叙事不再作为默认推进方向。
+旧的 `subagent_results -> aggregated_result -> root cause selector` 与 `skill-first fixed pipeline` 叙事都不再作为默认推进方向。
 
 配套文档：
 
@@ -20,6 +32,12 @@
 ---
 
 ## 已完成
+
+说明：
+
+- 下列 T0 ~ T9 主要用于记录从旧主线迁移到当前主线过程中已经完成的能力
+- 其中涉及 `hypothesis_graph / skill` 的表述应视为**历史迁移背景**
+- 当前继续演进时，应优先复用已有 `context / ranker / approval / execute / feedback` 能力，而不是恢复旧 graph
 
 ### [x] T0. Smart Router + FAQ Fast Path
 

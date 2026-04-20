@@ -1,13 +1,23 @@
 # IT Ticket Orchestrator
 
-当前项目现在负责 **Smart Router + Hypothesis Graph + Skill 执行 + HITL 审批主流程**，RAG 已拆到兄弟项目 `projects/it-ticket-rag-service`。
+当前项目当前默认负责 **Smart Router + Tool-First ReAct Supervisor + HITL 审批主流程**，RAG 已拆到兄弟项目 `projects/it-ticket-rag-service`。
+
+当前默认运行模式是 `react_tool_first`：
+
+- FAQ / SOP / 知识问答走 `direct_answer`
+- 诊断类请求进入 `supervisor_loop`
+- 高风险动作统一经 `approval_gate`
+- 审批后的执行统一经 `execute_approved_action`
+
+为了保证本地开发和回归测试可运行，当前在**未配置 LLM** 时会启用最小版 `rule-based react fallback`，用于驱动 smoke 级诊断、审批、恢复与反馈链路。
 
 ## 当前职责
 
 - 接收用户工单请求
 - 调用 RAG 服务做知识检索
-- 分流到 `direct_answer` 或 `hypothesis_graph`
-- 基于 Skill 生成验证计划，并执行 Skill 内部 tool 链路
+- 分流到 `direct_answer` 或 `react_tool_first`
+- 在 `supervisor_loop` 中直接基于 tool schema 做 ReAct 推理
+- 在无 LLM 时使用 rule-based fallback 保证最小诊断链路可运行
 - 处理 HITL 审批与执行动作
 - 汇总最终回复
 
@@ -211,6 +221,14 @@ uv run python scripts/migrate_sqlite_to_postgres.py \
 
 - Tool-first ReAct 迁移方案：`docs/Tool-First-ReAct迁移方案.md:1`
 - 开发 TODO 清单：`docs/Tool-First-ReAct开发TODO.md:1`
+
+## 当前验证基线
+
+最小回归当前以 `unittest` 为准：
+
+```bash
+uv run python -m unittest discover -s tests -q
+```
 
 ## API
 
