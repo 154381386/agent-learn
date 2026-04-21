@@ -50,6 +50,7 @@ def build_initial_incident_state(
             "mock_scenario": request.mock_scenario or "",
             "mock_scenarios": dict(request.mock_scenarios or {}),
             "mock_tool_responses": dict(request.mock_tool_responses or {}),
+            "mock_world_state": dict(request.mock_world_state or {}),
         },
     )
 

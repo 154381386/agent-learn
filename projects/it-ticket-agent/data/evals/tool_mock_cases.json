@@ -1,0 +1,1110 @@
+{
+  "schema_version": 2,
+  "description": "Real-LLM agent eval cases backed by mocked tool responses only. Covers single-domain convergence, cross-domain expansion, and noisy-signal containment.",
+  "cases": [
+    {
+      "case_id": "network_profile_prefers_network_tools",
+      "description": "超时类问题应优先命中网络与上游依赖排查工具，并且首轮不应混入 helper / K8s 工具。",
+      "request": {
+        "user_id": "eval-network",
+        "message": "order service为什么总是超时",
+        "service": "order-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_service_health",
+          "check_recent_alerts",
+          "check_pod_status"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "oom_profile_prefers_k8s_tools",
+      "description": "OOM / Pod 异常类问题应优先命中 Pod 状态、日志和事件排查工具。",
+      "request": {
+        "user_id": "eval-oom",
+        "message": "order-service pod OOMKilled，帮我排查",
+        "service": "order-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "tool_profile": {
+          "case_id": "case1",
+          "service": "order-service"
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_service_health",
+          "check_recent_alerts",
+          "inspect_upstream_dependency"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "deploy_signals_prefers_cicd_tools",
+      "description": "发布回归问题应优先命中 CICD 侧排查工具，而不是盲目走 K8s / 网络面。",
+      "request": {
+        "user_id": "eval-cicd",
+        "message": "checkout-service 刚发布后开始报错，帮我看是不是发布回归",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "check_recent_deployments": {
+            "summary": "checkout-service 在故障窗口前 10 分钟发生过发布。",
+            "payload": {
+              "service": "checkout-service",
+              "has_recent_deploy": true,
+              "deploy_count": 1,
+              "latest_revision": "2026.04.21-rc1"
+            },
+            "evidence": [
+              "故障窗口前 10 分钟存在 deploy",
+              "latest_revision=2026.04.21-rc1"
+            ]
+          },
+          "check_pipeline_status": {
+            "summary": "checkout-service 最近一次流水线有失败步骤。",
+            "payload": {
+              "service": "checkout-service",
+              "pipeline_status": "failed",
+              "failed_stage": "post-deploy-smoke"
+            },
+            "evidence": [
+              "pipeline_status=failed",
+              "failed_stage=post-deploy-smoke"
+            ]
+          },
+          "get_change_records": {
+            "summary": "checkout-service 最近变更集中在订单创建逻辑。",
+            "payload": {
+              "service": "checkout-service",
+              "change_count": 2,
+              "suspect_component": "order-create"
+            },
+            "evidence": [
+              "change_count=2",
+              "suspect_component=order-create"
+            ]
+          },
+          "check_service_health": {
+            "summary": "checkout-service 当前错误率升高，但副本仍然可用。",
+            "payload": {
+              "service": "checkout-service",
+              "health_status": "degraded",
+              "error_rate_percent": 6.7
+            },
+            "evidence": [
+              "health_status=degraded",
+              "error_rate_percent=6.7"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_service_health",
+          "inspect_vpc_connectivity",
+          "check_pod_status"
+        ],
+        "forbidden_tools": [
+          "inspect_vpc_connectivity"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "db_signal_prefers_db_tools",
+      "description": "显式数据库问题应优先落到 DB 工具集，首轮不应漂移到 K8s / 网络 / CICD。",
+      "request": {
+        "user_id": "eval-db",
+        "message": "payment-service 数据库连接池打满了，接口很慢",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "连接池已经接近打满。",
+            "payload": {
+              "service": "payment-service",
+              "pool_state": "saturated",
+              "active_connections": 118,
+              "max_connections": 120
+            },
+            "evidence": [
+              "pool_state=saturated",
+              "active_connections=118/120"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "最近 5 分钟慢查询明显升高。",
+            "payload": {
+              "service": "payment-service",
+              "slow_query_count": 24,
+              "max_latency_ms": 4300
+            },
+            "evidence": [
+              "slow_query_count=24",
+              "max_latency_ms=4300"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "数据库实例健康退化。",
+            "payload": {
+              "service": "payment-service",
+              "db_health": "degraded"
+            },
+            "evidence": [
+              "db_health=degraded"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_pod_status",
+          "inspect_upstream_dependency",
+          "check_recent_deployments"
+        ],
+        "forbidden_tools": [
+          "check_pod_status",
+          "inspect_upstream_dependency",
+          "check_recent_deployments"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "sde_quota_prefers_sde_tools",
+      "description": "SDE / bootstrap / quota 类问题应先落到 quota 工具，而不是直接跑 K8s 或发布排查。",
+      "request": {
+        "user_id": "eval-sde",
+        "message": "cluster bootstrap 创建失败，提示 quota 不足",
+        "service": "cluster-bootstrap",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "get_quota_status": {
+            "summary": "当前资源池 quota 已耗尽。",
+            "payload": {
+              "service": "cluster-bootstrap",
+              "quota_state": "exhausted",
+              "requested_cpu": 64,
+              "available_cpu": 0
+            },
+            "evidence": [
+              "quota_state=exhausted",
+              "available_cpu=0"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_tools": [
+          "get_quota_status"
+        ],
+        "first_any_tools": [
+          "get_quota_status"
+        ],
+        "first_any_tools_min_matches": 1,
+        "first_any_tools_window": 1,
+        "first_forbidden_tools": [
+          "check_pod_status",
+          "inspect_upstream_dependency",
+          "check_recent_deployments"
+        ],
+        "forbidden_tools": [
+          "check_pod_status",
+          "inspect_upstream_dependency",
+          "check_recent_deployments"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 1,
+        "max_tool_calls_used": 2
+      }
+    },
+    {
+      "case_id": "network_signal_expands_to_db_root_cause",
+      "description": "请求表面像网络超时，但如果网络证据偏弱，应扩到 DB 工具集继续排查。",
+      "request": {
+        "user_id": "eval-network-db",
+        "message": "order service为什么总是 timeout，接口偶尔卡死",
+        "service": "order-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_ingress_route": {
+            "summary": "ingress 路由正常。",
+            "payload": {
+              "service": "order-service",
+              "route_status": "healthy"
+            },
+            "evidence": [
+              "route healthy"
+            ]
+          },
+          "inspect_vpc_connectivity": {
+            "summary": "VPC 连通性正常。",
+            "payload": {
+              "service": "order-service",
+              "connectivity_status": "healthy"
+            },
+            "evidence": [
+              "east-west network healthy"
+            ]
+          },
+          "inspect_upstream_dependency": {
+            "summary": "上游依赖未见明显异常。",
+            "payload": {
+              "service": "order-service",
+              "dependency_status": "healthy",
+              "timeout_ratio": 0.0
+            },
+            "evidence": [
+              "upstream healthy"
+            ]
+          },
+          "inspect_dns_resolution": {
+            "summary": "DNS 解析正常。",
+            "payload": {
+              "service": "order-service",
+              "resolution_status": "healthy"
+            },
+            "evidence": [
+              "dns healthy"
+            ]
+          },
+          "inspect_load_balancer_status": {
+            "summary": "负载均衡状态正常。",
+            "payload": {
+              "service": "order-service",
+              "lb_status": "healthy"
+            },
+            "evidence": [
+              "all backends healthy"
+            ]
+          },
+          "inspect_egress_policy": {
+            "summary": "出口策略正常。",
+            "payload": {
+              "service": "order-service",
+              "policy_status": "healthy"
+            },
+            "evidence": [
+              "egress allowed"
+            ]
+          },
+          "inspect_connection_pool": {
+            "summary": "连接池已经饱和。",
+            "payload": {
+              "service": "order-service",
+              "pool_state": "saturated",
+              "active_connections": 96,
+              "max_connections": 100
+            },
+            "evidence": [
+              "pool_state=saturated",
+              "active_connections=96/100"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "最近 5 分钟慢查询明显增多。",
+            "payload": {
+              "service": "order-service",
+              "slow_query_count": 18,
+              "max_latency_ms": 5200
+            },
+            "evidence": [
+              "slow_query_count=18",
+              "max_latency_ms=5200"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "数据库实例健康退化。",
+            "payload": {
+              "service": "order-service",
+              "db_health": "degraded"
+            },
+            "evidence": [
+              "db_health=degraded"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_pod_status"
+        ],
+        "expanded_domains": [
+          "db"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "k8s_signal_expands_to_cicd_root_cause",
+      "description": "请求表面像 Pod 面问题，但如果 K8s 证据偏弱，应扩到 CICD 工具集继续排查。",
+      "request": {
+        "user_id": "eval-k8s-cicd",
+        "message": "checkout-service pod 看着正常，但服务从刚才开始一直报错",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "check_pod_status": {
+            "summary": "Pod 状态正常。",
+            "payload": {
+              "service": "checkout-service",
+              "ready_replicas": 2,
+              "desired_replicas": 2,
+              "pods": [
+                {
+                  "name": "checkout-service-1",
+                  "status": "Running",
+                  "ready": true,
+                  "restarts": 0
+                },
+                {
+                  "name": "checkout-service-2",
+                  "status": "Running",
+                  "ready": true,
+                  "restarts": 0
+                }
+              ]
+            },
+            "evidence": [
+              "ready 2/2"
+            ]
+          },
+          "inspect_pod_logs": {
+            "summary": "日志未见明显异常模式。",
+            "payload": {
+              "service": "checkout-service",
+              "error_pattern": "none"
+            },
+            "evidence": [
+              "log pattern normal"
+            ]
+          },
+          "inspect_pod_events": {
+            "summary": "Pod 事件正常。",
+            "payload": {
+              "service": "checkout-service",
+              "last_termination_reason": "none"
+            },
+            "evidence": [
+              "last_termination_reason=none"
+            ]
+          },
+          "inspect_jvm_memory": {
+            "summary": "JVM 内存正常。",
+            "payload": {
+              "service": "checkout-service",
+              "heap_usage_ratio": 0.41,
+              "gc_pressure": "normal"
+            },
+            "evidence": [
+              "heap_usage=0.41"
+            ]
+          },
+          "check_recent_deployments": {
+            "summary": "故障窗口前 8 分钟发生过发布。",
+            "payload": {
+              "service": "checkout-service",
+              "has_recent_deploy": true,
+              "latest_revision": "2026.04.21-hotfix-2"
+            },
+            "evidence": [
+              "故障窗口前 8 分钟存在 deploy",
+              "latest_revision=2026.04.21-hotfix-2"
+            ]
+          },
+          "check_pipeline_status": {
+            "summary": "最近一次流水线在 smoke 阶段失败。",
+            "payload": {
+              "service": "checkout-service",
+              "pipeline_status": "failed",
+              "failed_stage": "smoke"
+            },
+            "evidence": [
+              "pipeline_status=failed",
+              "failed_stage=smoke"
+            ]
+          },
+          "get_change_records": {
+            "summary": "最近变更集中在 checkout request path。",
+            "payload": {
+              "service": "checkout-service",
+              "change_count": 2,
+              "suspect_component": "checkout-request-path"
+            },
+            "evidence": [
+              "change_count=2",
+              "suspect_component=checkout-request-path"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status"
+        ],
+        "expanded_domains": [
+          "cicd"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "db_signal_expands_to_network_root_cause",
+      "description": "请求表面像 DB 问题，但如果 DB 证据偏弱，应扩到网络链路继续排查。",
+      "request": {
+        "user_id": "eval-db-network",
+        "message": "payment-service 数据库看起来还行，但请求偶尔卡死",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "连接池使用平稳。",
+            "payload": {
+              "service": "payment-service",
+              "pool_state": "healthy",
+              "active_connections": 38,
+              "max_connections": 120
+            },
+            "evidence": [
+              "pool_state=healthy",
+              "active_connections=38/120"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "慢查询未见明显升高。",
+            "payload": {
+              "service": "payment-service",
+              "slow_query_count": 0,
+              "max_latency_ms": 180
+            },
+            "evidence": [
+              "slow_query_count=0"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "数据库实例健康正常。",
+            "payload": {
+              "service": "payment-service",
+              "db_health": "healthy"
+            },
+            "evidence": [
+              "db_health=healthy"
+            ]
+          },
+          "inspect_upstream_dependency": {
+            "summary": "上游依赖 timeout 比例升高。",
+            "payload": {
+              "service": "payment-service",
+              "dependency_status": "degraded",
+              "timeout_ratio": 0.18
+            },
+            "evidence": [
+              "dependency_status=degraded",
+              "timeout_ratio=0.18"
+            ]
+          },
+          "inspect_vpc_connectivity": {
+            "summary": "VPC 链路存在阻塞。",
+            "payload": {
+              "service": "payment-service",
+              "connectivity_status": "blocked"
+            },
+            "evidence": [
+              "connectivity_status=blocked"
+            ]
+          },
+          "inspect_ingress_route": {
+            "summary": "ingress 路由正常。",
+            "payload": {
+              "service": "payment-service",
+              "route_status": "healthy"
+            },
+            "evidence": [
+              "route healthy"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_upstream_dependency",
+          "inspect_vpc_connectivity",
+          "inspect_ingress_route"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_pod_status"
+        ],
+        "expanded_domains": [
+          "network"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "cicd_signal_expands_to_k8s_root_cause",
+      "description": "请求表面像发布回归，但如果发布证据偏弱，应扩到 K8s 工具集继续排查。",
+      "request": {
+        "user_id": "eval-cicd-k8s",
+        "message": "checkout-service 发布链路看着正常，但服务一直报错，帮我排查",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "check_recent_deployments": {
+            "summary": "故障窗口内未发现最近发布。",
+            "payload": {
+              "service": "checkout-service",
+              "has_recent_deploy": false,
+              "deploy_count": 0
+            },
+            "evidence": [
+              "no recent deploy in failure window"
+            ]
+          },
+          "check_pipeline_status": {
+            "summary": "最近流水线成功结束。",
+            "payload": {
+              "service": "checkout-service",
+              "pipeline_status": "success"
+            },
+            "evidence": [
+              "pipeline_status=success"
+            ]
+          },
+          "get_change_records": {
+            "summary": "最近未发现显著变更。",
+            "payload": {
+              "service": "checkout-service",
+              "change_count": 0
+            },
+            "evidence": [
+              "change_count=0"
+            ]
+          },
+          "check_pod_status": {
+            "summary": "Pod 只有 1/2 ready，且存在重启。",
+            "payload": {
+              "service": "checkout-service",
+              "ready_replicas": 1,
+              "desired_replicas": 2,
+              "pods": [
+                {
+                  "name": "checkout-service-1",
+                  "status": "Running",
+                  "ready": true,
+                  "restarts": 0
+                },
+                {
+                  "name": "checkout-service-2",
+                  "status": "Running",
+                  "ready": false,
+                  "restarts": 4
+                }
+              ]
+            },
+            "evidence": [
+              "ready 1/2",
+              "pod restarts=4"
+            ]
+          },
+          "inspect_pod_logs": {
+            "summary": "日志中出现 OOMKilled 模式。",
+            "payload": {
+              "service": "checkout-service",
+              "error_pattern": "oom_killed",
+              "oom_detected": true
+            },
+            "evidence": [
+              "error_pattern=oom_killed"
+            ]
+          },
+          "inspect_pod_events": {
+            "summary": "Pod 最近一次退出原因为 OOMKilled。",
+            "payload": {
+              "service": "checkout-service",
+              "last_termination_reason": "OOMKilled"
+            },
+            "evidence": [
+              "last_termination_reason=OOMKilled"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "first_forbidden_tools": [
+          "check_pod_status",
+          "inspect_pod_logs"
+        ],
+        "expanded_domains": [
+          "k8s"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "network_strong_signal_does_not_expand",
+      "description": "网络域已有强异常证据时，不应再扩到 DB / CICD / K8s。",
+      "request": {
+        "user_id": "eval-network-strong",
+        "message": "gateway 502 很多，而且 upstream timeout 明显增多",
+        "service": "gateway-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_ingress_route": {
+            "summary": "ingress 路由异常，后端实例不健康。",
+            "payload": {
+              "service": "gateway-service",
+              "route_status": "mismatch_or_unhealthy"
+            },
+            "evidence": [
+              "route_status=mismatch_or_unhealthy"
+            ]
+          },
+          "inspect_vpc_connectivity": {
+            "summary": "VPC 链路阻塞。",
+            "payload": {
+              "service": "gateway-service",
+              "connectivity_status": "blocked"
+            },
+            "evidence": [
+              "connectivity_status=blocked"
+            ]
+          },
+          "inspect_upstream_dependency": {
+            "summary": "上游依赖出现明显退化。",
+            "payload": {
+              "service": "gateway-service",
+              "dependency_status": "degraded",
+              "timeout_ratio": 0.31
+            },
+            "evidence": [
+              "dependency_status=degraded",
+              "timeout_ratio=0.31"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "forbidden_tools": [
+          "inspect_connection_pool",
+          "check_recent_deployments",
+          "check_pod_status"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "k8s_strong_signal_does_not_expand",
+      "description": "K8s 域已有强异常证据时，不应再扩到 CICD / 网络 / DB。",
+      "request": {
+        "user_id": "eval-k8s-strong",
+        "message": "payment-service pod 连续重启而且 OOMKilled",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "check_pod_status": {
+            "summary": "Pod 只有 1/2 ready，且重启次数较高。",
+            "payload": {
+              "service": "payment-service",
+              "ready_replicas": 1,
+              "desired_replicas": 2,
+              "pods": [
+                {
+                  "name": "payment-service-1",
+                  "status": "Running",
+                  "ready": true,
+                  "restarts": 1
+                },
+                {
+                  "name": "payment-service-2",
+                  "status": "Running",
+                  "ready": false,
+                  "restarts": 6
+                }
+              ]
+            },
+            "evidence": [
+              "ready 1/2",
+              "pod restarts=6"
+            ]
+          },
+          "inspect_pod_logs": {
+            "summary": "日志出现 OOMKilled 模式。",
+            "payload": {
+              "service": "payment-service",
+              "error_pattern": "oom_killed",
+              "oom_detected": true
+            },
+            "evidence": [
+              "error_pattern=oom_killed"
+            ]
+          },
+          "inspect_pod_events": {
+            "summary": "最近一次退出原因为 OOMKilled。",
+            "payload": {
+              "service": "payment-service",
+              "last_termination_reason": "OOMKilled"
+            },
+            "evidence": [
+              "last_termination_reason=OOMKilled"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "forbidden_tools": [
+          "check_recent_deployments",
+          "inspect_vpc_connectivity",
+          "inspect_connection_pool"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "cicd_strong_signal_does_not_expand",
+      "description": "CICD 域已有强异常证据时，不应再扩到 K8s / 网络 / DB。",
+      "request": {
+        "user_id": "eval-cicd-strong",
+        "message": "checkout-service 刚发布后就失败，pipeline 也报错",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "check_recent_deployments": {
+            "summary": "故障窗口前 5 分钟发生过发布。",
+            "payload": {
+              "service": "checkout-service",
+              "has_recent_deploy": true,
+              "latest_revision": "2026.04.21-hotfix-9"
+            },
+            "evidence": [
+              "recent deploy in failure window",
+              "latest_revision=2026.04.21-hotfix-9"
+            ]
+          },
+          "check_pipeline_status": {
+            "summary": "最近一次流水线失败。",
+            "payload": {
+              "service": "checkout-service",
+              "pipeline_status": "failed",
+              "failed_stage": "post-deploy-smoke"
+            },
+            "evidence": [
+              "pipeline_status=failed",
+              "failed_stage=post-deploy-smoke"
+            ]
+          },
+          "get_change_records": {
+            "summary": "最近变更集中在 checkout path。",
+            "payload": {
+              "service": "checkout-service",
+              "change_count": 3,
+              "suspect_component": "checkout-path"
+            },
+            "evidence": [
+              "change_count=3",
+              "suspect_component=checkout-path"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "forbidden_tools": [
+          "check_pod_status",
+          "inspect_vpc_connectivity",
+          "inspect_connection_pool"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "db_strong_signal_does_not_expand",
+      "description": "DB 域已有强异常证据时，不应再扩到网络 / CICD / K8s。",
+      "request": {
+        "user_id": "eval-db-strong",
+        "message": "inventory-service 数据库慢查询暴涨，连接池也满了",
+        "service": "inventory-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "连接池已饱和。",
+            "payload": {
+              "service": "inventory-service",
+              "pool_state": "saturated",
+              "active_connections": 149,
+              "max_connections": 150
+            },
+            "evidence": [
+              "pool_state=saturated",
+              "active_connections=149/150"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "慢查询明显增多。",
+            "payload": {
+              "service": "inventory-service",
+              "slow_query_count": 42,
+              "max_latency_ms": 8100
+            },
+            "evidence": [
+              "slow_query_count=42",
+              "max_latency_ms=8100"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "数据库实例健康退化。",
+            "payload": {
+              "service": "inventory-service",
+              "db_health": "degraded"
+            },
+            "evidence": [
+              "db_health=degraded"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "forbidden_tools": [
+          "inspect_upstream_dependency",
+          "check_recent_deployments",
+          "check_pod_status"
+        ],
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    }
+  ]
+}

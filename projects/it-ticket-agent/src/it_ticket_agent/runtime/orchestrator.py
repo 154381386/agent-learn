@@ -507,6 +507,7 @@ class SupervisorOrchestrator:
             mock_scenario=str(shared_context.get("mock_scenario") or "") or None,
             mock_scenarios=dict(shared_context.get("mock_scenarios") or {}),
             mock_tool_responses=dict(shared_context.get("mock_tool_responses") or {}),
+            mock_world_state=dict(shared_context.get("mock_world_state") or {}),
         )
         return await self._run_ticket_message(
             ticket_request,
@@ -1496,6 +1497,7 @@ class SupervisorOrchestrator:
             mock_scenario=request.mock_scenario,
             mock_scenarios=dict(request.mock_scenarios or {}),
             mock_tool_responses=dict(request.mock_tool_responses or {}),
+            mock_world_state=dict(request.mock_world_state or {}),
         )
         with self.observability.start_span(
             name="orchestrator.start_conversation",
@@ -1546,6 +1548,11 @@ class SupervisorOrchestrator:
                 dict(request.mock_tool_responses)
                 if request.mock_tool_responses
                 else dict(shared_context.get("mock_tool_responses") or {})
+            ),
+            mock_world_state=(
+                dict(request.mock_world_state)
+                if request.mock_world_state
+                else dict(shared_context.get("mock_world_state") or {})
             ),
         )
         with self.observability.start_span(

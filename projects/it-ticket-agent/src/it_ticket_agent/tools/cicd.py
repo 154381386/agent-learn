@@ -9,6 +9,7 @@ from ..mcp import MCPClient
 from ..rag_client import RAGServiceClient
 from ..runtime.contracts import TaskEnvelope
 from ..service_names import canonical_service_name, infer_service_name
+from .mock_helpers import resolve_world_state_mock
 from .contracts import ReadOnlyTool, ToolExecutionResult
 
 
@@ -218,6 +219,9 @@ def _resolve_mock_result(task: TaskEnvelope, tool_name: str, arguments: dict | N
         payload = shared.get(tool_name) if isinstance(shared, dict) else None
 
     if not isinstance(payload, dict):
+        world_state_mock = resolve_world_state_mock(task, tool_name, arguments)
+        if world_state_mock is not None:
+            return world_state_mock
         case_mock = _resolve_case_mock(task, tool_name, arguments)
         if case_mock is not None:
             return case_mock

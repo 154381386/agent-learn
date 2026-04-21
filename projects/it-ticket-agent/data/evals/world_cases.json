@@ -1,0 +1,352 @@
+{
+  "schema_version": 1,
+  "description": "World-state driven eval cases. Tool outputs are projected from a shared incident world instead of being mocked per tool.",
+  "cases": [
+    {
+      "case_id": "world_timeout_db_pool_with_network_noise",
+      "description": "表面像网络 timeout，但真实根因来自 DB 连接池饱和；同时保留轻微上游抖动和最近发布作为噪声。",
+      "request": {
+        "user_id": "world-db-timeout",
+        "message": "order-service 为什么一直 timeout，gateway 偶尔 502",
+        "service": "order-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "world_state": {
+          "service": "order-service",
+          "root_cause": "db_pool_saturation",
+          "timeline": {
+            "deploy_minutes_ago": 18,
+            "symptom_started_minutes_ago": 9,
+            "failure_window": "deploy+9m"
+          },
+          "topology": {
+            "upstreams": [
+              "payment-gateway"
+            ],
+            "db": "order-mysql-primary"
+          },
+          "signals": {
+            "network": {
+              "route_status": "healthy",
+              "connectivity_status": "healthy",
+              "dependency_status": "degraded",
+              "timeout_ratio": 0.08,
+              "lb_status": "healthy",
+              "resolution_status": "healthy",
+              "policy_status": "healthy"
+            },
+            "db": {
+              "db_health": "degraded",
+              "pool_state": "saturated",
+              "active_connections": 97,
+              "max_connections": 100,
+              "slow_query_count": 22,
+              "max_latency_ms": 5300,
+              "deadlock_count": 0,
+              "rollback_rate": 0.03
+            },
+            "cicd": {
+              "has_recent_deploy": true,
+              "deploy_count": 1,
+              "latest_revision": "2026.04.21-hotfix-7",
+              "pipeline_status": "success",
+              "change_count": 1,
+              "suspect_component": "checkout-timeout-guard"
+            },
+            "monitor": {
+              "health_status": "degraded",
+              "error_rate_percent": 6.4,
+              "p99_latency_ms": 3200,
+              "alerts": [
+                {
+                  "name": "order-service high latency",
+                  "severity": "high",
+                  "status": "firing"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency",
+          "inspect_load_balancer_status"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 3,
+        "expanded_domains": [
+          "db"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "world_deploy_signal_expands_to_k8s_oom",
+      "description": "消息显式指向发布，但发布链路只提供弱证据，真实异常在 K8s OOM。",
+      "request": {
+        "user_id": "world-cicd-k8s",
+        "message": "checkout-service 刚发完版后开始报错，发布看着成功，帮我定位",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "world_state": {
+          "service": "checkout-service",
+          "root_cause": "oom_after_config_change",
+          "timeline": {
+            "deploy_minutes_ago": 12,
+            "symptom_started_minutes_ago": 5,
+            "failure_window": "deploy+5m"
+          },
+          "signals": {
+            "cicd": {
+              "has_recent_deploy": true,
+              "deploy_count": 1,
+              "latest_revision": "2026.04.21-rc9",
+              "pipeline_status": "success",
+              "failed_stage": "none",
+              "rollout_status": "stable",
+              "change_count": 1,
+              "suspect_component": "memory-limit"
+            },
+            "k8s": {
+              "pods": [
+                {
+                  "name": "checkout-service-1",
+                  "status": "Running",
+                  "ready": true,
+                  "restarts": 0
+                },
+                {
+                  "name": "checkout-service-2",
+                  "status": "Running",
+                  "ready": false,
+                  "restarts": 5
+                }
+              ],
+              "ready_replicas": 1,
+              "desired_replicas": 2,
+              "error_pattern": "oom_killed",
+              "oom_detected": true,
+              "log_snippets": [
+                "java.lang.OutOfMemoryError: Java heap space",
+                "container terminated with exit code 137"
+              ],
+              "last_termination_reason": "OOMKilled",
+              "events": [
+                {
+                  "type": "Warning",
+                  "reason": "OOMKilled",
+                  "message": "Container killed due to memory limit"
+                }
+              ],
+              "heap_usage_ratio": 0.98,
+              "gc_pressure": "critical"
+            },
+            "monitor": {
+              "health_status": "degraded",
+              "error_rate_percent": 8.1,
+              "p99_latency_ms": 2900
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 3,
+        "expanded_domains": [
+          "k8s"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "world_strong_network_outage_stays_network",
+      "description": "共享事故世界里网络侧已有强异常证据，应直接停在网络域。",
+      "request": {
+        "user_id": "world-network-strong",
+        "message": "gateway 502 很多，upstream timeout 也在涨",
+        "service": "gateway-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "world_state": {
+          "service": "gateway-service",
+          "root_cause": "network_path_instability",
+          "timeline": {
+            "symptom_started_minutes_ago": 7,
+            "failure_window": "network-jitter"
+          },
+          "signals": {
+            "network": {
+              "route_status": "mismatch_or_unhealthy",
+              "connectivity_status": "blocked",
+              "dependency_status": "degraded",
+              "timeout_ratio": 0.31,
+              "lb_status": "degraded",
+              "resolution_status": "healthy",
+              "policy_status": "healthy"
+            },
+            "monitor": {
+              "health_status": "unhealthy",
+              "error_rate_percent": 18.7,
+              "p99_latency_ms": 4700
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency",
+          "inspect_load_balancer_status"
+        ],
+        "required_any_tools_min_matches": 2,
+        "expansion_probe_required": false,
+        "forbidden_tools": [
+          "inspect_connection_pool",
+          "check_recent_deployments",
+          "check_pod_status"
+        ],
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
+    {
+      "case_id": "world_db_signal_expands_to_network_block",
+      "description": "消息像 DB 问题，但共享事故世界里 DB 正常、网络阻塞，要求从 DB 扩到 network。",
+      "request": {
+        "user_id": "world-db-network",
+        "message": "payment-service 查询很慢，看起来像数据库有问题",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "world_state": {
+          "service": "payment-service",
+          "root_cause": "network_block_to_dependency",
+          "timeline": {
+            "symptom_started_minutes_ago": 6,
+            "failure_window": "upstream-connectivity-loss"
+          },
+          "signals": {
+            "db": {
+              "db_health": "healthy",
+              "pool_state": "healthy",
+              "active_connections": 41,
+              "max_connections": 150,
+              "slow_query_count": 0,
+              "max_latency_ms": 160
+            },
+            "network": {
+              "route_status": "healthy",
+              "connectivity_status": "blocked",
+              "dependency_status": "degraded",
+              "timeout_ratio": 0.23,
+              "lb_status": "healthy"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_upstream_dependency",
+          "inspect_vpc_connectivity",
+          "inspect_ingress_route"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 3,
+        "expanded_domains": [
+          "network"
+        ],
+        "expansion_probe_required": true,
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6
+      }
+    },
+    {
+      "case_id": "world_quota_exhaustion_single_domain",
+      "description": "共享事故世界里的 quota 枯竭应直接被 SDE 工具命中，不需要跨域。",
+      "request": {
+        "user_id": "world-sde",
+        "message": "cluster bootstrap 创建失败，提示 quota 不足",
+        "service": "cluster-bootstrap",
+        "environment": "prod"
+      },
+      "setup": {
+        "world_state": {
+          "service": "cluster-bootstrap",
+          "root_cause": "quota_exhausted",
+          "timeline": {
+            "symptom_started_minutes_ago": 2
+          },
+          "signals": {
+            "sde": {
+              "quota_state": "exhausted",
+              "requested_cpu": 64,
+              "available_cpu": 0,
+              "bootstrap_status": "failed",
+              "suspected_blocker": "quota",
+              "failure_stage": "approval_or_quota"
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_tools": [
+          "get_quota_status"
+        ],
+        "first_any_tools": [
+          "get_quota_status"
+        ],
+        "first_any_tools_min_matches": 1,
+        "first_any_tools_window": 1,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 1,
+        "max_tool_calls_used": 2
+      }
+    }
+  ]
+}

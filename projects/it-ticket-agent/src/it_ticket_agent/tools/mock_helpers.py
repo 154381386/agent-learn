@@ -7,6 +7,7 @@ from typing import Any
 
 from ..runtime.contracts import TaskEnvelope
 from ..service_names import canonical_service_name, infer_service_name
+from ..testing.world_simulator import project_world_state_tool_result
 from .contracts import ToolExecutionResult
 
 
@@ -232,6 +233,36 @@ def resolve_inline_or_shared_mock(
     )
 
 
+def resolve_world_state_mock(
+    task: TaskEnvelope,
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    aliases: dict[str, str] | None = None,
+    target_key: str = "service",
+    default_target: str = "unknown-service",
+) -> ToolExecutionResult | None:
+    arguments = arguments or {}
+    inline = arguments.get("mock_world_state")
+    if isinstance(inline, dict):
+        world_state = inline
+    else:
+        shared = task.shared_context if isinstance(task.shared_context, dict) else {}
+        candidate = shared.get("mock_world_state")
+        world_state = candidate if isinstance(candidate, dict) else None
+    if not isinstance(world_state, dict) or not world_state:
+        return None
+    ctx = build_context(task, arguments, target_key=target_key, default_target=default_target)
+    target_name = canonical_name(ctx["service"], aliases) or default_target
+    return project_world_state_tool_result(
+        tool_name,
+        world_state,
+        service=target_name,
+        cluster=str(ctx.get("cluster") or ""),
+        namespace=str(ctx.get("namespace") or ""),
+    )
+
+
 def resolve_profile_mock(
     task: TaskEnvelope,
     tool_name: str,
@@ -246,6 +277,16 @@ def resolve_profile_mock(
     inline = resolve_inline_or_shared_mock(task, tool_name, arguments)
     if inline is not None:
         return inline
+    world_state_mock = resolve_world_state_mock(
+        task,
+        tool_name,
+        arguments,
+        aliases=aliases,
+        target_key=target_key,
+        default_target=default_target,
+    )
+    if world_state_mock is not None:
+        return world_state_mock
     case_mock = resolve_case_mock(
         task,
         tool_name,
