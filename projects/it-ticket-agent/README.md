@@ -21,7 +21,7 @@
 - 处理 HITL 审批与执行动作
 - 汇总最终回复
 
-## Skill Mock 场景控制
+## Tool Mock / 场景控制
 
 当前验证链路支持两种控制方式：
 
@@ -33,6 +33,14 @@
 - `mock_scenario`: 为当前服务设置全局场景，例如 `oom`、`health`、`normal`、`error`
 - `mock_scenarios`: 为不同服务分别指定场景
 - `mock_tool_responses`: 对某个具体 tool 直接覆盖返回值
+- `mock_world_state`: 用一份共享事故世界统一投影多域工具结果
+
+当前 mock 优先级为：
+
+1. `mock_response` / `mock_tool_responses`
+2. `mock_world_state`
+3. `mock_case`
+4. `mock_scenario` / profile
 
 示例：让 `checkout-service` 走 OOM 场景
 
@@ -97,6 +105,78 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 ```
 
 对应的 case 配置文件在 [mock_case_profiles.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/mock_case_profiles.json)，可以继续按你自己的场景扩展。
+
+## Agent Eval
+
+当前仓库已新增一套面向 `真实 LLM + mocked tool outputs` 的离线评估入口：
+
+- dataset: [tool_mock_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/tool_mock_cases.json)
+- world dataset: [world_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/world_cases.json)
+- runner: [run_agent_eval.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/scripts/run_agent_eval.py)
+
+当前 dataset 已覆盖 `13` 个 case，主要分成三类：
+
+- 单域收敛：`network / k8s / cicd / db / sde`
+- 跨域扩展：`network -> db`、`k8s -> cicd`、`db -> network`、`cicd -> k8s`
+- 强证据不扩域：验证已有足够异常证据时不会继续漂移到邻接域
+
+当前 world dataset 额外覆盖 `5` 个“共享事故世界” case：
+
+- 工具结果不再逐个手写
+- 同一个 case 下的 `network / db / k8s / cicd / sde` 结果由同一份 `world_state` 投影生成
+- 更适合验证“真因 + 噪声 + 时间线”下的搜索路径是否合理
+
+设计原则：
+
+- 保持 `LLM` 开启
+- 默认关闭 `RAG`，避免把评估噪声混进来
+- 只在工具边界注入 `mock_tool_responses`
+- 支持 `tool_profile -> mock_tool_responses` 展开，复用 [mock_case_profiles.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/mock_case_profiles.json)
+- 支持 `world_state` 驱动的共享事故仿真
+- 既看最终是否命中根因，也记录搜索过程指标
+
+运行示例：
+
+```bash
+cd projects/it-ticket-agent
+uv run python scripts/run_agent_eval.py
+```
+
+只跑单个 case：
+
+```bash
+uv run python scripts/run_agent_eval.py --case-id network_profile_prefers_network_tools
+```
+
+运行共享事故世界 dataset：
+
+```bash
+uv run python scripts/run_agent_eval.py --dataset ./data/evals/world_cases.json
+```
+
+把结果写成 JSON：
+
+```bash
+uv run python scripts/run_agent_eval.py --output ./data/eval-report.json
+```
+
+当前 report 会额外输出这些过程指标：
+
+- `stop_reason`
+- `expansion_probe_count`
+- `expanded_domains`
+- `rejected_tool_call_count`
+- 汇总级别的 `avg_tool_calls_used`、`stop_reason_counts`
+
+`world_state` case 的核心差异：
+
+- 静态 mock dataset:
+  每个 tool 的返回是直接写死的
+- world dataset:
+  每个 tool 的返回从同一个共享世界状态投影出来
+  更适合验证“主因在 DB，但网络有轻微噪声”这类真实事故结构
+
+当前这批 case 仍聚焦诊断质量，不包含审批恢复评估。原因是当前主链路里，真实 `LLM` 路径还没有稳定地产生 `approval proposal`；审批链路回归目前仍主要依赖 smoke / runtime tests。
 
 ## 兄弟项目
 

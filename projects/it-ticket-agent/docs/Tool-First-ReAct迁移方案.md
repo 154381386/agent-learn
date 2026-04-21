@@ -4,19 +4,27 @@
 
 本文档定义 `it-ticket-agent` 从“Skill 驱动的 Hypothesis Graph”向“Tool-First ReAct Supervisor”演进的目标架构、阶段拆分与设计边界。
 
-这不是当前线上架构说明，而是**下一阶段重构方案**。
+这不是当前架构说明，而是**历史迁移蓝图**。
+
+请先看：
+
+- 当前架构：`docs/最新架构.md`
+- 当前说明：`README.md`
+
+下面的很多表述描述的是“为什么当时要迁移”以及“原计划如何迁移”，不应再被当成当前默认实现。
 
 ## 当前落地进度
 
 截至当前代码状态：
 
-- Phase 1 已完成主体落地，新旧 graph 可切换，`react_tool_first` 已可运行
+- `react_tool_first` 已成为当前唯一默认主线
 - Phase 2 已完成最小版 `ToolExecutionMiddleware`、风险拦截与基础执行治理
 - Phase 3 已完成 Supervisor 护栏、observation ledger、摘要与上下文裁剪
 - Phase 4 已完成第一批 execution envelope、timeout / retry / error normalization 与 runtime 调试入口
-- Phase 5 尚未开始，旧 `skills/` 体系仍在仓库中
+- 评估侧已补齐静态 tool-mock dataset 与 shared-world dataset
+- 旧 `skills/` / `hypothesis_graph` 相关目录和文档仍可能留在仓库中，但不再是默认主链
 
-因此，这份文档仍然是迁移蓝图，但项目已经进入 **Phase 4 收尾、Phase 5 未启动** 的阶段。
+因此，这份文档应理解为“迁移过程记录 + 历史设计草案”，而不是当前系统结构总览。
 
 ## 目标
 
