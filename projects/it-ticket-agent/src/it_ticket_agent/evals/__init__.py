@@ -16,6 +16,20 @@ from .agent_eval import (
     score_agent_eval_case,
     serialize_report,
 )
+from .session_flow_eval import (
+    SessionFlowEvalCase,
+    SessionFlowEvalCaseResult,
+    SessionFlowEvalDataset,
+    SessionFlowEvalReport,
+    SessionFlowEvalRunner,
+    SessionFlowEvalStep,
+    SessionFlowStepExpectation,
+    SessionFlowStepObservation,
+    build_session_flow_report,
+    load_session_flow_eval_dataset,
+    score_session_flow_step,
+    serialize_session_flow_report,
+)
 
 __all__ = [
     "AgentEvalCase",
@@ -34,4 +48,16 @@ __all__ = [
     "resolve_tool_profile_mock_responses",
     "score_agent_eval_case",
     "serialize_report",
+    "SessionFlowEvalCase",
+    "SessionFlowEvalCaseResult",
+    "SessionFlowEvalDataset",
+    "SessionFlowEvalReport",
+    "SessionFlowEvalRunner",
+    "SessionFlowEvalStep",
+    "SessionFlowStepExpectation",
+    "SessionFlowStepObservation",
+    "build_session_flow_report",
+    "load_session_flow_eval_dataset",
+    "score_session_flow_step",
+    "serialize_session_flow_report",
 ]

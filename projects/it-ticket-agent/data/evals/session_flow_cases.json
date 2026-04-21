@@ -1,0 +1,359 @@
+{
+  "schema_version": 1,
+  "description": "Session-flow eval cases covering clarification, approval, feedback, and topic shift resume paths.",
+  "cases": [
+    {
+      "case_id": "clarification_resume_reaches_feedback",
+      "description": "Missing required slots should trigger clarification, then resume into diagnosis and feedback interrupt.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_missing_env",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-clarification",
+            "message": "订单服务超时怎么办",
+            "service": "order-service",
+            "cluster": "",
+            "namespace": "",
+            "environment": null
+          },
+          "expect": {
+            "response_status": "awaiting_clarification",
+            "session_status": "awaiting_clarification",
+            "session_stage": "awaiting_clarification",
+            "pending_interrupt_type": "clarification",
+            "new_system_event_types": [
+              "clarification.requested"
+            ]
+          }
+        },
+        {
+          "step_id": "resume_with_environment",
+          "action": "resume_conversation",
+          "request": {
+            "answer_payload": {
+              "environment": "prod"
+            }
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "feedback",
+            "route": "react_tool_first",
+            "stop_reason": "rule_based_no_llm",
+            "min_tool_calls_used": 2,
+            "case_exists": true,
+            "new_system_event_types": [
+              "conversation.resumed"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "approval_resume_executes_high_risk_action",
+      "description": "High-risk rule-based action should enter approval and execute after approval resume.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_high_risk_diagnosis",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-approval",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "session_stage": "awaiting_approval",
+            "pending_interrupt_type": "approval",
+            "new_system_event_types": [
+              "interrupt.created",
+              "approval.pending"
+            ]
+          }
+        },
+        {
+          "step_id": "approve_and_execute",
+          "action": "resume_conversation",
+          "request": {
+            "approved": true,
+            "approver_id": "ops-admin",
+            "comment": "同意执行回滚"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "feedback",
+            "message_contains": [
+              "回滚"
+            ],
+            "case_exists": true,
+            "new_approval_event_types": [
+              "approved",
+              "resumed"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "feedback_resume_updates_case",
+      "description": "Feedback resume should mark the incident case as human verified.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_low_risk_action",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-feedback",
+            "message": "checkout-service 需要一个低风险自动修复动作",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "feedback",
+            "message_contains": [
+              "审批已通过"
+            ],
+            "case_exists": true
+          }
+        },
+        {
+          "step_id": "confirm_feedback",
+          "action": "resume_conversation",
+          "request": {
+            "answer_payload": {
+              "human_verified": true,
+              "actual_root_cause_hypothesis": "H-OBSERVE",
+              "hypothesis_accuracy": {
+                "H-OBSERVE": 1.0
+              },
+              "comment": "判断正确"
+            }
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "case_exists": true,
+            "human_verified": true,
+            "actual_root_cause_contains": [
+              "H-OBSERVE"
+            ],
+            "new_system_event_types": [
+              "conversation.resumed",
+              "feedback.received"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "approval_rejected_reaches_terminal_state",
+      "description": "Rejecting a pending approval should end the session without any further interrupt.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_with_pending_approval",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-approval-reject",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "pending_interrupt_type": "approval"
+          }
+        },
+        {
+          "step_id": "reject_approval",
+          "action": "resume_conversation",
+          "request": {
+            "approved": false,
+            "approver_id": "ops-admin",
+            "comment": "风险过高，先人工处理"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "message_contains": [
+              "审批已拒绝"
+            ],
+            "case_exists": true,
+            "new_approval_event_types": [
+              "rejected",
+              "resumed"
+            ],
+            "new_system_event_types": [
+              "approval.rejected",
+              "conversation.closed"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "approval_expired_reaches_terminal_state",
+      "description": "Expiring a pending approval should close the session deterministically.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_with_pending_approval",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-approval-expire",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "pending_interrupt_type": "approval"
+          }
+        },
+        {
+          "step_id": "expire_approval",
+          "action": "expire_approval",
+          "request": {
+            "actor_id": "system-timeout",
+            "comment": "审批超时"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "message_contains": [
+              "审批已超时"
+            ],
+            "case_exists": true,
+            "new_approval_event_types": [
+              "expired",
+              "resumed"
+            ],
+            "new_system_event_types": [
+              "conversation.closed"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "approval_cancelled_reaches_terminal_state",
+      "description": "Cancelling a pending approval should close the session without execution.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_with_pending_approval",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-approval-cancel",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "pending_interrupt_type": "approval"
+          }
+        },
+        {
+          "step_id": "cancel_approval",
+          "action": "cancel_approval",
+          "request": {
+            "actor_id": "ops-admin",
+            "comment": "工单已转人工"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "message_contains": [
+              "审批已取消"
+            ],
+            "case_exists": true,
+            "new_approval_event_types": [
+              "cancelled",
+              "resumed"
+            ],
+            "new_system_event_types": [
+              "conversation.closed"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "topic_shift_supersedes_pending_approval",
+      "description": "A new message during pending approval should supersede the old interrupt and restart analysis.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_with_pending_approval",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-topic-shift",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "pending_interrupt_type": "approval"
+          }
+        },
+        {
+          "step_id": "post_topic_shift_message",
+          "action": "post_message",
+          "request": {
+            "message": "现在更像数据库连接池耗尽和慢查询，不做回滚了"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "feedback",
+            "required_any_tools": [
+              "inspect_connection_pool",
+              "inspect_slow_queries"
+            ],
+            "required_any_tools_min_matches": 1,
+            "case_exists": true,
+            "new_system_event_types": [
+              "approval.superseded",
+              "interrupt.superseded"
+            ],
+            "new_approval_event_types": [
+              "cancelled"
+            ],
+            "min_current_intent_history_length": 1
+          }
+        }
+      ]
+    }
+  ]
+}

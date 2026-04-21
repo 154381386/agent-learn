@@ -235,6 +235,39 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending["type"], "clarification")
         self.assertIn("environment", str(pending.get("expected_input_schema") or ""))
 
+    async def test_clarification_resume_switches_pending_interrupt_to_feedback(self) -> None:
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-clarify-resume",
+                message="订单服务超时怎么办",
+                service="order-service",
+                cluster="",
+                namespace="",
+                environment=None,
+            )
+        )
+
+        self.assertEqual(result["status"], "awaiting_clarification")
+        session_id = result["session"]["session_id"]
+        clarification_interrupt = result["pending_interrupt"]
+        self.assertIsNotNone(clarification_interrupt)
+
+        resumed = await self.orchestrator.resume_conversation(
+            session_id,
+            ConversationResumeRequest(
+                interrupt_id=clarification_interrupt["interrupt_id"],
+                answer_payload={"environment": "prod"},
+            ),
+        )
+
+        self.assertEqual(resumed["status"], "completed")
+        self.assertIsNotNone(resumed["pending_interrupt"])
+        self.assertEqual(resumed["pending_interrupt"]["type"], "feedback")
+        session = self.session_store.get(session_id)
+        self.assertIsNotNone(session)
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(session["pending_interrupt_id"], resumed["pending_interrupt"]["interrupt_id"])
+
     async def test_missing_host_identifier_triggers_clarification(self) -> None:
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
@@ -374,6 +407,42 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plans), 1)
         plan = plans[0]
         self.assertEqual(plan["status"], "completed")
+
+    async def test_high_risk_approval_resume_returns_feedback_interrupt(self) -> None:
+        created = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-high-risk-feedback",
+                message="checkout-service 发布失败，需要排查最近变更",
+                service="checkout-service",
+                environment="prod",
+            )
+        )
+
+        self.assertEqual(created["status"], "awaiting_approval")
+        session_id = created["session"]["session_id"]
+        approval_request = created["approval_request"]
+        approval_interrupt = created["pending_interrupt"]
+        self.assertIsNotNone(approval_request)
+        self.assertIsNotNone(approval_interrupt)
+
+        resumed = await self.orchestrator.resume_conversation(
+            session_id,
+            ConversationResumeRequest(
+                interrupt_id=approval_interrupt["interrupt_id"],
+                approval_id=approval_request["approval_id"],
+                approved=True,
+                approver_id="ops-admin",
+                comment="同意执行回滚",
+            ),
+        )
+
+        self.assertEqual(resumed["status"], "completed")
+        self.assertIsNotNone(resumed["pending_interrupt"])
+        self.assertEqual(resumed["pending_interrupt"]["type"], "feedback")
+        session = self.session_store.get(session_id)
+        self.assertIsNotNone(session)
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(session["pending_interrupt_id"], resumed["pending_interrupt"]["interrupt_id"])
 
     async def test_feedback_resume_updates_incident_case(self) -> None:
         result = await self.orchestrator.start_conversation(

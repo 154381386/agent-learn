@@ -13,9 +13,18 @@ from it_ticket_agent.evals import (
     AgentEvalRunner,
     ToolProfileRef,
     build_eval_report,
+    build_session_flow_report,
     extract_eval_observation,
+    load_session_flow_eval_dataset,
     resolve_tool_profile_mock_responses,
     score_agent_eval_case,
+    score_session_flow_step,
+    SessionFlowEvalCase,
+    SessionFlowEvalDataset,
+    SessionFlowEvalRunner,
+    SessionFlowEvalStep,
+    SessionFlowStepExpectation,
+    SessionFlowStepObservation,
 )
 from it_ticket_agent.runtime.contracts import TaskEnvelope
 from it_ticket_agent.runtime.react_supervisor import ReactSupervisor
@@ -173,6 +182,48 @@ class ObservationScoreTest(unittest.TestCase):
         self.assertEqual(report.stop_reason_counts["evidence_sufficient_early_stop"], 1)
         self.assertEqual(report.stop_reason_counts["model_answered"], 1)
         self.assertEqual(report.avg_tool_calls_used, 1.5)
+
+    def test_score_session_flow_step_checks_session_specific_fields(self) -> None:
+        observation = SessionFlowStepObservation(
+            action="resume_conversation",
+            response_status="completed",
+            session_status="completed",
+            session_stage="finalize",
+            current_agent="hypothesis_graph",
+            pending_interrupt_type="",
+            message="已记录人工反馈，本次诊断结果已补充到案例库。",
+            conclusion="已记录人工反馈，本次诊断结果已补充到案例库。",
+            route="react_tool_first",
+            intent="hypothesis_graph",
+            stop_reason="rule_based_no_llm",
+            approval_required=False,
+            primary_root_cause="当前更适合先执行低风险观测动作确认服务状态",
+            tool_names=["check_service_health", "check_recent_alerts"],
+            tool_calls_used=2,
+            evidence=["health_status=degraded"],
+            case_exists=True,
+            human_verified=True,
+            actual_root_cause_hypothesis="H-OBSERVE",
+            current_intent_history_length=1,
+            new_system_event_types=["conversation.resumed", "feedback.received"],
+            new_approval_event_types=[],
+        )
+
+        score = score_session_flow_step(
+            SessionFlowStepExpectation(
+                response_status="completed",
+                session_status="completed",
+                route="react_tool_first",
+                human_verified=True,
+                actual_root_cause_contains=["H-OBSERVE"],
+                new_system_event_types=["feedback.received"],
+                min_current_intent_history_length=1,
+            ),
+            observation,
+        )
+
+        self.assertTrue(score.passed)
+        self.assertEqual(score.passed_checks, score.total_checks)
 
 
 class FakeToolCallingLLM:
@@ -384,6 +435,187 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report.results[0].observation is not None)
         self.assertEqual(report.results[0].observation.tool_names[:2], ["inspect_connection_pool", "inspect_slow_queries"])
 
+    async def test_session_flow_runner_supports_feedback_resume_with_disabled_llm(self) -> None:
+        dataset = SessionFlowEvalDataset(
+            cases=[
+                SessionFlowEvalCase(
+                    case_id="feedback_flow",
+                    description="feedback flow eval",
+                    setup={"llm_mode": "disabled"},
+                    steps=[
+                        SessionFlowEvalStep(
+                            step_id="start",
+                            action="start_conversation",
+                            request={
+                                "user_id": "eval-feedback",
+                                "message": "checkout-service 需要一个低风险自动修复动作",
+                                "service": "checkout-service",
+                                "environment": "prod",
+                            },
+                            expect={
+                                "response_status": "completed",
+                                "pending_interrupt_type": "feedback",
+                                "case_exists": True,
+                            },
+                        ),
+                        SessionFlowEvalStep(
+                            step_id="feedback",
+                            action="resume_conversation",
+                            request={
+                                "answer_payload": {
+                                    "human_verified": True,
+                                    "actual_root_cause_hypothesis": "H-OBSERVE",
+                                    "hypothesis_accuracy": {"H-OBSERVE": 1.0},
+                                }
+                            },
+                            expect={
+                                "response_status": "completed",
+                                "human_verified": True,
+                                "actual_root_cause_contains": ["H-OBSERVE"],
+                                "new_system_event_types": ["feedback.received"],
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        runner = SessionFlowEvalRunner(
+            Settings(
+                llm_base_url="",
+                llm_api_key="",
+                llm_model="",
+                rag_enabled=False,
+            ),
+            profiles_path=MOCK_PROFILES_PATH,
+            require_llm_enabled=True,
+        )
+
+        report = await runner.run_dataset(dataset)
+
+        self.assertEqual(report.total_cases, 1)
+        self.assertEqual(report.passed_cases, 1)
+        self.assertEqual(report.failed_cases, 0)
+        self.assertEqual(report.errored_cases, 0)
+        self.assertEqual(report.total_steps, 2)
+        self.assertEqual(report.passed_steps, 2)
+
+    async def test_session_flow_runner_supports_topic_shift_supersede(self) -> None:
+        dataset = SessionFlowEvalDataset(
+            cases=[
+                SessionFlowEvalCase(
+                    case_id="topic_shift_flow",
+                    description="approval superseded by topic shift",
+                    setup={"llm_mode": "disabled"},
+                    steps=[
+                        SessionFlowEvalStep(
+                            step_id="start",
+                            action="start_conversation",
+                            request={
+                                "user_id": "eval-topic-shift",
+                                "message": "checkout-service 发布失败，需要排查最近变更",
+                                "service": "checkout-service",
+                                "environment": "prod",
+                            },
+                            expect={
+                                "response_status": "awaiting_approval",
+                                "pending_interrupt_type": "approval",
+                            },
+                        ),
+                        SessionFlowEvalStep(
+                            step_id="shift",
+                            action="post_message",
+                            request={
+                                "message": "现在更像数据库连接池耗尽和慢查询，不做回滚了",
+                            },
+                            expect={
+                                "response_status": "completed",
+                                "pending_interrupt_type": "feedback",
+                                "new_system_event_types": ["approval.superseded", "interrupt.superseded"],
+                                "new_approval_event_types": ["cancelled"],
+                                "min_current_intent_history_length": 1,
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        runner = SessionFlowEvalRunner(
+            Settings(
+                llm_base_url="",
+                llm_api_key="",
+                llm_model="",
+                rag_enabled=False,
+            ),
+            profiles_path=MOCK_PROFILES_PATH,
+            require_llm_enabled=True,
+        )
+
+        report = await runner.run_dataset(dataset)
+
+        self.assertEqual(report.total_cases, 1)
+        self.assertEqual(report.passed_cases, 1)
+        self.assertEqual(report.failed_cases, 0)
+        self.assertEqual(report.errored_cases, 0)
+
+    async def test_session_flow_runner_supports_approval_expire(self) -> None:
+        dataset = SessionFlowEvalDataset(
+            cases=[
+                SessionFlowEvalCase(
+                    case_id="approval_expire_flow",
+                    description="pending approval expires into terminal state",
+                    setup={"llm_mode": "disabled"},
+                    steps=[
+                        SessionFlowEvalStep(
+                            step_id="start",
+                            action="start_conversation",
+                            request={
+                                "user_id": "eval-approval-expire",
+                                "message": "checkout-service 发布失败，需要排查最近变更",
+                                "service": "checkout-service",
+                                "environment": "prod",
+                            },
+                            expect={
+                                "response_status": "awaiting_approval",
+                                "pending_interrupt_type": "approval",
+                            },
+                        ),
+                        SessionFlowEvalStep(
+                            step_id="expire",
+                            action="expire_approval",
+                            request={
+                                "actor_id": "system-timeout",
+                                "comment": "审批超时",
+                            },
+                            expect={
+                                "response_status": "completed",
+                                "session_status": "completed",
+                                "pending_interrupt_type": "",
+                                "message_contains": ["审批已超时"],
+                                "new_approval_event_types": ["expired", "resumed"],
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        runner = SessionFlowEvalRunner(
+            Settings(
+                llm_base_url="",
+                llm_api_key="",
+                llm_model="",
+                rag_enabled=False,
+            ),
+            profiles_path=MOCK_PROFILES_PATH,
+            require_llm_enabled=True,
+        )
+
+        report = await runner.run_dataset(dataset)
+
+        self.assertEqual(report.total_cases, 1)
+        self.assertEqual(report.passed_cases, 1)
+        self.assertEqual(report.failed_cases, 0)
+        self.assertEqual(report.errored_cases, 0)
+
     async def test_inline_mock_response_overrides_world_state(self) -> None:
         tool = InspectConnectionPoolTool()
         result = await tool.run(
@@ -422,6 +654,16 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.summary, "forced override")
         self.assertEqual(result.payload["pool_state"], "healthy")
         self.assertEqual(result.evidence, ["forced override evidence"])
+
+
+class SessionFlowDatasetLoadTest(unittest.TestCase):
+    def test_load_session_flow_dataset_from_file(self) -> None:
+        dataset = load_session_flow_eval_dataset(PROJECT_ROOT / "data" / "evals" / "session_flow_cases.json")
+
+        self.assertGreaterEqual(dataset.schema_version, 1)
+        self.assertEqual(len(dataset.cases), 7)
+        self.assertEqual(dataset.cases[0].steps[0].action, "start_conversation")
+        self.assertEqual(dataset.cases[0].setup.llm_mode, "disabled")
 
 
 class CandidateExpansionTest(unittest.TestCase):

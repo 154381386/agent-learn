@@ -590,3 +590,105 @@ cd projects/it-ticket-agent
   - 下一阶段设计
   - 历史归档
 - 如果后面真正落地 subagent，不要直接拿设计稿替代当前架构页，而是单独补一版“已实现架构”
+
+## 2026-04-21 20:17 Session Flow Eval 收尾与中断状态修正
+
+### 变更
+- 修复 [tests/test_agent_eval.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/tests/test_agent_eval.py) 里异步测试方法归到同步 `TestCase` 的结构问题，消除 `coroutine was never awaited` warning
+- 在 [orchestrator.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/src/it_ticket_agent/runtime/orchestrator.py) 增加统一的 pending interrupt 解析逻辑：
+  - `awaiting_approval` 只挂 `approval`
+  - `awaiting_clarification` 只挂 `clarification`
+  - `completed / failed` 只挂 `feedback`
+- 修复 clarification resume 后旧 `clarification_interrupt` 继续残留在 session 的问题
+- 修复 approval resume 执行完成后 `feedback_interrupt` 没有回挂到 session / response 的问题
+- 调整 [react_nodes.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/src/it_ticket_agent/graph/react_nodes.py)，只在 `response.status=completed` 时创建 `feedback interrupt`，避免 `awaiting_approval` 阶段提前发出 `feedback.requested`
+- 新增两条 runtime smoke 回归：
+  - clarification resume 之后应切到 `feedback`
+  - high-risk approval resume 之后应切到 `feedback`
+- 更新 [README.md](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/README.md) 与 [最新架构.md](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/docs/最新架构.md)，把 `session_flow_cases.json` 纳入正式评估体系
+
+### 验证
+- 命令：
+
+```bash
+cd projects/it-ticket-agent
+uv run python -m unittest tests.test_agent_eval -q
+uv run python -m unittest discover -s tests -q
+uv run python scripts/run_agent_eval.py \
+  --dataset ./data/evals/session_flow_cases.json \
+  --allow-llm-disabled \
+  --output ./data/session-flow-eval-report.json
+```
+
+- 结果：
+  - `tests.test_agent_eval`：`Ran 13 tests ... OK`
+  - 全量单测：`Ran 66 tests ... OK (skipped=1)`
+  - `session_flow_cases.json`：`4/4 PASS`
+  - step 级通过率：`8/8`
+
+### 分析
+- 这轮最有价值的不是“又补了一个 dataset”，而是 session-flow eval 真正开始约束多轮状态一致性
+- 单轮 eval 只能看到最终 message 和 tools；多轮 eval 会直接暴露 session / interrupt / event 三套状态有没有对齐
+- 这次两处失败本质上都是“图内状态有了，但 orchestrator 挂载到会话外壳时选错了 active interrupt”：
+  - clarification resume 后，旧 interrupt 没清掉，导致 completed 会话还指向已 answered 的 clarification
+  - approval execute 后，新的 feedback interrupt 已经生成，但 session 没接过去
+- 这说明后续多轮能力要继续优先做状态机回归，而不是只看最终答案是否合理
+
+### 下一步
+- 继续扩 `session_flow_cases.json`，优先补：
+  - `approval rejected`
+  - `approval expired / cancelled`
+  - `execution failed -> recovery`
+- 如果后面要做 agent 评估看板，应该把 `session_flow` 报告和单轮 `agent_eval` 报告并列，而不是混成一种分数
+
+## 2026-04-21 21:09 Session Flow 补齐审批终态路径
+
+### 变更
+- 扩展 [session_flow_eval.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/src/it_ticket_agent/evals/session_flow_eval.py)：
+  - 新增 step action：`expire_approval`
+  - 新增 step action：`cancel_approval`
+  - runner 现在可以从当前 session 自动解析 `latest_approval_id` 并驱动终态审批动作
+- 扩充 [session_flow_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/session_flow_cases.json)：
+  - `approval_rejected_reaches_terminal_state`
+  - `approval_expired_reaches_terminal_state`
+  - `approval_cancelled_reaches_terminal_state`
+- 补充 [test_agent_eval.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/tests/test_agent_eval.py)：
+  - 新增 `approval_expire` 集成测试
+  - dataset load 断言从 `4` 个 case 更新到 `7` 个 case
+- 更新 [README.md](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/README.md) 与 [最新架构.md](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/docs/最新架构.md) 的 `session_flow` 覆盖范围说明
+
+### 验证
+- 命令：
+
+```bash
+cd projects/it-ticket-agent
+uv run python -m unittest tests.test_agent_eval -q
+uv run python -m unittest discover -s tests -q
+LANGFUSE_PUBLIC_KEY='' LANGFUSE_SECRET_KEY='' \
+  uv run python scripts/run_agent_eval.py \
+    --dataset ./data/evals/session_flow_cases.json \
+    --allow-llm-disabled \
+    --output ./data/session-flow-eval-report.json
+```
+
+- 结果：
+  - `tests.test_agent_eval`：`Ran 14 tests ... OK`
+  - 全量单测：`Ran 67 tests ... OK (skipped=1)`
+  - `session_flow_cases.json`：`7/7 PASS`
+  - step 级通过率：`14/14`
+
+### 分析
+- 这轮的价值在于把审批链路从“只覆盖 approve happy path”推进到“覆盖 approve / reject / expire / cancel 四种终态”
+- 对多轮系统来说，这类路径比普通 tool route 更关键，因为它们会同时影响：
+  - `session.status`
+  - `pending_interrupt_id`
+  - `approval event`
+  - `system event`
+  - `incident case` 是否落库
+- 当前 `session_flow` 已经能稳定约束大部分中断生命周期；剩下最值得补的是“执行失败后的恢复链路”，因为那部分不只是终态判断，还涉及 checkpoint / execution plan / recovery hint 的一致性
+
+### 下一步
+- 优先给 `session_flow` 增加 `execution failed -> get_execution_recovery` 这条链路
+- 如果要继续扩，再补：
+  - `approval expired` 后用户再次发消息
+  - `approval cancelled` 后 topic shift 重启分析

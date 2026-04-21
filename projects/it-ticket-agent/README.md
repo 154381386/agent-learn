@@ -112,9 +112,10 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 
 - dataset: [tool_mock_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/tool_mock_cases.json)
 - world dataset: [world_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/world_cases.json)
+- session-flow dataset: [session_flow_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/session_flow_cases.json)
 - runner: [run_agent_eval.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/scripts/run_agent_eval.py)
 
-当前 dataset 已覆盖 `13` 个 case，主要分成三类：
+当前静态 tool dataset 已覆盖 `13` 个 case，主要分成三类：
 
 - 单域收敛：`network / k8s / cicd / db / sde`
 - 跨域扩展：`network -> db`、`k8s -> cicd`、`db -> network`、`cicd -> k8s`
@@ -126,6 +127,16 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 - 同一个 case 下的 `network / db / k8s / cicd / sde` 结果由同一份 `world_state` 投影生成
 - 更适合验证“真因 + 噪声 + 时间线”下的搜索路径是否合理
 
+当前 session-flow dataset 覆盖 `7` 个多轮会话 case：
+
+- `clarification -> resume -> feedback`
+- `approval -> execute -> feedback`
+- `approval -> reject -> terminal`
+- `approval -> expire -> terminal`
+- `approval -> cancel -> terminal`
+- `feedback resume -> incident case update`
+- `topic shift -> supersede approval -> restart analysis`
+
 设计原则：
 
 - 保持 `LLM` 开启
@@ -133,6 +144,7 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 - 只在工具边界注入 `mock_tool_responses`
 - 支持 `tool_profile -> mock_tool_responses` 展开，复用 [mock_case_profiles.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/mock_case_profiles.json)
 - 支持 `world_state` 驱动的共享事故仿真
+- 支持按 case 配置 `llm_mode`；当前 session-flow 回归默认用 `disabled` 跑确定性状态机链路
 - 既看最终是否命中根因，也记录搜索过程指标
 
 运行示例：
@@ -152,6 +164,15 @@ uv run python scripts/run_agent_eval.py --case-id network_profile_prefers_networ
 
 ```bash
 uv run python scripts/run_agent_eval.py --dataset ./data/evals/world_cases.json
+```
+
+运行多轮 session-flow dataset：
+
+```bash
+uv run python scripts/run_agent_eval.py \
+  --dataset ./data/evals/session_flow_cases.json \
+  --allow-llm-disabled \
+  --output ./data/session-flow-eval-report.json
 ```
 
 把结果写成 JSON：
@@ -176,7 +197,10 @@ uv run python scripts/run_agent_eval.py --output ./data/eval-report.json
   每个 tool 的返回从同一个共享世界状态投影出来
   更适合验证“主因在 DB，但网络有轻微噪声”这类真实事故结构
 
-当前这批 case 仍聚焦诊断质量，不包含审批恢复评估。原因是当前主链路里，真实 `LLM` 路径还没有稳定地产生 `approval proposal`；审批链路回归目前仍主要依赖 smoke / runtime tests。
+`run_agent_eval.py` 会自动识别 dataset 类型：
+
+- 普通 agent eval：看单轮诊断结果和搜索过程
+- session-flow eval：看 step 级别的 `response_status / session_status / pending_interrupt / system_event / approval_event`
 
 ## 兄弟项目
 

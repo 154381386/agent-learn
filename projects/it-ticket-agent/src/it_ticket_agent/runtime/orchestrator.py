@@ -378,6 +378,34 @@ class SupervisorOrchestrator:
             return None
         return self.interrupt_store.get(str(pending_interrupt_id))
 
+    @staticmethod
+    def _is_active_interrupt(interrupt: dict[str, Any] | None) -> bool:
+        if not isinstance(interrupt, dict):
+            return False
+        interrupt_id = str(interrupt.get("interrupt_id") or "").strip()
+        status = str(interrupt.get("status") or "").strip().lower()
+        if not interrupt_id:
+            return False
+        return status not in {"answered", "cancelled", "expired", "rejected", "resolved", "closed"}
+
+    @classmethod
+    def _resolve_pending_interrupt(
+        cls,
+        *,
+        final_status: str,
+        approval_request: dict[str, Any] | None,
+        clarification_interrupt: dict[str, Any] | None,
+        feedback_interrupt: dict[str, Any] | None,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        if final_status == "awaiting_approval":
+            approval_id = str((approval_request or {}).get("interrupt_id") or "").strip()
+            return (approval_id or None), None
+        if final_status == "awaiting_clarification" and cls._is_active_interrupt(clarification_interrupt):
+            return str(clarification_interrupt.get("interrupt_id") or ""), clarification_interrupt
+        if final_status in {"completed", "failed"} and cls._is_active_interrupt(feedback_interrupt):
+            return str(feedback_interrupt.get("interrupt_id") or ""), feedback_interrupt
+        return None, None
+
     def _normalize_resume_answer(self, request: ConversationResumeRequest) -> dict[str, Any]:
         if request.answer_payload:
             return dict(request.answer_payload)
@@ -446,6 +474,7 @@ class SupervisorOrchestrator:
             "raw_answer": answer_payload,
             "normalized_answers": normalized_answers,
         }
+        metadata.pop("clarification_interrupt", None)
         metadata["clarification_answers"] = clarification_answers
         restored_state["metadata"] = metadata
         answered_summary = ", ".join(f"{key}={value}" for key, value in normalized_answers.items() if value not in (None, ""))
@@ -1241,18 +1270,14 @@ class SupervisorOrchestrator:
         else:
             final_status = "completed"
             final_stage = "finalize"
-        pending_interrupt_id = None
-        pending_interrupt_payload = None
-        if isinstance(approval_request, dict):
-            pending_interrupt_id = approval_request.get("interrupt_id")
         clarification_interrupt = final_incident_state.metadata.get("clarification_interrupt") if hasattr(final_incident_state, "metadata") else None
         feedback_interrupt = final_incident_state.metadata.get("feedback_interrupt") if hasattr(final_incident_state, "metadata") else None
-        if pending_interrupt_id is None and isinstance(clarification_interrupt, dict):
-            pending_interrupt_id = clarification_interrupt.get("interrupt_id")
-            pending_interrupt_payload = clarification_interrupt
-        if pending_interrupt_id is None and isinstance(feedback_interrupt, dict):
-            pending_interrupt_id = feedback_interrupt.get("interrupt_id")
-            pending_interrupt_payload = feedback_interrupt
+        pending_interrupt_id, pending_interrupt_payload = self._resolve_pending_interrupt(
+            final_status=final_status,
+            approval_request=approval_request if isinstance(approval_request, dict) else None,
+            clarification_interrupt=clarification_interrupt if isinstance(clarification_interrupt, dict) else None,
+            feedback_interrupt=feedback_interrupt if isinstance(feedback_interrupt, dict) else None,
+        )
         session = self.session_service.update_session_state(
             session_id,
             incident_state=final_incident_state.model_dump(),
@@ -2127,6 +2152,20 @@ class SupervisorOrchestrator:
         response_status = str(response.get("status") or "completed")
         session_status = "failed" if response_status == "failed" else "completed"
         checkpoint_next_action = "retry_execution_step" if response_status == "failed" else "complete"
+        next_state_metadata = dict(next_incident_state.get("metadata") or {})
+        _, pending_interrupt_payload = self._resolve_pending_interrupt(
+            final_status=session_status,
+            approval_request=None,
+            clarification_interrupt=None,
+            feedback_interrupt=next_state_metadata.get("feedback_interrupt")
+            if isinstance(next_state_metadata.get("feedback_interrupt"), dict)
+            else None,
+        )
+        pending_interrupt_id = (
+            str(pending_interrupt_payload.get("interrupt_id") or "")
+            if isinstance(pending_interrupt_payload, dict)
+            else None
+        )
 
         updated_session = self.session_service.update_session_state(
             session_id,
@@ -2135,12 +2174,21 @@ class SupervisorOrchestrator:
             current_stage="finalize",
             current_agent=self._resolve_current_agent(session, incident_state=next_incident_state),
             latest_approval_id=approval_id,
-            pending_interrupt_id=None,
+            pending_interrupt_id=pending_interrupt_id,
             session_memory=self._merge_session_memory(
                 session,
                 current_stage="finalize",
                 pending_approval={},
-                pending_interrupt=None,
+                pending_interrupt=(
+                    {
+                        "interrupt_id": pending_interrupt_id,
+                        "type": "feedback",
+                        "reason": pending_interrupt_payload.get("reason"),
+                        "question": pending_interrupt_payload.get("question"),
+                    }
+                    if pending_interrupt_id and isinstance(pending_interrupt_payload, dict)
+                    else None
+                ),
             ),
         )
         if updated_session is None:
@@ -2168,7 +2216,7 @@ class SupervisorOrchestrator:
             current_stage="finalize",
             current_agent=self._resolve_current_agent(updated_session, incident_state=next_incident_state),
             latest_approval_id=approval_id,
-            pending_interrupt_id=None,
+            pending_interrupt_id=pending_interrupt_id,
             last_checkpoint_id=checkpoint["checkpoint_id"],
         )
         if updated_session is None:
@@ -2268,5 +2316,10 @@ class SupervisorOrchestrator:
         return {
             **response,
             "session": updated_session,
+            "pending_interrupt": (
+                self.interrupt_store.get(str(pending_interrupt_id))
+                if pending_interrupt_id
+                else None
+            ),
             "assistant_turn": assistant_turn,
         }

@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,18 @@ class AgentEvalSetup(BaseModel):
     tool_profile: ToolProfileRef | None = None
     mock_tool_responses: dict[str, dict[str, Any]] = Field(default_factory=dict)
     world_state: dict[str, Any] = Field(default_factory=dict)
+    llm_mode: Literal["live", "disabled"] = "live"
+
+
+class DisabledEvalLLM:
+    enabled = False
+
+    async def chat(self, messages, tools=None):  # pragma: no cover - defensive only
+        raise RuntimeError("disabled eval llm does not support chat")
+
+    @staticmethod
+    def extract_json(content: str):
+        return {}
 
 
 class AgentEvalExpectation(BaseModel):
@@ -501,7 +513,9 @@ class AgentEvalRunner:
                 orchestrator = self._build_orchestrator(db_path)
                 if self.configure_orchestrator is not None:
                     self.configure_orchestrator(orchestrator)
-                if self.require_llm_enabled and not orchestrator.react_supervisor.llm.enabled:
+                if case.setup.llm_mode == "disabled":
+                    orchestrator.react_supervisor.llm = DisabledEvalLLM()
+                if self.require_llm_enabled and case.setup.llm_mode != "disabled" and not orchestrator.react_supervisor.llm.enabled:
                     raise RuntimeError("LLM is not enabled by current settings")
                 request = self._build_request(case)
                 result = await orchestrator.start_conversation(request)

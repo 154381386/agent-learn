@@ -117,7 +117,13 @@ class ReactGraphNodes:
         if state.get("response") is not None:
             incident_state = state.get("incident_state")
             request = state.get("request")
-            if incident_state is not None and request is not None and getattr(incident_state, "ranked_result", None) is not None:
+            response = dict(state.get("response") or {})
+            if (
+                incident_state is not None
+                and request is not None
+                and getattr(incident_state, "ranked_result", None) is not None
+                and str(response.get("status") or "") == "completed"
+            ):
                 feedback_interrupt = self.legacy_nodes._create_feedback_interrupt(
                     incident_state=incident_state,
                     session_id=str(state.get("session_id") or state.get("thread_id") or incident_state.ticket_id),
@@ -127,7 +133,7 @@ class ReactGraphNodes:
                 if feedback_interrupt is not None:
                     incident_state.metadata["feedback_interrupt"] = feedback_interrupt
             return {
-                "response": state.get("response"),
+                "response": response,
                 "incident_state": incident_state,
                 "approval_request": state.get("approval_request"),
                 "pending_node": None,
