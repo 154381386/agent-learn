@@ -10,7 +10,9 @@ from it_ticket_agent.settings import Settings
 
 
 def build_store(settings: Settings) -> IncidentCaseStore:
-    if settings.storage_backend == "postgres" and settings.postgres_dsn:
+    if settings.storage_backend == "postgres":
+        if not settings.postgres_dsn:
+            raise ValueError("POSTGRES_DSN is required when STORAGE_BACKEND=postgres")
         return IncidentCaseStore(
             settings.approval_db_path,
             backend=PostgresProcessMemoryStoreV2(settings.postgres_dsn),

@@ -318,7 +318,14 @@ class CaseVectorIndexerTest(unittest.TestCase):
         )
 
         async def run_index() -> None:
-            await indexer.index_case({"case_id": "case-sync-failure", "service": "order-service"})
+            await indexer.index_case(
+                {
+                    "case_id": "case-sync-failure",
+                    "service": "order-service",
+                    "case_status": "verified",
+                    "human_verified": True,
+                }
+            )
 
         import asyncio
 
@@ -326,6 +333,79 @@ class CaseVectorIndexerTest(unittest.TestCase):
         self.assertEqual(indexer.last_sync_metadata["status"], "error")
         self.assertEqual(indexer.last_sync_metadata["reason"], "case_memory_sync_failed")
         self.assertEqual(indexer.last_sync_metadata["error_type"], "ConnectionError")
+
+    def test_index_case_skips_unverified_cases_without_syncing(self) -> None:
+        from it_ticket_agent.case_vector_indexer import CaseVectorIndexer
+
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def case_memory_sync(self, *, cases):
+                self.calls += 1
+                return {"indexed_cases": len(cases)}
+
+        client = RecordingClient()
+        indexer = CaseVectorIndexer(
+            Settings(rag_enabled=True),
+            SimpleNamespace(list_cases=lambda **kwargs: []),
+            client,
+        )
+
+        async def run_index() -> None:
+            await indexer.index_case(
+                {
+                    "case_id": "case-pending-review",
+                    "service": "order-service",
+                    "case_status": "pending_review",
+                    "human_verified": False,
+                }
+            )
+
+        import asyncio
+
+        asyncio.run(run_index())
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(indexer.last_sync_metadata["status"], "skipped")
+        self.assertEqual(indexer.last_sync_metadata["reason"], "case_not_verified")
+
+    def test_sync_all_cases_only_indexes_verified_cases(self) -> None:
+        from it_ticket_agent.case_vector_indexer import CaseVectorIndexer
+
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.cases = []
+
+            async def case_memory_sync(self, *, cases):
+                self.cases = list(cases)
+                return {"indexed_cases": len(cases)}
+
+        class RecordingStore:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def list_cases(self, **kwargs):
+                self.kwargs = dict(kwargs)
+                return [
+                    {
+                        "case_id": "case-verified",
+                        "case_status": "verified",
+                        "human_verified": True,
+                        "service": "order-service",
+                    }
+                ]
+
+        client = RecordingClient()
+        store = RecordingStore()
+        indexer = CaseVectorIndexer(Settings(rag_enabled=True), store, client)
+
+        import asyncio
+
+        indexed = asyncio.run(indexer.sync_all_cases(limit=10))
+        self.assertEqual(indexed, 1)
+        self.assertEqual(store.kwargs["case_status"], "verified")
+        self.assertTrue(store.kwargs["human_verified"])
+        self.assertEqual(client.cases[0]["case_id"], "case-verified")
 
     def test_sync_item_contains_stable_checksum_and_source_version(self) -> None:
         from it_ticket_agent.case_vector_indexer import CaseVectorIndexer
@@ -343,11 +423,16 @@ class CaseVectorIndexerTest(unittest.TestCase):
                 "key_evidence": ["OOMKilled"],
                 "final_action": "restart_pods",
                 "final_conclusion": "recovered after restart",
+                "case_status": "verified",
                 "human_verified": True,
+                "reviewed_by": "oncall",
+                "reviewed_at": "2026-04-11T12:10:00Z",
                 "updated_at": "2026-04-11T12:00:00Z",
             }
         )
 
+        self.assertEqual(payload["case_status"], "verified")
+        self.assertEqual(payload["reviewed_by"], "oncall")
         self.assertEqual(payload["source_version"], "2026-04-11T12:00:00Z")
         self.assertEqual(len(payload["content_checksum"]), 64)
         self.assertTrue(all(ch in "0123456789abcdef" for ch in payload["content_checksum"]))

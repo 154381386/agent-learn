@@ -292,6 +292,8 @@ async def list_cases(
     final_action: str | None = None,
     approval_required: bool | None = None,
     verification_passed: bool | None = None,
+    case_status: str | None = None,
+    human_verified: bool | None = None,
     keyword: str | None = None,
     limit: int = 20,
 ):
@@ -301,6 +303,8 @@ async def list_cases(
         final_action=final_action,
         approval_required=approval_required,
         verification_passed=verification_passed,
+        case_status=case_status,
+        human_verified=human_verified,
         keyword=keyword,
         limit=limit,
     )

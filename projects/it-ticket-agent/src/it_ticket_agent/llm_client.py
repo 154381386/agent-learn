@@ -36,11 +36,16 @@ class OpenAICompatToolLLM:
             model=self.settings.llm_model,
             model_parameters={"temperature": self.settings.llm_temperature},
         ) as generation:
-            primary = await self._chat_via_chat_completions(messages, tools=tools)
-            normalized = self._normalize_chat_message(primary)
-            if self._should_fallback_to_responses(normalized, tools):
-                fallback = await self._chat_via_responses(messages, tools=tools)
-                normalized = self._normalize_responses_message(fallback)
+            wire_api = str(getattr(self.settings, "llm_wire_api", "chat") or "chat").lower()
+            if wire_api == "responses":
+                primary = await self._chat_via_responses(messages, tools=tools)
+                normalized = self._normalize_responses_message(primary)
+            else:
+                primary = await self._chat_via_chat_completions(messages, tools=tools)
+                normalized = self._normalize_chat_message(primary)
+                if self._should_fallback_to_responses(normalized, tools):
+                    fallback = await self._chat_via_responses(messages, tools=tools)
+                    normalized = self._normalize_responses_message(fallback)
             generation.update(output=normalized)
             return normalized
 

@@ -3,10 +3,36 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from .models import IncidentCase, ProcessMemoryEntry, ProcessMemorySummary
+from .models import AgentEvent, AgentEventSummary, IncidentCase, ProcessMemoryEntry, ProcessMemorySummary
 from .upsert_merge import merge_incident_case_feedback
 from ..session.models import utc_now
 from ..storage.postgres import postgres_connection
+
+
+_CASE_COLUMNS = """
+    case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
+    case_status, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+    symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
+    human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
+    selected_ranker_features_json, final_conclusion, reviewed_by, reviewed_at, review_note,
+    created_at, updated_at, closed_at
+"""
+
+
+def _loads_json(value: Any, default: Any) -> Any:
+    if value is None or value == "":
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)
+
+
+def _normalized_case_status(case: IncidentCase) -> str:
+    if case.human_verified:
+        return "verified"
+    if case.case_status == "verified":
+        return "pending_review"
+    return case.case_status
 
 
 class PostgresProcessMemoryStoreV2:
@@ -18,8 +44,8 @@ class PostgresProcessMemoryStoreV2:
         with postgres_connection(self.dsn) as conn:
             conn.execute(
                 """
-                create table if not exists process_memory_entry (
-                    memory_id text primary key,
+                create table if not exists agent_event (
+                    event_id text primary key,
                     session_id text not null,
                     thread_id text not null,
                     ticket_id text not null,
@@ -33,6 +59,20 @@ class PostgresProcessMemoryStoreV2:
                 )
                 """
             )
+            legacy_table = conn.execute("select to_regclass('public.process_memory_entry') as table_name").fetchone()
+            if legacy_table and legacy_table.get("table_name"):
+                conn.execute(
+                    """
+                    insert into agent_event (
+                        event_id, session_id, thread_id, ticket_id, event_type, stage, source, summary,
+                        payload_json, refs_json, created_at
+                    )
+                    select memory_id, session_id, thread_id, ticket_id, event_type, stage, source, summary,
+                           payload_json, refs_json, created_at
+                    from process_memory_entry
+                    on conflict (event_id) do nothing
+                    """
+                )
             conn.execute(
                 """
                 create table if not exists incident_case (
@@ -44,6 +84,7 @@ class PostgresProcessMemoryStoreV2:
                     cluster text not null,
                     namespace text not null,
                     current_agent text not null,
+                    case_status text not null default 'pending_review',
                     failure_mode text not null default '',
                     root_cause_taxonomy text not null default '',
                     signal_pattern text not null default '',
@@ -60,6 +101,9 @@ class PostgresProcessMemoryStoreV2:
                     selected_hypothesis_id text not null default '',
                     selected_ranker_features_json jsonb not null default '{}'::jsonb,
                     final_conclusion text not null,
+                    reviewed_by text not null default '',
+                    reviewed_at timestamptz,
+                    review_note text not null default '',
                     created_at timestamptz not null,
                     updated_at timestamptz not null,
                     closed_at timestamptz
@@ -80,8 +124,14 @@ class PostgresProcessMemoryStoreV2:
             )
             conn.execute(
                 """
-                create index if not exists idx_process_memory_entry_session_created_at
-                on process_memory_entry (session_id, created_at desc, memory_id desc)
+                create index if not exists idx_incident_case_status_updated_at
+                on incident_case (case_status, updated_at desc, case_id desc)
+                """
+            )
+            conn.execute(
+                """
+                create index if not exists idx_agent_event_session_created_at
+                on agent_event (session_id, created_at desc, event_id desc)
                 """
             )
             columns = {
@@ -94,6 +144,10 @@ class PostgresProcessMemoryStoreV2:
                     """
                 ).fetchall()
             }
+            if "human_verified" not in columns:
+                conn.execute("alter table incident_case add column human_verified boolean not null default false")
+            if "case_status" not in columns:
+                conn.execute("alter table incident_case add column case_status text not null default 'pending_review'")
             if "failure_mode" not in columns:
                 conn.execute("alter table incident_case add column failure_mode text not null default ''")
             if "root_cause_taxonomy" not in columns:
@@ -102,19 +156,35 @@ class PostgresProcessMemoryStoreV2:
                 conn.execute("alter table incident_case add column signal_pattern text not null default ''")
             if "action_pattern" not in columns:
                 conn.execute("alter table incident_case add column action_pattern text not null default ''")
+            if "hypothesis_accuracy_json" not in columns:
+                conn.execute("alter table incident_case add column hypothesis_accuracy_json jsonb not null default '{}'::jsonb")
+            if "actual_root_cause_hypothesis" not in columns:
+                conn.execute("alter table incident_case add column actual_root_cause_hypothesis text not null default ''")
+            if "selected_hypothesis_id" not in columns:
+                conn.execute("alter table incident_case add column selected_hypothesis_id text not null default ''")
+            if "selected_ranker_features_json" not in columns:
+                conn.execute("alter table incident_case add column selected_ranker_features_json jsonb not null default '{}'::jsonb")
+            if "reviewed_by" not in columns:
+                conn.execute("alter table incident_case add column reviewed_by text not null default ''")
+            if "reviewed_at" not in columns:
+                conn.execute("alter table incident_case add column reviewed_at timestamptz")
+            if "review_note" not in columns:
+                conn.execute("alter table incident_case add column review_note text not null default ''")
+            conn.execute("update incident_case set case_status = 'pending_review' where case_status is null or case_status = ''")
+            conn.execute("update incident_case set case_status = 'verified' where human_verified = true")
 
     def append_entry(self, entry: ProcessMemoryEntry) -> ProcessMemoryEntry:
         payload = entry.model_copy(update={"created_at": utc_now()})
         with postgres_connection(self.dsn) as conn:
             conn.execute(
                 """
-                insert into process_memory_entry (
-                    memory_id, session_id, thread_id, ticket_id, event_type, stage, source, summary,
+                insert into agent_event (
+                    event_id, session_id, thread_id, ticket_id, event_type, stage, source, summary,
                     payload_json, refs_json, created_at
                 ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
                 """,
                 (
-                    payload.memory_id,
+                    payload.event_id,
                     payload.session_id,
                     payload.thread_id,
                     payload.ticket_id,
@@ -131,11 +201,11 @@ class PostgresProcessMemoryStoreV2:
 
     def list_entries(self, session_id: str, *, limit: Optional[int] = None) -> list[ProcessMemoryEntry]:
         query = """
-            select memory_id, session_id, thread_id, ticket_id, event_type, stage, source, summary,
+            select event_id, session_id, thread_id, ticket_id, event_type, stage, source, summary,
                    payload_json, refs_json, created_at
-            from process_memory_entry
+            from agent_event
             where session_id = %s
-            order by created_at desc, memory_id desc
+            order by created_at desc, event_id desc
         """
         params: tuple[Any, ...]
         if limit is not None:
@@ -149,10 +219,11 @@ class PostgresProcessMemoryStoreV2:
 
     def summarize(self, session_id: str, *, limit: int = 20) -> ProcessMemorySummary:
         entries = self.list_entries(session_id, limit=limit)
-        summary = ProcessMemorySummary(recent_entries=[entry.model_dump() for entry in reversed(entries[:5])])
+        summary = AgentEventSummary(recent_entries=[self._entry_to_dict(entry) for entry in reversed(entries[:5])])
         for entry in entries:
             item = {
-                "memory_id": entry.memory_id,
+                "event_id": entry.event_id,
+                "memory_id": entry.event_id,
                 "event_type": entry.event_type,
                 "stage": entry.stage,
                 "summary": entry.summary,
@@ -186,6 +257,7 @@ class PostgresProcessMemoryStoreV2:
         payload = merged_case.model_copy(
             update={
                 "case_id": existing.case_id if existing is not None else case.case_id,
+                "case_status": _normalized_case_status(merged_case),
                 "created_at": existing.created_at if existing is not None else case.created_at,
                 "updated_at": now,
             }
@@ -195,11 +267,15 @@ class PostgresProcessMemoryStoreV2:
                 """
                 insert into incident_case (
                     case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
-                    current_agent, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                    current_agent, case_status, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
                     symptom, root_cause, key_evidence_json, final_action, approval_required,
                     verification_passed, human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis,
-                    selected_hypothesis_id, selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                    selected_hypothesis_id, selected_ranker_features_json, final_conclusion,
+                    reviewed_by, reviewed_at, review_note, created_at, updated_at, closed_at
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+                    %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
+                )
                 on conflict (session_id) do update set
                     thread_id = excluded.thread_id,
                     ticket_id = excluded.ticket_id,
@@ -207,6 +283,7 @@ class PostgresProcessMemoryStoreV2:
                     cluster = excluded.cluster,
                     namespace = excluded.namespace,
                     current_agent = excluded.current_agent,
+                    case_status = excluded.case_status,
                     failure_mode = excluded.failure_mode,
                     root_cause_taxonomy = excluded.root_cause_taxonomy,
                     signal_pattern = excluded.signal_pattern,
@@ -223,6 +300,9 @@ class PostgresProcessMemoryStoreV2:
                     selected_hypothesis_id = excluded.selected_hypothesis_id,
                     selected_ranker_features_json = excluded.selected_ranker_features_json,
                     final_conclusion = excluded.final_conclusion,
+                    reviewed_by = excluded.reviewed_by,
+                    reviewed_at = excluded.reviewed_at,
+                    review_note = excluded.review_note,
                     updated_at = excluded.updated_at,
                     closed_at = excluded.closed_at
                 """,
@@ -235,6 +315,7 @@ class PostgresProcessMemoryStoreV2:
                     payload.cluster,
                     payload.namespace,
                     payload.current_agent,
+                    payload.case_status,
                     payload.failure_mode,
                     payload.root_cause_taxonomy,
                     payload.signal_pattern,
@@ -251,6 +332,9 @@ class PostgresProcessMemoryStoreV2:
                     payload.selected_hypothesis_id,
                     json.dumps(payload.selected_ranker_features, ensure_ascii=False),
                     payload.final_conclusion,
+                    payload.reviewed_by,
+                    payload.reviewed_at,
+                    payload.review_note,
                     payload.created_at,
                     payload.updated_at,
                     payload.closed_at,
@@ -264,12 +348,8 @@ class PostgresProcessMemoryStoreV2:
     def get_case(self, case_id: str) -> Optional[IncidentCase]:
         with postgres_connection(self.dsn) as conn:
             row = conn.execute(
-                """
-                select case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
-                       failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
-                       symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
-                       human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
-                       selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
+                f"""
+                select {_CASE_COLUMNS}
                 from incident_case where case_id = %s
                 """,
                 (case_id,),
@@ -279,12 +359,8 @@ class PostgresProcessMemoryStoreV2:
     def get_case_by_session_id(self, session_id: str) -> Optional[IncidentCase]:
         with postgres_connection(self.dsn) as conn:
             row = conn.execute(
-                """
-                select case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
-                       failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
-                       symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
-                       human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
-                       selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
+                f"""
+                select {_CASE_COLUMNS}
                 from incident_case where session_id = %s
                 """,
                 (session_id,),
@@ -300,6 +376,8 @@ class PostgresProcessMemoryStoreV2:
         final_action: str | None = None,
         approval_required: bool | None = None,
         verification_passed: bool | None = None,
+        case_status: str | None = None,
+        human_verified: bool | None = None,
         keyword: str | None = None,
         limit: int = 20,
     ) -> list[IncidentCase]:
@@ -323,17 +401,19 @@ class PostgresProcessMemoryStoreV2:
         if verification_passed is not None:
             conditions.append("verification_passed = %s")
             params.append(verification_passed)
+        if case_status:
+            conditions.append("case_status = %s")
+            params.append(case_status)
+        if human_verified is not None:
+            conditions.append("human_verified = %s")
+            params.append(human_verified)
         if keyword:
             conditions.append("(symptom ilike %s or root_cause ilike %s or final_conclusion ilike %s)")
             like_value = f"%{keyword}%"
             params.extend([like_value, like_value, like_value])
         params.append(limit)
         query = f"""
-            select case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent,
-                   failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
-                   symptom, root_cause, key_evidence_json, final_action, approval_required, verification_passed,
-                   human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
-                   selected_ranker_features_json, final_conclusion, created_at, updated_at, closed_at
+            select {_CASE_COLUMNS}
             from incident_case
             where {' and '.join(conditions)}
             order by closed_at desc nulls last, updated_at desc, case_id desc
@@ -344,11 +424,17 @@ class PostgresProcessMemoryStoreV2:
         return [case for row in rows if (case := self._row_to_case(row)) is not None]
 
     @staticmethod
+    def _entry_to_dict(entry: AgentEvent) -> dict[str, Any]:
+        data = entry.model_dump()
+        data["memory_id"] = entry.event_id
+        return data
+
+    @staticmethod
     def _row_to_entry(row: dict[str, Any] | None) -> Optional[ProcessMemoryEntry]:
         if row is None:
             return None
-        return ProcessMemoryEntry(
-            memory_id=row["memory_id"],
+        return AgentEvent(
+            event_id=row["event_id"],
             session_id=row["session_id"],
             thread_id=row["thread_id"],
             ticket_id=row["ticket_id"],
@@ -356,8 +442,8 @@ class PostgresProcessMemoryStoreV2:
             stage=row["stage"],
             source=row["source"],
             summary=row["summary"],
-            payload=row["payload_json"],
-            refs=row["refs_json"],
+            payload=_loads_json(row["payload_json"], {}),
+            refs=_loads_json(row["refs_json"], {}),
             created_at=str(row["created_at"]),
         )
 
@@ -374,22 +460,26 @@ class PostgresProcessMemoryStoreV2:
             cluster=row["cluster"],
             namespace=row["namespace"],
             current_agent=row["current_agent"],
+            case_status=row["case_status"] or "pending_review",
             failure_mode=row["failure_mode"],
             root_cause_taxonomy=row["root_cause_taxonomy"],
             signal_pattern=row["signal_pattern"],
             action_pattern=row["action_pattern"],
             symptom=row["symptom"],
             root_cause=row["root_cause"],
-            key_evidence=row["key_evidence_json"],
+            key_evidence=_loads_json(row["key_evidence_json"], []),
             final_action=row["final_action"],
             approval_required=bool(row["approval_required"]),
             verification_passed=row["verification_passed"],
             human_verified=bool(row["human_verified"]),
-            hypothesis_accuracy=row["hypothesis_accuracy_json"] or {},
+            hypothesis_accuracy=_loads_json(row["hypothesis_accuracy_json"], {}),
             actual_root_cause_hypothesis=row["actual_root_cause_hypothesis"],
             selected_hypothesis_id=row["selected_hypothesis_id"],
-            selected_ranker_features=row["selected_ranker_features_json"] or {},
+            selected_ranker_features=_loads_json(row["selected_ranker_features_json"], {}),
             final_conclusion=row["final_conclusion"],
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=str(row["reviewed_at"]) if row["reviewed_at"] is not None else None,
+            review_note=row["review_note"],
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
             closed_at=str(row["closed_at"]) if row["closed_at"] is not None else None,

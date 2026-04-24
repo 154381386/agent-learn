@@ -26,7 +26,7 @@ TABLES = [
     "execution_checkpoint",
     "execution_plan",
     "execution_step",
-    "process_memory_entry",
+    "agent_event",
     "incident_case",
     "ranker_weight_snapshot",
 ]
@@ -372,16 +372,19 @@ def migrate_process_memory(rows_memory: list[dict], rows_case: list[dict], dsn: 
     PostgresProcessMemoryStoreV2(dsn)
     memory_count = 0
     for row in rows_memory:
+        event_id = row.get("event_id") or row.get("memory_id")
+        if not event_id:
+            continue
         with postgres_connection(dsn) as conn:
             conn.execute(
                 """
-                insert into process_memory_entry (
-                    memory_id, session_id, thread_id, ticket_id, event_type, stage, source, summary, payload_json, refs_json, created_at
+                insert into agent_event (
+                    event_id, session_id, thread_id, ticket_id, event_type, stage, source, summary, payload_json, refs_json, created_at
                 ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
-                on conflict (memory_id) do nothing
+                on conflict (event_id) do nothing
                 """,
                 (
-                    row["memory_id"],
+                    event_id,
                     row["session_id"],
                     row["thread_id"],
                     row["ticket_id"],
@@ -397,15 +400,22 @@ def migrate_process_memory(rows_memory: list[dict], rows_case: list[dict], dsn: 
         memory_count += 1
     case_count = 0
     for row in rows_case:
+        human_verified = bool(row.get("human_verified"))
+        case_status = row.get("case_status") or ("verified" if human_verified else "pending_review")
         with postgres_connection(dsn) as conn:
             conn.execute(
                 """
                 insert into incident_case (
-                    case_id, session_id, thread_id, ticket_id, service, cluster, namespace, current_agent, symptom,
-                    root_cause, key_evidence_json, final_action, approval_required, verification_passed, human_verified,
-                    hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id, selected_ranker_features_json,
-                    final_conclusion, created_at, updated_at, closed_at
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s, %s)
+                    case_id, session_id, thread_id, ticket_id, service, cluster, namespace,
+                    current_agent, case_status, failure_mode, root_cause_taxonomy, signal_pattern, action_pattern,
+                    symptom, root_cause, key_evidence_json, final_action, approval_required,
+                    verification_passed, human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis,
+                    selected_hypothesis_id, selected_ranker_features_json, final_conclusion,
+                    reviewed_by, reviewed_at, review_note, created_at, updated_at, closed_at
+                ) values (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+                    %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
+                )
                 on conflict (session_id) do update set
                     thread_id = excluded.thread_id,
                     ticket_id = excluded.ticket_id,
@@ -413,6 +423,11 @@ def migrate_process_memory(rows_memory: list[dict], rows_case: list[dict], dsn: 
                     cluster = excluded.cluster,
                     namespace = excluded.namespace,
                     current_agent = excluded.current_agent,
+                    case_status = excluded.case_status,
+                    failure_mode = excluded.failure_mode,
+                    root_cause_taxonomy = excluded.root_cause_taxonomy,
+                    signal_pattern = excluded.signal_pattern,
+                    action_pattern = excluded.action_pattern,
                     symptom = excluded.symptom,
                     root_cause = excluded.root_cause,
                     key_evidence_json = excluded.key_evidence_json,
@@ -425,6 +440,9 @@ def migrate_process_memory(rows_memory: list[dict], rows_case: list[dict], dsn: 
                     selected_hypothesis_id = excluded.selected_hypothesis_id,
                     selected_ranker_features_json = excluded.selected_ranker_features_json,
                     final_conclusion = excluded.final_conclusion,
+                    reviewed_by = excluded.reviewed_by,
+                    reviewed_at = excluded.reviewed_at,
+                    review_note = excluded.review_note,
                     updated_at = excluded.updated_at,
                     closed_at = excluded.closed_at
                 """,
@@ -437,18 +455,26 @@ def migrate_process_memory(rows_memory: list[dict], rows_case: list[dict], dsn: 
                     row["cluster"],
                     row["namespace"],
                     row["current_agent"],
+                    case_status,
+                    row.get("failure_mode", ""),
+                    row.get("root_cause_taxonomy", ""),
+                    row.get("signal_pattern", ""),
+                    row.get("action_pattern", ""),
                     row["symptom"],
                     row["root_cause"],
                     row["key_evidence_json"],
                     row["final_action"],
                     bool(row["approval_required"]),
                     None if row["verification_passed"] is None else bool(row["verification_passed"]),
-                    bool(row["human_verified"]),
-                    row["hypothesis_accuracy_json"],
-                    row["actual_root_cause_hypothesis"],
-                    row["selected_hypothesis_id"],
-                    row["selected_ranker_features_json"],
+                    human_verified,
+                    row.get("hypothesis_accuracy_json", "{}"),
+                    row.get("actual_root_cause_hypothesis", ""),
+                    row.get("selected_hypothesis_id", ""),
+                    row.get("selected_ranker_features_json", "{}"),
                     row["final_conclusion"],
+                    row.get("reviewed_by", ""),
+                    row.get("reviewed_at"),
+                    row.get("review_note", ""),
                     row["created_at"],
                     row["updated_at"],
                     row.get("closed_at"),
@@ -516,8 +542,9 @@ def main() -> None:
             load_rows(conn, "execution_step"),
             args.postgres_dsn,
         )
+        agent_event_rows = load_rows(conn, "agent_event") or load_rows(conn, "process_memory_entry")
         memory_count, case_count = migrate_process_memory(
-            load_rows(conn, "process_memory_entry"),
+            agent_event_rows,
             load_rows(conn, "incident_case"),
             args.postgres_dsn,
         )
@@ -533,7 +560,7 @@ def main() -> None:
         "execution_checkpoint": checkpoint_count,
         "execution_plan": plan_count,
         "execution_step": step_count,
-        "process_memory_entry": memory_count,
+        "agent_event": memory_count,
         "incident_case": case_count,
         "ranker_weight_snapshot": ranker_count,
     }

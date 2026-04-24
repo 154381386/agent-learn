@@ -37,6 +37,10 @@
   - 自动预召回会降级为空 `similar_cases`，并记录 `prefetch_status / prefetch_error_type / case_memory_reason`
   - 显式 `search_similar_incidents` 即使无命中或失败，也会回写 `tool_search_count / last_tool_status / last_tool_hit_count / tool_failures`
   - 案例索引同步失败只记录 `last_sync_metadata` 和 warning，不影响工单完成与反馈回写
+- 历史案例入向量库只接受已确认案例：
+  - Agent/LLM 在工单结束时只写 `incident_case.case_status=pending_review`
+  - 人工确认 `human_verified=true` 后才变成 `verified` 并触发 `case-memory sync`
+  - 人工否定或 reopen 会保持未入索引，避免把未确认总结污染历史案例库
 
 当前这条链路的设计原则是：
 
@@ -309,11 +313,19 @@ uv run python scripts/merge_curated_bad_cases.py \
 - `human_verified`
 - `actual_root_cause_hypothesis`
 - `hypothesis_accuracy`
+- `case_status / reviewed_at / review_note`
+
+案例生命周期现在是显式状态机：
+
+- `pending_review`：Agent/LLM 总结已经落库，但只作为待审核案例，不进入 case-memory 向量索引
+- `verified`：人工确认后进入历史案例库，可被后续 case recall 使用
+- `rejected`：人工否定的旧结论，不进入历史案例库；如果带新信息，会触发 reopen 重新诊断
 
 这样不会再出现：
 
 - `bad_case_candidate` 里保留了人工真因
 - 但 `incident_case` 被后续一次普通 upsert 覆盖回默认值
+- 未经人工确认的 Agent 总结被直接写进历史案例向量库
 
 这一步是为了保证案例库、bad case 候选池、以及后续 case recall 的学习信号保持一致。
 
@@ -465,16 +477,10 @@ make pg-up
 make run-orchestrator-pg
 ```
 
-或者直接：
+或者直接启动完整开发链路，当前 `make dev` 默认也会启动 Runtime Postgres：
 
 ```bash
 make dev
-```
-
-如果希望开发环境默认走 Runtime Postgres：
-
-```bash
-make dev-pg
 ```
 
 把现有 SQLite 运行时数据迁到 Runtime Postgres：
@@ -498,14 +504,25 @@ MCP_CONNECTIONS_PATH=./mcp_connections.yaml
 RAG_ENABLED=true
 RAG_SERVICE_BASE_URL=http://localhost:8200
 RAG_SERVICE_TIMEOUT_SEC=30
-STORAGE_BACKEND=sqlite
+STORAGE_BACKEND=postgres
 APPROVAL_DB_PATH=./data/approvals.db
 POSTGRES_DSN=postgresql://app:app@127.0.0.1:5433/it_ticket_agent_runtime
+LLM_PROVIDER=richado
+LLM_RICHADO_API_KEY=your-richado-api-key
+# 切回旧 provider：LLM_PROVIDER=yuangege，并配置 LLM_YUANGEGE_API_KEY
 ```
+
+内置 LLM provider preset：
+
+- `richado`：默认/current，`base_url=http://richado.qzz.io:8091`，`model=gpt-5.5`，`wire_api=responses`
+- `yuangege`：previous，`base_url=https://api.yuangege.cloud/v1`，`model=gpt-5.5`，`wire_api=chat`
+- `none`：显式关闭 LLM，走 rule-based fallback
+
+如需临时覆盖，可以直接设置 `LLM_BASE_URL / LLM_MODEL / LLM_WIRE_API / LLM_API_KEY`。
 
 ## Runtime Postgres
 
-当前 runtime 已支持把核心状态存到 Postgres。开发环境默认推荐用 Docker 启：
+当前 runtime 默认使用 Postgres，`POSTGRES_DSN` 是必填配置。SQLite 实现仅保留给单元测试、旧数据迁移和显式本地 fallback。开发环境推荐用 Docker 启：
 
 ```bash
 make pg-up

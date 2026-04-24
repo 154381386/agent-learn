@@ -183,7 +183,12 @@ class SupervisorOrchestrator:
     def _summarize_incident_cases(self, *, service: str | None, session_id: str | None = None) -> list[dict[str, Any]]:
         if not service:
             return []
-        cases = self.incident_case_store.list_cases(service=service, limit=3)
+        cases = self.incident_case_store.list_cases(
+            service=service,
+            case_status="verified",
+            human_verified=True,
+            limit=3,
+        )
         if session_id is None:
             return cases
         return [case for case in cases if str(case.get("session_id") or "") != str(session_id)]
@@ -283,6 +288,7 @@ class SupervisorOrchestrator:
                 "cluster": str(incident_state.get("cluster") or ""),
                 "namespace": str(incident_state.get("namespace") or ""),
                 "current_agent": str(session.get("current_agent") or ""),
+                "case_status": "pending_review",
                 "failure_mode": failure_mode,
                 "root_cause_taxonomy": root_cause_taxonomy,
                 "signal_pattern": signal_pattern,
@@ -306,11 +312,6 @@ class SupervisorOrchestrator:
                 "closed_at": session.get("closed_at"),
             }
         )
-        if self.case_vector_indexer.enabled:
-            try:
-                asyncio.get_running_loop().create_task(self.case_vector_indexer.index_case(saved_case))
-            except RuntimeError:
-                pass
         return saved_case
 
     @staticmethod
@@ -1124,6 +1125,8 @@ class SupervisorOrchestrator:
             human_verified=human_verified,
             hypothesis_accuracy=hypothesis_accuracy,
             actual_root_cause_hypothesis=actual_root,
+            reviewed_by=str(answer_payload.get("reviewer_id") or answer_payload.get("operator_id") or session.get("user_id") or ""),
+            review_note=str(answer_payload.get("comment") or ""),
         )
         reopen_capability = self._feedback_reopen_capability(
             session,
@@ -1136,7 +1139,7 @@ class SupervisorOrchestrator:
                 answer_payload=answer_payload,
                 incident_case=updated_case,
             )
-        if updated_case is not None and self.case_vector_indexer.enabled:
+        if human_verified and updated_case is not None and self.case_vector_indexer.enabled:
             try:
                 asyncio.get_running_loop().create_task(self.case_vector_indexer.index_case(updated_case))
             except RuntimeError:
@@ -1149,7 +1152,7 @@ class SupervisorOrchestrator:
             event_type="manual_intervention",
             stage="feedback",
             source="orchestrator",
-            summary="人工反馈已写回案例库。",
+            summary="人工反馈已写回案例审核状态。",
             payload={
                 "human_verified": human_verified,
                 "actual_root_cause_hypothesis": actual_root,

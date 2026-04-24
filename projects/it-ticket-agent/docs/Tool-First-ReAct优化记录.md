@@ -1895,3 +1895,113 @@ uv run python -m unittest discover -s tests -q
   - `search_similar_incidents` 的 query rewrite / taxonomy narrowing 参数推荐
   - “用户主动问有没有类似历史案例”的独立路由分支
   - case-memory 连续失败的轻量熔断窗口
+
+
+## 2026-04-24 18:20 历史案例入库改为人工确认后索引
+
+### 问题
+
+- 之前 `IncidentCase` 在 finalize 后会立即尝试同步到 case-memory 向量索引。
+- 这会把 Agent/LLM 自动总结直接当成历史真值，和“转人工后需值班人确认”“纯 Agent 工单也需要人工确认”的边界不一致。
+- 旧的 `process_memory_entry` 表名也容易让人误解成用户对话过程记忆，实际保存的是 Agent 内部事件流。
+
+### 原因
+
+- `incident_case` 只有 `human_verified`，缺少显式案例生命周期状态，导致“待审核案例”和“可召回历史案例”没有硬边界。
+- `CaseVectorIndexer.index_case(...)` 只看 RAG 是否启用，没有校验案例是否已确认。
+- `ProcessMemoryStore` 同时承担内部事件记录和摘要投影，表名没有体现 Agent event 语义。
+
+### 改动
+
+- 新增 `agent_event` 表，字段使用 `event_id`，并从旧 `process_memory_entry.memory_id` 做兼容迁移；代码保留 `ProcessMemoryStore` facade，新增 `AgentEvent` 模型语义。
+- `incident_case` 新增 `case_status / reviewed_by / reviewed_at / review_note`：
+  - `pending_review`：Agent/LLM 总结落库，但不能进入历史案例向量库。
+  - `verified`：人工确认后才允许 case-memory sync。
+  - `rejected`：人工否定，不允许进入历史案例向量库。
+- finalize 后只写 `case_status=pending_review`，不再立即调用 `CaseVectorIndexer.index_case(...)`。
+- feedback 确认时写入 review metadata；只有 `human_verified=true` 才触发索引。
+- `CaseVectorIndexer` 增加二次保护：`case_status != verified` 或 `human_verified=false` 时直接 skip。
+- runtime 默认存储切到 Postgres；SQLite 仅保留为单元测试、旧数据迁移和显式 fallback。
+
+### 影响
+
+- 历史案例库只保留人工确认过的案例，降低错误总结污染后续召回的风险。
+- 长周期或转人工工单可以先沉淀待审核摘要，值班人确认后再进入 case-memory。
+- `conversation_session / conversation_turn / agent_event / incident_case` 的边界更清晰：对话原文、会话状态、Agent 内部事件、历史案例不再混在一个概念里。
+- `feedback_reopen` 后重新诊断仍会保留人工反馈信号，但新一轮结果回到 `pending_review`，等待再次确认。
+
+### 下一步
+
+- 增加 case review API 或后台页面，让值班人能批量确认 `pending_review` 案例。
+- 给 `case_status` 增加更细的来源统计，例如 `transfer_human_summary / agent_auto_summary / manual_review`。
+- 后续如需可观测，再把 case lifecycle transition 单独接入指标和 trace。
+
+### 面试问答
+
+- 问：为什么历史案例不能在工单结束后直接进向量库？
+  - 答：工单结束只能说明 Agent 产出了一个总结，不代表它是人工真值。现在先写 `pending_review`，人工确认后才变成 `verified` 并进入 case-memory。这样可以避免未确认总结污染后续召回。
+- 问：那 `conversation_session`、`agent_event`、`incident_case` 分别存什么？
+  - 答：`conversation_session` 存会话状态和当前进度，`conversation_turn` 存完整对话轮次，`agent_event` 存 Agent 内部关键事件流，`incident_case` 存待审核或已确认的案例摘要。只有 `incident_case.case_status=verified` 才是可召回历史案例。
+
+
+## 2026-04-24 18:45 Live LLM 评估支持 Responses Wire API
+
+### 问题
+
+- 使用只暴露 Responses API 的 OpenAI-compatible provider 跑 `session_flow_live_cases.json` 时，旧客户端仍会先请求 `/chat/completions`。
+- 该 provider 返回非预期响应，导致 live eval 出现 `JSONDecodeError`，无法验证真实 LLM 链路。
+
+### 原因
+
+- 配置里只有 `LLM_BASE_URL / LLM_MODEL / LLM_API_KEY`，缺少 wire API 选择。
+- `OpenAICompatToolLLM` 默认固定先走 chat completions，只有空响应时才 fallback 到 responses。
+
+### 改动
+
+- 新增 `Settings.llm_wire_api`，通过 `LLM_WIRE_API=responses` 显式选择 Responses API。
+- `OpenAICompatToolLLM.chat(...)` 在 responses 模式下直接调用 `/responses`，不再先探测 `/chat/completions`。
+- README 配置示例补充 `LLM_WIRE_API=responses`。
+
+### 影响
+
+- `gpt-5.5 + responses wire API` 的真实 LLM session-flow live eval 已通过：4/4 cases pass，gate 2/2 pass。
+- 仍保留默认 chat completions 路径，兼容旧 OpenAI-compatible provider。
+
+### 下一步
+
+- 后续可以把 `LLM_WIRE_API` 加到 eval report 元信息里，便于区分不同 provider 的真实测试结果。
+
+
+## 2026-04-24 19:05 LLM Provider Preset 与默认切换
+
+### 问题
+
+- 真实 LLM provider 有两套：当前 `richado` 走 Responses API，之前 `yuangege` 走 Chat Completions API。
+- 旧配置只能靠 `LLM_BASE_URL / LLM_MODEL / LLM_WIRE_API / LLM_API_KEY` 手动组合，切换时容易漏字段。
+- `Settings` 的 LLM 默认值原本在模块 import 时读取，测试或脚本内临时切换 env 后，新建 `Settings()` 不一定反映最新 provider。
+
+### 原因
+
+- 没有 provider preset 层，provider 的 base_url、wire_api、默认模型和 key env 变量没有绑定在一起。
+- dataclass 字段直接调用 `os.getenv(...)`，默认值在 import 阶段已经固化。
+
+### 改动
+
+- 新增 `LLM_PROVIDER_PRESETS`：
+  - `richado`：默认/current，`base_url=http://richado.qzz.io:8091`，`model=gpt-5.5`，`wire_api=responses`，key env 为 `LLM_RICHADO_API_KEY`。
+  - `yuangege`：previous，`base_url=https://api.yuangege.cloud/v1`，`model=gpt-5.5`，`wire_api=chat`，key env 为 `LLM_YUANGEGE_API_KEY`。
+  - `none`：显式关闭 LLM。
+- 支持别名：`current/default -> richado`，`previous/old -> yuangege`，`disabled -> none`。
+- `LLM_API_KEY` 仍作为全局临时覆盖，显式 `LLM_BASE_URL / LLM_MODEL / LLM_WIRE_API` 仍可覆盖 preset。
+- LLM 相关 dataclass 字段改为 `default_factory`，新建 `Settings()` 时读取当前 env。
+- 本地 `.env` 已切到 `LLM_PROVIDER=richado`，旧 provider key 保留为 `LLM_YUANGEGE_API_KEY`；`.env` 被 git ignore，不进入提交。
+
+### 影响
+
+- 默认真实 LLM 测试使用当前 provider，不再受旧 `LLM_BASE_URL` 残留影响。
+- 切换旧 provider 只需要设置 `LLM_PROVIDER=yuangege`。
+- CI / 本地脚本可以通过 provider 名切换，不需要改代码。
+
+### 下一步
+
+- 可以在 eval report 里持久化 `llm_provider / llm_wire_api`，方便后续对比不同 provider 的稳定性。

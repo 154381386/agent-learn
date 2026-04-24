@@ -463,6 +463,10 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result["pending_interrupt"])
         self.assertEqual(result["pending_interrupt"]["type"], "feedback")
         session_id = result["session"]["session_id"]
+        initial_case = self.incident_case_store.get_by_session_id(session_id)
+        assert initial_case is not None
+        self.assertEqual(initial_case["case_status"], "pending_review")
+        self.assertFalse(initial_case["human_verified"])
         feedback_interrupt = result["pending_interrupt"]
         ranked_result = result["diagnosis"]["ranked_result"]
         actual_hypothesis_id = ranked_result["primary"]["hypothesis_id"]
@@ -484,6 +488,8 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         case = self.incident_case_store.get_by_session_id(session_id)
         assert case is not None
         self.assertTrue(case["human_verified"])
+        self.assertEqual(case["case_status"], "verified")
+        self.assertEqual(case["review_note"], "判断正确")
         self.assertEqual(case["actual_root_cause_hypothesis"], actual_hypothesis_id)
         self.assertEqual(case["hypothesis_accuracy"][actual_hypothesis_id], 1.0)
 
@@ -533,6 +539,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         case = self.incident_case_store.get_by_session_id(session_id)
         assert case is not None
         self.assertFalse(case["human_verified"])
+        self.assertEqual(case["case_status"], "pending_review")
         self.assertEqual(case["actual_root_cause_hypothesis"], "真实根因更像数据库连接池耗尽")
         self.assertEqual(case["hypothesis_accuracy"], {"hypothesis-db": 0.9})
         candidates = self.bad_case_candidate_store.list_candidates(session_id=session_id, limit=10)

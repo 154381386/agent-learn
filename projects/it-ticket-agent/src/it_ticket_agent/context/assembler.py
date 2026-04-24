@@ -59,6 +59,7 @@ class ContextAssembler:
         if session_memory:
             memory_summary["session_memory"] = session_memory
         if process_summary:
+            memory_summary["agent_events"] = process_summary
             memory_summary["process_memory"] = process_summary
         if case_summary:
             memory_summary["incident_cases"] = case_summary

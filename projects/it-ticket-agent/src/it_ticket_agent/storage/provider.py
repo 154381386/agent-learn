@@ -40,7 +40,7 @@ class StoreProvider:
 
     def build(self) -> StoreBundle:
         db_path = self.settings.approval_db_path
-        backend = str(self.settings.storage_backend or "sqlite").lower()
+        backend = str(self.settings.storage_backend or "postgres").lower()
         if backend == "postgres":
             if not self.settings.postgres_dsn:
                 raise ValueError("POSTGRES_DSN is required when STORAGE_BACKEND=postgres")

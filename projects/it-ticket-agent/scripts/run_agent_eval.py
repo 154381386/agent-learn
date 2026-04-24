@@ -219,7 +219,8 @@ async def main() -> int:
         print("no eval cases selected")
         return 2
     print(
-        f"mode={dataset_mode} model={settings.llm_model or '-'} "
+        f"mode={dataset_mode} provider={getattr(settings, 'llm_provider', '-') or '-'} "
+        f"model={settings.llm_model or '-'} wire_api={getattr(settings, 'llm_wire_api', '-') or '-'} "
         f"base_url={settings.llm_base_url or '-'} rag_enabled={args.rag_enabled}"
     )
     if dataset_mode == "session_flow":

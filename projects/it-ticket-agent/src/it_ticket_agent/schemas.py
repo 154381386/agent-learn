@@ -241,6 +241,7 @@ class IncidentCaseResponse(BaseModel):
     cluster: str = ""
     namespace: str = ""
     current_agent: str = ""
+    case_status: str = "pending_review"
     symptom: str = ""
     root_cause: str = ""
     key_evidence: List[str] = Field(default_factory=list)
@@ -253,6 +254,9 @@ class IncidentCaseResponse(BaseModel):
     selected_hypothesis_id: str = ""
     selected_ranker_features: Dict[str, float] = Field(default_factory=dict)
     final_conclusion: str = ""
+    reviewed_by: str = ""
+    reviewed_at: Optional[str] = None
+    review_note: str = ""
     created_at: str
     updated_at: str
     closed_at: Optional[str] = None

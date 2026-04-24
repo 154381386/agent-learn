@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from ..session.models import utc_now
 
-ProcessMemoryEventType = Literal[
+AgentEventType = Literal[
     "routing_decision",
     "clarification_created",
     "clarification_answered",
@@ -18,14 +18,22 @@ ProcessMemoryEventType = Literal[
     "manual_intervention",
     "run_summary",
 ]
+ProcessMemoryEventType = AgentEventType
+
+CaseStatus = Literal["draft", "pending_review", "verified", "rejected"]
 
 
-class ProcessMemoryEntry(BaseModel):
-    memory_id: str = Field(default_factory=lambda: str(uuid4()))
+class AgentEvent(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    event_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        validation_alias=AliasChoices("event_id", "memory_id"),
+    )
     session_id: str
     thread_id: str
     ticket_id: str
-    event_type: ProcessMemoryEventType
+    event_type: AgentEventType
     stage: str
     source: str
     summary: str
@@ -33,14 +41,22 @@ class ProcessMemoryEntry(BaseModel):
     refs: Dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)
 
+    @property
+    def memory_id(self) -> str:
+        return self.event_id
 
-class ProcessMemorySummary(BaseModel):
+
+class AgentEventSummary(BaseModel):
     latest_routing: Dict[str, Any] | None = None
     latest_clarification: Dict[str, Any] | None = None
     latest_approval: Dict[str, Any] | None = None
     latest_execution: Dict[str, Any] | None = None
     unresolved_items: List[Dict[str, Any]] = Field(default_factory=list)
     recent_entries: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+ProcessMemoryEntry = AgentEvent
+ProcessMemorySummary = AgentEventSummary
 
 
 class IncidentCase(BaseModel):
@@ -52,6 +68,7 @@ class IncidentCase(BaseModel):
     cluster: str = ""
     namespace: str = ""
     current_agent: str = ""
+    case_status: CaseStatus = "pending_review"
     failure_mode: str = ""
     root_cause_taxonomy: str = ""
     signal_pattern: str = ""
@@ -68,6 +85,9 @@ class IncidentCase(BaseModel):
     selected_hypothesis_id: str = ""
     selected_ranker_features: Dict[str, float] = Field(default_factory=dict)
     final_conclusion: str = ""
+    reviewed_by: str = ""
+    reviewed_at: Optional[str] = None
+    review_note: str = ""
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     closed_at: Optional[str] = None
