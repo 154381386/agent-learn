@@ -195,6 +195,7 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 - 支持按 case 配置 `llm_mode`；当前 session-flow 回归默认用 `disabled` 跑确定性状态机链路
 - live session-flow 只校验稳定的高层行为，例如 `message_event_type / incremental_tool_domains / pending_interrupt`，不把真实 LLM 的每一步推理顺序写死
 - 既看最终是否命中根因，也记录搜索过程指标
+- `agent_eval` report 会单独聚合 `case_memory_state_counts / case_memory_reason_counts`，用于区分 case-memory `skipped / empty / failed / hit`
 - 每个 dataset 现在都可以带聚合 `gate`，用于卡住 pass rate、平均 tool 调用数、step pass rate 这类回归门槛
 
 ## 线上 Bad Case 候选闭环
@@ -205,6 +206,7 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 
 - 线上 bad case 先要做归因，不能把“答错了”直接等价成“应该进回归”
 - 自动导出的第一版通常只知道请求、上下文、工具路径和反馈信号，还需要人工补期望和 mock 边界
+- case-memory 相关候选会在导出 payload 中带 `case_memory_attribution`，包括状态、原因、命中数和失败计数
 
 当前默认会在这两类场景自动打候选：
 
@@ -214,6 +216,7 @@ curl -X POST http://localhost:8000/api/v1/conversations \
   - `rejected_tool_call_count > 0`
   - `retrieval_subquery_count > 0` 但 `added_rag_hits = 0 && added_case_hits = 0`
   - 某条 rewritten query 虽然带来新增命中，但方向和最终主因 taxonomy 不一致
+  - `case_memory_failed` 会单独进入候选；`case_memory_empty / case_memory_skipped_*` 会作为已有候选的补充归因
 - `feedback_reopen`
   主要看：
   - 用户明确 `human_verified=false`

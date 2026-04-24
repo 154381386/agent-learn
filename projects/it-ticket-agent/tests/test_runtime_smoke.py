@@ -586,8 +586,37 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["source"], "runtime_completion")
         self.assertIn("retrieval_expansion_no_gain", candidates[0]["reason_codes"])
+        self.assertIn("case_memory_empty", candidates[0]["reason_codes"])
         self.assertEqual(candidates[0]["retrieval_expansion"]["added_rag_hits"], 0)
         self.assertEqual(candidates[0]["retrieval_expansion"]["added_case_hits"], 0)
+
+    async def test_bad_case_reason_codes_include_case_memory_failure(self) -> None:
+        reason_codes = self.orchestrator._detect_bad_case_reason_codes(
+            source="runtime_completion",
+            response_payload={
+                "status": "completed",
+                "message": "继续用实时工具诊断。",
+                "diagnosis": {
+                    "route": "react_tool_first",
+                    "context_snapshot": {
+                        "case_recall": {
+                            "prefetch_status": "error",
+                            "prefetched_case_count": 0,
+                            "case_memory_reason": "case_memory_search_failed",
+                            "tool_failures": [
+                                {"query": "payment-service timeout", "error": "case_memory_search_failed"}
+                            ],
+                        }
+                    },
+                },
+            },
+            incident_state_snapshot={},
+            incident_case=None,
+        )
+
+        self.assertIn("case_memory_failed", reason_codes)
+        self.assertIn("case_memory_failed_case_memory_search_failed", reason_codes)
+        self.assertEqual(self.orchestrator._resolve_bad_case_severity(reason_codes), "medium")
 
     async def test_generic_diagnosis_skips_auto_case_prefetch_until_more_precise_symptom(self) -> None:
         self.orchestrator.case_retriever.recall = AsyncMock(

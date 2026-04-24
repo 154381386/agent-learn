@@ -35,6 +35,17 @@ class BadCaseCandidateStoreTest(unittest.TestCase):
                 "severity": "low",
                 "request_payload": {"message": "payment-service timeout", "service": "payment-service"},
                 "response_payload": {"status": "completed", "message": "阶段性结论"},
+                "context_snapshot": {
+                    "case_recall": {
+                        "auto_prefetch_enabled": True,
+                        "prefetch_status": "completed",
+                        "prefetched_case_count": 0,
+                        "case_memory_reason": "case_memory_search_completed",
+                        "tool_search_count": 1,
+                        "last_tool_status": "completed",
+                        "last_tool_hit_count": 0,
+                    },
+                },
                 "retrieval_expansion": {
                     "subqueries": [
                         {
@@ -85,6 +96,7 @@ class BadCaseExportTest(unittest.TestCase):
                 "reason_codes": [
                     "retrieval_expansion_no_gain",
                     "retrieval_misaligned_with_primary_root_cause",
+                    "case_memory_empty",
                 ],
                 "severity": "medium",
                 "request_payload": {
@@ -104,6 +116,17 @@ class BadCaseExportTest(unittest.TestCase):
                             {"tool_name": "inspect_upstream_dependency", "result": {"summary": "upstream 抖动"}},
                             {"tool_name": "inspect_connection_pool", "result": {"summary": "连接池打满"}},
                         ],
+                    },
+                },
+                "context_snapshot": {
+                    "case_recall": {
+                        "auto_prefetch_enabled": True,
+                        "prefetch_status": "completed",
+                        "prefetched_case_count": 0,
+                        "case_memory_reason": "case_memory_search_completed",
+                        "tool_search_count": 1,
+                        "last_tool_status": "completed",
+                        "last_tool_hit_count": 0,
                     },
                 },
                 "retrieval_expansion": {
@@ -146,6 +169,10 @@ class BadCaseExportTest(unittest.TestCase):
         self.assertEqual(payload["candidate_id"], created["candidate_id"])
         self.assertEqual(payload["target_dataset"], "rag")
         self.assertIn("payment-service db pool saturation slow query timeout", payload["mock_boundary_suggestions"]["retrieval_queries"])
+        self.assertEqual(payload["case_memory_attribution"]["state"], "empty")
+        self.assertIn("case_memory_empty", payload["case_memory_attribution"]["reason_codes"])
+        self.assertTrue(any("case-memory" in note for note in payload["mock_boundary_suggestions"]["notes"]))
+        self.assertTrue(any("相似案例无命中" in item for item in payload["todo"]))
         updated = self.store.get(created["candidate_id"])
         assert updated is not None
         self.assertEqual(updated["export_status"], "exported")
@@ -184,6 +211,46 @@ class BadCaseExportTest(unittest.TestCase):
         payload = build_bad_case_export_payload(candidate)
         self.assertEqual(payload["target_dataset"], "session_flow")
         self.assertEqual(payload["eval_skeleton"]["steps"][1]["action"], "resume_conversation")
+
+    def test_build_bad_case_export_payload_classifies_case_memory_failure_as_rag(self) -> None:
+        candidate = {
+            "candidate_id": "candidate-case-memory-failure",
+            "source": "runtime_completion",
+            "severity": "medium",
+            "reason_codes": [
+                "case_memory_failed",
+                "case_memory_failed_case_memory_search_failed",
+            ],
+            "request_payload": {
+                "user_id": "u3",
+                "message": "payment-service timeout",
+                "service": "payment-service",
+                "environment": "prod",
+            },
+            "response_payload": {
+                "status": "completed",
+                "message": "继续用实时工具诊断。",
+                "diagnosis": {"route": "react_tool_first"},
+            },
+            "context_snapshot": {
+                "case_recall": {
+                    "prefetch_status": "error",
+                    "prefetched_case_count": 0,
+                    "case_memory_reason": "case_memory_search_failed",
+                    "tool_failures": [
+                        {"query": "payment-service timeout", "error": "case_memory_search_failed"}
+                    ],
+                }
+            },
+        }
+
+        self.assertEqual(classify_bad_case_candidate(candidate), "rag")
+        payload = build_bad_case_export_payload(candidate)
+
+        self.assertEqual(payload["target_dataset"], "rag")
+        self.assertEqual(payload["case_memory_attribution"]["state"], "failed")
+        self.assertIn("case_memory_failed", payload["case_memory_attribution"]["reason_codes"])
+        self.assertTrue(any("case-memory 失败" in item for item in payload["todo"]))
 
 
 class BadCaseCuratedMergeTest(unittest.TestCase):

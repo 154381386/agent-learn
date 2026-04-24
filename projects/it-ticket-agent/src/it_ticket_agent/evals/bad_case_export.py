@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..bad_case_store import BadCaseCandidateStore
+from ..case_memory_analysis import build_case_memory_reason_codes, summarize_case_memory_recall
 from ..session.models import utc_now
 
 
@@ -31,12 +32,15 @@ def classify_bad_case_candidate(candidate: dict[str, Any]) -> str:
     conversation_turns = [dict(item) for item in list(candidate.get("conversation_turns") or []) if isinstance(item, dict)]
     system_events = [dict(item) for item in list(candidate.get("system_events") or []) if isinstance(item, dict)]
     source = str(candidate.get("source") or "").strip()
+    reason_codes = [str(item or "") for item in list(candidate.get("reason_codes") or [])]
     retrieval_signals = bool(
         list(retrieval_expansion.get("subqueries") or [])
         or int(retrieval_expansion.get("added_rag_hits") or 0) > 0
         or int(retrieval_expansion.get("added_case_hits") or 0) > 0
     )
     if retrieval_signals:
+        return "rag"
+    if any(code.startswith("case_memory_") for code in reason_codes):
         return "rag"
     if source in {"feedback_reopen", "feedback_negative"}:
         return "session_flow"
@@ -57,6 +61,7 @@ def build_bad_case_export_payload(candidate: dict[str, Any]) -> dict[str, Any]:
     response_payload = dict(candidate.get("response_payload") or {})
     observations = [dict(item) for item in list(candidate.get("observations") or []) if isinstance(item, dict)]
     retrieval_expansion = dict(candidate.get("retrieval_expansion") or {})
+    case_memory_attribution = _build_case_memory_attribution(candidate)
     focus_tools = _distinct_tool_names(observations)
     retrieval_queries = [
         str(dict(item).get("query") or "").strip()
@@ -69,12 +74,14 @@ def build_bad_case_export_payload(candidate: dict[str, Any]) -> dict[str, Any]:
         "severity": candidate.get("severity"),
         "reason_codes": list(candidate.get("reason_codes") or []),
         "target_dataset": target_dataset,
+        "case_memory_attribution": case_memory_attribution,
         "request": _build_eval_request(request_payload),
         "mock_boundary_suggestions": _build_mock_boundary_suggestions(
             candidate=candidate,
             target_dataset=target_dataset,
             focus_tools=focus_tools,
             retrieval_queries=retrieval_queries,
+            case_memory_attribution=case_memory_attribution,
         ),
         "eval_skeleton": _build_eval_skeleton(
             candidate=candidate,
@@ -89,6 +96,7 @@ def build_bad_case_export_payload(candidate: dict[str, Any]) -> dict[str, Any]:
             focus_tools=focus_tools,
             retrieval_queries=retrieval_queries,
             response_payload=response_payload,
+            case_memory_attribution=case_memory_attribution,
         ),
         "source_snapshot": {
             "response_payload": response_payload,
@@ -161,12 +169,42 @@ def _build_eval_request(request_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_case_memory_attribution(candidate: dict[str, Any]) -> dict[str, Any]:
+    context_snapshot = dict(candidate.get("context_snapshot") or {})
+    case_recall = dict(context_snapshot.get("case_recall") or {})
+    reason_codes = [
+        str(item or "").strip()
+        for item in list(candidate.get("reason_codes") or [])
+        if str(item or "").strip().startswith("case_memory_")
+    ]
+    if not case_recall and not reason_codes:
+        return {}
+    summary = summarize_case_memory_recall(case_recall)
+    computed_codes = build_case_memory_reason_codes(case_recall)
+    merged_codes = []
+    for code in [*reason_codes, *computed_codes]:
+        if code and code not in merged_codes:
+            merged_codes.append(code)
+    return {
+        "state": summary.get("state"),
+        "reason": summary.get("reason"),
+        "reason_codes": merged_codes,
+        "prefetch_status": summary.get("prefetch_status"),
+        "prefetched_case_count": summary.get("prefetched_case_count"),
+        "tool_search_count": summary.get("tool_search_count"),
+        "last_tool_status": summary.get("last_tool_status"),
+        "last_tool_hit_count": summary.get("last_tool_hit_count"),
+        "tool_failure_count": summary.get("tool_failure_count"),
+    }
+
+
 def _build_mock_boundary_suggestions(
     *,
     candidate: dict[str, Any],
     target_dataset: str,
     focus_tools: list[str],
     retrieval_queries: list[str],
+    case_memory_attribution: dict[str, Any],
 ) -> dict[str, Any]:
     request_payload = dict(candidate.get("request_payload") or {})
     notes = [
@@ -176,6 +214,10 @@ def _build_mock_boundary_suggestions(
         notes.append("当前线上样本已经带 world_state，若工具间信号需要保持一致，可优先导成 world_state 驱动样本。")
     if target_dataset == "rag":
         notes.append("补齐初始 RAG 命中、query rewrite 子查询，以及每个子查询的新增命中边界。")
+    if case_memory_attribution:
+        state = str(case_memory_attribution.get("state") or "")
+        reason = str(case_memory_attribution.get("reason") or "")
+        notes.append(f"补齐 case-memory 边界：state={state or 'unknown'} reason={reason or 'unknown'}。")
     if target_dataset == "session_flow":
         notes.append("把多轮 turn 和 resume 输入拆成 step，避免直接把整段会话压成单轮样本。")
     return {
@@ -189,6 +231,7 @@ def _build_mock_boundary_suggestions(
         "secondary_boundary": "mock_world_state" if request_payload.get("mock_world_state") else "tool_profile / case profile",
         "focus_tools": focus_tools[:5],
         "retrieval_queries": retrieval_queries[:5],
+        "case_memory": case_memory_attribution,
         "notes": notes,
     }
 
@@ -317,6 +360,7 @@ def _build_todo_items(
     focus_tools: list[str],
     retrieval_queries: list[str],
     response_payload: dict[str, Any],
+    case_memory_attribution: dict[str, Any],
 ) -> list[str]:
     todos = [
         "把 case_id 和 description 改成可读业务语义，不要保留自动导出的占位名。",
@@ -326,6 +370,15 @@ def _build_todo_items(
         todos.append(f"优先根据 observations 回填这些工具的 mock：{', '.join(focus_tools[:3])}。")
     if target_dataset == "rag" and retrieval_queries:
         todos.append(f"按 query 逐条补齐知识 mock：{', '.join(retrieval_queries[:3])}。")
+    if case_memory_attribution:
+        state = str(case_memory_attribution.get("state") or "")
+        reason = str(case_memory_attribution.get("reason") or "")
+        if state == "failed":
+            todos.append(f"补 case-memory 失败 mock，并断言主链继续诊断：{reason or 'unknown'}。")
+        elif state == "empty":
+            todos.append("确认相似案例无命中是否合理；若不合理，补 query rewrite / taxonomy narrowing 期望。")
+        elif state == "skipped":
+            todos.append(f"确认 case-memory 跳过原因是否合理：{reason or 'unknown'}。")
     if target_dataset == "session_flow":
         todos.append("把 turns / system events 拆成 start、resume、post_message 等明确步骤。")
     if str(response_payload.get("status") or "") == "failed":

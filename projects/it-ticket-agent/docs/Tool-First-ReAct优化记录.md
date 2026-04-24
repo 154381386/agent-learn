@@ -1832,3 +1832,66 @@ uv run python -m unittest   tests.test_skill_scenarios   tests.test_runtime_smok
   - case-memory 服务级健康探针和熔断窗口
   - 按 `case_memory_reason` 进入 bad-case candidate 的更细粒度归因
   - 在 eval report 中单独暴露 case-memory skipped / empty / failed 三类统计
+
+## 2026-04-24 14:05 Case Memory 评估统计与 Bad Case 归因
+
+### 问题
+- case-memory 已经能 fail-open 并回写状态，但这些状态还没有进入评估报告和 bad-case 归因闭环。
+- 结果是回归时只能看到最终 pass / fail，看不到 case-memory 是跳过、无命中、命中还是失败。
+- 线上候选导出时也缺少 case-memory 维度，人工整理 eval skeleton 时不容易判断要补“召回失败 mock”还是“query rewrite / taxonomy narrowing”。
+
+### 原因
+- `context_snapshot.case_recall` 只是运行时上下文，之前没有被 `agent_eval` 聚合。
+- bad-case candidate 的 reason code 主要来自工具预算、拒绝工具、retrieval expansion 和反馈，没有把 `case_memory_reason` 纳入归因。
+
+### 改法
+- 新增 `case_memory_analysis.py`，统一把 `case_recall` 归一成：
+  - `state`: `skipped / empty / failed / hit`
+  - `reason`: 优先使用 `case_memory_reason`，失败时回退到 `tool_failures`
+  - `reason_codes`: 生成 `case_memory_failed`、`case_memory_empty`、`case_memory_skipped_*` 等归因码
+- `agent_eval` 的 observation 与 report 增加：
+  - `case_memory_state`
+  - `case_memory_reason`
+  - `case_memory_state_counts`
+  - `case_memory_reason_counts`
+- `run_agent_eval.py` 控制台 metrics 直接打印 `case_memory={...}`，不用打开 JSON report 才能看到。
+- runtime bad-case 归因增加 case-memory 维度：
+  - `case_memory_failed` 可单独进入候选池，severity 为 `medium`
+  - `case_memory_empty / case_memory_skipped_*` 只在已有 bad-case trigger 时作为补充归因，避免普通泛 query 过度入池
+- bad-case export payload 增加 `case_memory_attribution`，并在 mock boundary suggestions / todo 中提示要补失败 mock、无命中合理性或跳过原因。
+
+### 影响
+- eval report 现在能区分 case-memory 的四类结果：跳过、无命中、失败、命中。
+- bad-case candidate 不再只有“retrieval 无收益”这种粗粒度原因，可以进一步看到是否被 case-memory 空命中、跳过或失败影响。
+- 人工从 generated skeleton 合入正式 eval 时，能更快决定该补 case-memory failure mock，还是补 query rewrite / taxonomy narrowing。
+
+### 评估结果
+- 定向测试：`Ran 6 tests ... OK`
+- 相关套件：
+
+```bash
+cd projects/it-ticket-agent
+uv run python -m unittest tests.test_agent_eval tests.test_bad_case_export tests.test_runtime_smoke -q
+```
+
+- 结果：`Ran 76 tests ... OK`
+- 完整回归：
+
+```bash
+cd projects/it-ticket-agent
+uv run python -m unittest discover -s tests -q
+```
+
+- 结果：`Ran 114 tests ... OK (skipped=1)`
+
+### 面试口径
+- 问：case memory 的效果怎么评估？
+  - 答：我没有只看最终回答是否通过，而是在 eval report 里单独聚合 case-memory 状态。每个 case 会归成 skipped、empty、failed、hit，reason 也会聚合，这样能区分“系统没用案例库”“案例库没命中”“案例库挂了”和“案例确实有帮助”。
+- 问：这些状态怎么进入 bad case 闭环？
+  - 答：case-memory failed 会单独生成候选，因为这是外部经验服务不可用；empty 和 skipped 不单独入池，只在已有 bad-case trigger 时作为补充归因，避免泛 query 造成候选池噪声。
+
+### 后续方向
+- 下一步可以继续做：
+  - `search_similar_incidents` 的 query rewrite / taxonomy narrowing 参数推荐
+  - “用户主动问有没有类似历史案例”的独立路由分支
+  - case-memory 连续失败的轻量熔断窗口

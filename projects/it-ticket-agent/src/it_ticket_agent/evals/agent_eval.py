@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 from pydantic import BaseModel, Field
 from unittest.mock import AsyncMock
 
+from ..case_memory_analysis import summarize_case_memory_recall
 from ..case_retrieval import infer_root_cause_taxonomy
 from ..approval_store import ApprovalStore
 from ..checkpoint_store import CheckpointStore
@@ -161,6 +162,14 @@ class AgentEvalObservation:
     retrieval_queries: list[str] = field(default_factory=list)
     retrieval_query_metrics: list[RetrievalQueryMetricObservation] = field(default_factory=list)
     missing_evidence: list[str] = field(default_factory=list)
+    case_memory_state: str = ""
+    case_memory_reason: str = ""
+    case_memory_prefetch_status: str = ""
+    case_memory_prefetched_case_count: int = 0
+    case_memory_tool_search_count: int = 0
+    case_memory_last_tool_status: str = ""
+    case_memory_last_tool_hit_count: int = 0
+    case_memory_tool_failure_count: int = 0
     raw_result: dict[str, Any] = field(default_factory=dict)
 
 
@@ -217,6 +226,8 @@ class AgentEvalReport:
     rejected_tool_call_cases: int = 0
     rejected_tool_call_total: int = 0
     stop_reason_counts: dict[str, int] = field(default_factory=dict)
+    case_memory_state_counts: dict[str, int] = field(default_factory=dict)
+    case_memory_reason_counts: dict[str, int] = field(default_factory=dict)
     gate_result: EvalGateResult | None = None
     results: list[AgentEvalCaseResult] = field(default_factory=list)
 
@@ -286,6 +297,11 @@ def extract_eval_observation(result: Mapping[str, Any]) -> AgentEvalObservation:
     context_snapshot = dict(context_snapshot) if isinstance(context_snapshot, Mapping) else {}
     retrieval_expansion = context_snapshot.get("retrieval_expansion")
     retrieval_expansion = dict(retrieval_expansion) if isinstance(retrieval_expansion, Mapping) else {}
+    case_memory_summary = summarize_case_memory_recall(
+        dict(context_snapshot.get("case_recall") or {})
+        if isinstance(context_snapshot.get("case_recall"), Mapping)
+        else {}
+    )
     primary_root_cause = _extract_primary_root_cause(diagnosis, incident_state, ranked_result)
     primary_root_cause_taxonomy = infer_root_cause_taxonomy(
         primary_root_cause
@@ -334,6 +350,14 @@ def extract_eval_observation(result: Mapping[str, Any]) -> AgentEvalObservation:
             primary_root_cause_taxonomy=primary_root_cause_taxonomy,
         ),
         missing_evidence=_extract_string_list(retrieval_expansion.get("missing_evidence")),
+        case_memory_state=str(case_memory_summary.get("state") or ""),
+        case_memory_reason=str(case_memory_summary.get("reason") or ""),
+        case_memory_prefetch_status=str(case_memory_summary.get("prefetch_status") or ""),
+        case_memory_prefetched_case_count=_safe_int(case_memory_summary.get("prefetched_case_count")),
+        case_memory_tool_search_count=_safe_int(case_memory_summary.get("tool_search_count")),
+        case_memory_last_tool_status=str(case_memory_summary.get("last_tool_status") or ""),
+        case_memory_last_tool_hit_count=_safe_int(case_memory_summary.get("last_tool_hit_count")),
+        case_memory_tool_failure_count=_safe_int(case_memory_summary.get("tool_failure_count")),
         raw_result=payload,
     )
 
@@ -674,10 +698,17 @@ def build_eval_report(results: Sequence[AgentEvalCaseResult]) -> AgentEvalReport
     rejected_tool_call_cases = sum(1 for item in observed if item.rejected_tool_call_count > 0)
     rejected_tool_call_total = sum(item.rejected_tool_call_count for item in observed)
     stop_reason_counts: dict[str, int] = {}
+    case_memory_state_counts: dict[str, int] = {}
+    case_memory_reason_counts: dict[str, int] = {}
     for item in observed:
         stop_reason = str(item.stop_reason or "").strip()
         if stop_reason:
             stop_reason_counts[stop_reason] = stop_reason_counts.get(stop_reason, 0) + 1
+        case_memory_state = str(item.case_memory_state or "skipped").strip() or "skipped"
+        case_memory_state_counts[case_memory_state] = case_memory_state_counts.get(case_memory_state, 0) + 1
+        case_memory_reason = str(item.case_memory_reason or "").strip()
+        if case_memory_reason:
+            case_memory_reason_counts[case_memory_reason] = case_memory_reason_counts.get(case_memory_reason, 0) + 1
     return AgentEvalReport(
         total_cases=total_cases,
         passed_cases=passed_cases,
@@ -690,6 +721,8 @@ def build_eval_report(results: Sequence[AgentEvalCaseResult]) -> AgentEvalReport
         rejected_tool_call_cases=rejected_tool_call_cases,
         rejected_tool_call_total=rejected_tool_call_total,
         stop_reason_counts=stop_reason_counts,
+        case_memory_state_counts=case_memory_state_counts,
+        case_memory_reason_counts=case_memory_reason_counts,
         results=list(results),
     )
 
@@ -1125,6 +1158,8 @@ def serialize_report(report: AgentEvalReport) -> dict[str, Any]:
         "rejected_tool_call_cases": report.rejected_tool_call_cases,
         "rejected_tool_call_total": report.rejected_tool_call_total,
         "stop_reason_counts": dict(report.stop_reason_counts),
+        "case_memory_state_counts": dict(report.case_memory_state_counts),
+        "case_memory_reason_counts": dict(report.case_memory_reason_counts),
         "gate_result": (
             {
                 "passed": report.gate_result.passed,

@@ -102,7 +102,8 @@ def print_agent_report(report) -> None:
         f"expansion_probe_cases={report.expansion_probe_cases} "
         f"rejected_tool_call_cases={report.rejected_tool_call_cases} "
         f"rejected_tool_call_total={report.rejected_tool_call_total} "
-        f"stop_reasons={json.dumps(report.stop_reason_counts, ensure_ascii=False, sort_keys=True)}"
+        f"stop_reasons={json.dumps(report.stop_reason_counts, ensure_ascii=False, sort_keys=True)} "
+        f"case_memory={json.dumps(report.case_memory_state_counts, ensure_ascii=False, sort_keys=True)}"
     )
 
 

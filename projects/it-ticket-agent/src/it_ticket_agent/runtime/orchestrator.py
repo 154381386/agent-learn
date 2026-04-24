@@ -27,6 +27,7 @@ from ..system_event_store import SystemEventStore
 from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..observability import configure_observability
 from ..orchestration.retrieval_planner import RetrievalPlanner
+from ..case_memory_analysis import build_case_memory_reason_codes
 from ..case_retrieval import CaseRetriever, infer_failure_mode, infer_root_cause_taxonomy
 from ..case_vector_indexer import CaseVectorIndexer
 from ..schemas import (
@@ -416,6 +417,7 @@ class SupervisorOrchestrator:
                 "iteration_guardrail_reached",
                 "rejected_tool_call_detected",
                 "retrieval_misaligned_with_primary_root_cause",
+                "case_memory_failed",
             }
         ):
             return "medium"
@@ -439,6 +441,9 @@ class SupervisorOrchestrator:
             incident_metadata.get("react_runtime")
         )
         retrieval_expansion = self._as_dict(context_snapshot.get("retrieval_expansion"))
+        case_memory_reason_codes = build_case_memory_reason_codes(
+            self._as_dict(context_snapshot.get("case_recall"))
+        )
         stop_reason = str(diagnosis.get("stop_reason") or react_runtime.get("stop_reason") or "").strip()
         reason_codes: list[str] = []
 
@@ -481,6 +486,9 @@ class SupervisorOrchestrator:
             reason_codes.append("actual_root_cause_provided")
         if source == "feedback_reopen":
             reason_codes.append("feedback_reopen")
+
+        if reason_codes or "case_memory_failed" in case_memory_reason_codes:
+            reason_codes.extend(case_memory_reason_codes)
 
         return self._dedupe_reason_codes(reason_codes)
 

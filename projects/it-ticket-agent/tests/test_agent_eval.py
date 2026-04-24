@@ -25,6 +25,7 @@ from it_ticket_agent.evals import (
     resolve_tool_profile_mock_responses,
     score_agent_eval_case,
     score_session_flow_step,
+    serialize_report,
     SessionFlowEvalCase,
     SessionFlowEvalDataset,
     SessionFlowEvalGate,
@@ -220,6 +221,39 @@ class ObservationScoreTest(unittest.TestCase):
         self.assertTrue(observation.retrieval_query_metrics[0].matches_primary_root_cause_taxonomy)
         self.assertEqual(observation.missing_evidence, ["是否存在近期发布回归或配置变更"])
 
+    def test_extract_eval_observation_includes_case_memory_metrics(self) -> None:
+        observation = extract_eval_observation(
+            {
+                "status": "completed",
+                "message": "继续用 live tool 诊断。",
+                "diagnosis": {
+                    "route": "react_tool_first",
+                    "context_snapshot": {
+                        "case_recall": {
+                            "auto_prefetch_enabled": True,
+                            "prefetch_status": "error",
+                            "prefetch_error_type": "TimeoutError",
+                            "case_memory_reason": "case_memory_search_failed",
+                            "prefetched_case_count": 0,
+                            "tool_search_count": 1,
+                            "last_tool_status": "completed",
+                            "last_tool_hit_count": 0,
+                            "tool_failures": [
+                                {"query": "payment-service timeout", "error": "case_memory_search_failed"}
+                            ],
+                        }
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(observation.case_memory_state, "failed")
+        self.assertEqual(observation.case_memory_reason, "case_memory_search_failed")
+        self.assertEqual(observation.case_memory_prefetch_status, "error")
+        self.assertEqual(observation.case_memory_tool_search_count, 1)
+        self.assertEqual(observation.case_memory_last_tool_hit_count, 0)
+        self.assertEqual(observation.case_memory_tool_failure_count, 1)
+
     def test_build_eval_report_includes_search_metrics(self) -> None:
         report = build_eval_report(
             [
@@ -246,6 +280,8 @@ class ObservationScoreTest(unittest.TestCase):
                         evidence=["blocked"],
                         expansion_probe_count=1,
                         rejected_tool_call_count=0,
+                        case_memory_state="empty",
+                        case_memory_reason="case_memory_empty",
                     ),
                 ),
                 AgentEvalCaseResult(
@@ -271,6 +307,8 @@ class ObservationScoreTest(unittest.TestCase):
                         evidence=["deploy"],
                         expansion_probe_count=0,
                         rejected_tool_call_count=2,
+                        case_memory_state="failed",
+                        case_memory_reason="case_memory_search_failed",
                     ),
                 ),
             ]
@@ -282,6 +320,10 @@ class ObservationScoreTest(unittest.TestCase):
         self.assertEqual(report.stop_reason_counts["evidence_sufficient_early_stop"], 1)
         self.assertEqual(report.stop_reason_counts["model_answered"], 1)
         self.assertEqual(report.avg_tool_calls_used, 1.5)
+        self.assertEqual(report.case_memory_state_counts, {"empty": 1, "failed": 1})
+        self.assertEqual(report.case_memory_reason_counts["case_memory_search_failed"], 1)
+        serialized = serialize_report(report)
+        self.assertEqual(serialized["case_memory_state_counts"], {"empty": 1, "failed": 1})
 
     def test_evaluate_agent_eval_gate_checks_thresholds(self) -> None:
         report = build_eval_report(
