@@ -1,6 +1,12 @@
 {
   "schema_version": 1,
   "description": "World-state driven eval cases. Tool outputs are projected from a shared incident world instead of being mocked per tool.",
+  "gate": {
+    "min_pass_rate": 0.8,
+    "max_avg_tool_calls_used": 5.5,
+    "max_expansion_probe_cases": 4,
+    "max_rejected_tool_call_total": 1
+  },
   "cases": [
     {
       "case_id": "world_timeout_db_pool_with_network_noise",

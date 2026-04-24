@@ -13,7 +13,7 @@ from ..graph.react_state import ReactTicketGraphState
 from ..llm_client import OpenAICompatToolLLM
 from ..runtime.contracts import TaskEnvelope
 from ..settings import Settings
-from ..state.models import EvidenceItem, Hypothesis, VerificationResult, VerificationStep
+from ..state.models import EvidenceItem, Hypothesis, RAGContextBundle, SimilarIncidentCase, VerificationResult, VerificationStep
 from ..tools.runtime import LocalToolRuntime
 
 
@@ -121,7 +121,7 @@ class ReactSupervisor:
         self.summary_after_n_steps = summary_after_n_steps
         self.max_context_tokens = max_context_tokens
         self.llm = OpenAICompatToolLLM(settings)
-        self.tool_runtime = LocalToolRuntime()
+        self.tool_runtime = LocalToolRuntime(settings=settings)
         self.tools = self.tool_runtime.tools
         self.tool_middleware = ToolExecutionMiddleware(self.tools)
         self.ranker = Ranker()
@@ -149,6 +149,7 @@ class ReactSupervisor:
         expansion_probe_tools: list[str] = list(next_state.get("expansion_probe_tools") or [])
         rejected_tool_call_names: list[str] = list(next_state.get("rejected_tool_call_names") or [])
         rejected_tool_call_count = int(next_state.get("rejected_tool_call_count") or 0)
+        context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
         candidate_domain_plan = self._resolve_candidate_domains(
             request=request,
             context_snapshot=context_snapshot,
@@ -157,12 +158,14 @@ class ReactSupervisor:
         candidate_tool_names = self._select_candidate_tool_names(
             observations=observations,
             candidate_domain_plan=candidate_domain_plan,
+            context_snapshot=context_snapshot,
         )
         next_state["candidate_tool_names"] = candidate_tool_names
         next_state["candidate_domains"] = dict(candidate_domain_plan)
 
         for iteration in range(1, self.max_iterations + 1):
             next_state["iterations"] = iteration
+            context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
             candidate_domain_plan = self._resolve_candidate_domains(
                 request=request,
                 context_snapshot=context_snapshot,
@@ -171,6 +174,7 @@ class ReactSupervisor:
             candidate_tool_names = self._select_candidate_tool_names(
                 observations=observations,
                 candidate_domain_plan=candidate_domain_plan,
+                context_snapshot=context_snapshot,
             )
             next_state["candidate_tool_names"] = candidate_tool_names
             next_state["candidate_domains"] = dict(candidate_domain_plan)
@@ -199,6 +203,10 @@ class ReactSupervisor:
                                 tool_name=tool_name,
                                 arguments={"service": request.service} if request.service else {},
                                 tool_cache=tool_cache,
+                                extra_shared_context=self._build_tool_shared_context(
+                                    context_snapshot=next_state.get("context_snapshot") or incident_state.context_snapshot,
+                                    incident_state=incident_state,
+                                ),
                             )
                             for tool_name in probe_tool_names
                         ]
@@ -295,7 +303,20 @@ class ReactSupervisor:
                 )
 
             valid_calls = valid_calls[: self.max_parallel_branches]
-            results = await asyncio.gather(*[self._run_tool_call(request=request, call=call, tool_cache=tool_cache) for call in valid_calls])
+            results = await asyncio.gather(
+                *[
+                    self._run_tool_call(
+                        request=request,
+                        call=call,
+                        tool_cache=tool_cache,
+                        extra_shared_context=self._build_tool_shared_context(
+                            context_snapshot=next_state.get("context_snapshot") or incident_state.context_snapshot,
+                            incident_state=incident_state,
+                        ),
+                    )
+                    for call in valid_calls
+                ]
+            )
             tool_calls_used, observations, pinned_findings, working_memory_summary, evidence_evaluation = self._apply_observation_results(
                 next_state=next_state,
                 incident_state=incident_state,
@@ -326,6 +347,7 @@ class ReactSupervisor:
                 break
 
         evidence_evaluation = self._evaluate_evidence(observations)
+        context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
         next_state["stop_reason"] = next_state.get("stop_reason") or "iteration_guardrail_reached"
         incident_state.status = "completed"
         incident_state.final_summary = "react supervisor stopped by iteration or tool budget guardrail"
@@ -377,10 +399,13 @@ class ReactSupervisor:
         context_snapshot = state.get("context_snapshot") or incident_state.context_snapshot
         recent_observations = self._recent_observations_for_prompt(observations)
         candidate_tool_names = list(state.get("candidate_tool_names") or self.tools.keys())
+        recent_session_events = self._recent_session_events_for_prompt(state)
         payload = {
             "request": request.model_dump(),
             "rag_context": context_snapshot.rag_context.model_dump() if context_snapshot and context_snapshot.rag_context is not None else {},
             "similar_cases": [item.model_dump() for item in list(context_snapshot.similar_cases or [])[:3]] if context_snapshot else [],
+            "case_recall": dict(getattr(context_snapshot, "case_recall", {}) or {}) if context_snapshot else {},
+            "recent_session_events": recent_session_events,
             "pinned_findings": pinned_findings,
             "working_memory_summary": working_memory_summary,
             "recent_observations": recent_observations,
@@ -406,12 +431,43 @@ class ReactSupervisor:
                     "优先选择最能验证当前主假设的最少工具，不要机械补查所有维度。"
                     "如果已有 2-3 个高价值异常证据指向同一问题域，立即停止继续调 tool。"
                     "如果多个只读检查互不依赖，可以一次返回多个 tool calls，但总是优先最关键的 2-3 个。"
+                    "当 rag_context 为空、命中很少，或需要查已知故障/发布模式时，可先调用 search_knowledge_base 一次补充背景，再决定 live 检查。"
+                    "similar_cases 只是一层历史背景提示，不等于现场证据。"
+                    "只有在 service/环境已明确，且你已经拿到更具体的 symptom、failure mode 或根因方向时，才调用 search_similar_incidents。"
+                    "如果 case_recall 显示自动预召回被跳过，先做 1-2 个关键只读检查，再决定是否查历史案例。"
+                    "如果知识搜索已经命中已知模式，且至少一个 live tool 证实了对应异常，优先直接给出阶段性结论，不要继续跨域扩查。"
+                    "避免对同一个 query 重复搜索知识库。"
+                    "避免对几乎相同的线索重复搜索历史案例。"
                     "当证据足够时，不要继续调 tool，直接输出 JSON：{\"final_answer\": string, \"confidence\": number}。"
                     "不要编造不存在的观测结果。"
                 ),
             },
             {"role": "user", "content": content},
         ]
+
+    @staticmethod
+    def _recent_session_events_for_prompt(state: ReactTicketGraphState) -> list[dict[str, Any]]:
+        execution_context = state.get("execution_context")
+        if execution_context is None:
+            return []
+        memory_summary = dict(getattr(execution_context, "memory_summary", {}) or {})
+        session_memory = dict(memory_summary.get("session_memory") or {})
+        queue = list(session_memory.get("session_event_queue") or [])
+        compact: list[dict[str, Any]] = []
+        for item in queue[-3:]:
+            if not isinstance(item, dict):
+                continue
+            compact.append(
+                {
+                    "source": item.get("source"),
+                    "event_type": item.get("event_type"),
+                    "message": item.get("message"),
+                    "reason_tags": list(dict(item.get("metadata") or {}).get("reason_tags") or [])[:3],
+                    "created_at": item.get("created_at"),
+                    "consumed_at": item.get("consumed_at"),
+                }
+            )
+        return compact
 
     def _build_final_response(
         self,
@@ -594,6 +650,16 @@ class ReactSupervisor:
             observation = result.get("observation") if isinstance(result, dict) else None
             if isinstance(observation, dict):
                 new_observations.append(observation)
+                self._merge_search_knowledge_observation(
+                    next_state=next_state,
+                    incident_state=incident_state,
+                    observation=observation,
+                )
+                self._merge_search_similar_case_observation(
+                    next_state=next_state,
+                    incident_state=incident_state,
+                    observation=observation,
+                )
                 applied_count += 1
         new_observations = new_observations[-20:]
         tool_calls_used += applied_count
@@ -612,6 +678,136 @@ class ReactSupervisor:
         incident_state.metadata["evidence_evaluation"] = evidence_evaluation
         return tool_calls_used, new_observations, pinned_findings, working_memory_summary, evidence_evaluation
 
+    def _merge_search_knowledge_observation(
+        self,
+        *,
+        next_state: dict[str, Any],
+        incident_state,
+        observation: dict[str, Any],
+    ) -> None:
+        if str(observation.get("tool_name") or "") != "search_knowledge_base":
+            return
+        result = dict(observation.get("result") or {})
+        payload = dict(result.get("payload") or {})
+        hits = list(payload.get("hits") or [])
+        citations = [str(item) for item in list(payload.get("citations") or []) if str(item or "").strip()]
+        if not hits and not citations:
+            return
+        query = str(dict(observation.get("arguments") or {}).get("query") or "")
+        extra_bundle = RAGContextBundle.model_validate(
+            {
+                "query": query,
+                "query_type": "tool_search",
+                "hits": hits,
+                "context": hits,
+                "citations": citations,
+                "index_info": {"source": "search_knowledge_base"},
+            }
+        )
+        current_bundle = incident_state.rag_context if incident_state.rag_context is not None else RAGContextBundle()
+        merged_bundle = self._merge_rag_bundles(current_bundle, extra_bundle)
+        incident_state.rag_context = merged_bundle
+        context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
+        if context_snapshot is not None:
+            context_snapshot.rag_context = merged_bundle
+            incident_state.context_snapshot = context_snapshot
+            next_state["context_snapshot"] = context_snapshot
+
+    def _merge_search_similar_case_observation(
+        self,
+        *,
+        next_state: dict[str, Any],
+        incident_state,
+        observation: dict[str, Any],
+    ) -> None:
+        if str(observation.get("tool_name") or "") != "search_similar_incidents":
+            return
+        result = dict(observation.get("result") or {})
+        payload = dict(result.get("payload") or {})
+        raw_cases = [dict(item) for item in list(payload.get("cases") or []) if isinstance(item, dict)]
+        context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
+        if context_snapshot is None:
+            return
+        merged_cases: dict[str, SimilarIncidentCase] = {
+            str(item.case_id): item
+            for item in list(getattr(context_snapshot, "similar_cases", []) or [])
+            if str(getattr(item, "case_id", "") or "").strip()
+        }
+        added_case_hits = 0
+        for item in raw_cases:
+            normalized = SimilarIncidentCase.model_validate(
+                {
+                    "case_id": str(item.get("case_id") or ""),
+                    "service": str(item.get("service") or ""),
+                    "failure_mode": str(item.get("failure_mode") or ""),
+                    "root_cause_taxonomy": str(item.get("root_cause_taxonomy") or ""),
+                    "signal_pattern": str(item.get("signal_pattern") or ""),
+                    "action_pattern": str(item.get("action_pattern") or ""),
+                    "symptom": str(item.get("symptom") or ""),
+                    "root_cause": str(item.get("root_cause") or ""),
+                    "final_action": str(item.get("final_action") or ""),
+                    "summary": str(item.get("summary") or ""),
+                    "recall_source": str(item.get("recall_source") or "tool_search"),
+                    "recall_score": round(float(item.get("score") or item.get("recall_score") or 0.0), 4),
+                }
+            )
+            existing = merged_cases.get(normalized.case_id)
+            if existing is None:
+                merged_cases[normalized.case_id] = normalized
+                added_case_hits += 1
+                continue
+            if normalized.recall_score > existing.recall_score:
+                merged_cases[normalized.case_id] = normalized
+        if raw_cases:
+            context_snapshot.similar_cases = sorted(
+                merged_cases.values(),
+                key=lambda item: float(item.recall_score or 0.0),
+                reverse=True,
+            )[:6]
+        index_info = dict(payload.get("index_info") or {})
+        case_recall = dict(getattr(context_snapshot, "case_recall", {}) or {})
+        tool_failures = list(case_recall.get("tool_failures") or [])
+        if result.get("status") == "error" or index_info.get("error"):
+            failure = {
+                "query": str(payload.get("query") or ""),
+                "error": str(index_info.get("error") or result.get("error_type") or result.get("summary") or "case_memory_search_failed"),
+            }
+            if failure not in tool_failures:
+                tool_failures.append(failure)
+        case_recall.update(
+            {
+                "tool_search_count": int(case_recall.get("tool_search_count") or 0) + 1,
+                "last_tool_query": str(payload.get("query") or ""),
+                "last_tool_status": str(result.get("status") or "completed"),
+                "last_tool_hit_count": len(raw_cases),
+                "tool_added_case_hits": int(case_recall.get("tool_added_case_hits") or 0) + added_case_hits,
+            }
+        )
+        if tool_failures:
+            case_recall["tool_failures"] = tool_failures[-5:]
+        context_snapshot.case_recall = case_recall
+        incident_state.context_snapshot = context_snapshot
+        next_state["context_snapshot"] = context_snapshot
+
+    @staticmethod
+    def _merge_rag_bundles(base: RAGContextBundle, extra: RAGContextBundle) -> RAGContextBundle:
+        merged = base.model_copy(deep=True)
+        seen = {(item.chunk_id, item.path, item.section) for item in list(merged.context or merged.hits)}
+        for item in list(extra.context or extra.hits):
+            key = (item.chunk_id, item.path, item.section)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.hits.append(item)
+            merged.context.append(item)
+        merged.citations = list(dict.fromkeys([*merged.citations, *extra.citations]))
+        merged.facts = list(merged.facts) + [fact for fact in extra.facts if fact not in merged.facts]
+        merged.index_info = {
+            **dict(merged.index_info or {}),
+            "agentic_search_tool": True,
+        }
+        return merged
+
     def _should_run_expansion_probe(
         self,
         *,
@@ -619,7 +815,7 @@ class ReactSupervisor:
         observations: list[dict[str, Any]],
     ) -> bool:
         expanded_domains = list(candidate_domain_plan.get("expanded_domains") or [])
-        if not expanded_domains or len(observations) < 2:
+        if not expanded_domains or self._live_observation_count(observations) < 2:
             return False
         evidence_evaluation = self._evaluate_evidence(observations)
         if (
@@ -737,8 +933,19 @@ class ReactSupervisor:
         *,
         observations: list[dict[str, Any]],
         candidate_domain_plan: dict[str, list[str]],
+        context_snapshot=None,
     ) -> list[str]:
         candidate_tool_names: list[str] = []
+        if self._should_include_knowledge_tool(
+            context_snapshot=context_snapshot,
+            observations=observations,
+        ):
+            candidate_tool_names.append("search_knowledge_base")
+        if self._should_include_similar_case_tool(
+            context_snapshot=context_snapshot,
+            observations=observations,
+        ):
+            candidate_tool_names.append("search_similar_incidents")
         primary_domains = list(candidate_domain_plan.get("primary_domains") or [])
         expanded_domains = list(candidate_domain_plan.get("expanded_domains") or [])
         if primary_domains:
@@ -772,6 +979,46 @@ class ReactSupervisor:
         normalized = [name for name in candidate_tool_names if name in self.tools]
         return normalized[:10] if normalized else list(self.tools.keys())
 
+    def _should_include_knowledge_tool(
+        self,
+        *,
+        context_snapshot,
+        observations: list[dict[str, Any]],
+    ) -> bool:
+        if "search_knowledge_base" not in self.tools:
+            return False
+        rag_context = getattr(context_snapshot, "rag_context", None)
+        retrieval_expansion = getattr(context_snapshot, "retrieval_expansion", None)
+        rag_hits = list(getattr(rag_context, "context", None) or getattr(rag_context, "hits", None) or [])
+        subqueries = list(getattr(retrieval_expansion, "subqueries", None) or [])
+        if any(str(getattr(item, "target", "") or "") in {"knowledge", "both"} for item in subqueries):
+            return True
+        if not observations:
+            return len(rag_hits) <= 1
+        evidence_evaluation = self._evaluate_evidence(observations)
+        return len(rag_hits) <= 2 and not bool(evidence_evaluation.get("enough_for_output"))
+
+    def _should_include_similar_case_tool(
+        self,
+        *,
+        context_snapshot,
+        observations: list[dict[str, Any]],
+    ) -> bool:
+        if "search_similar_incidents" not in self.tools or context_snapshot is None:
+            return False
+        request_payload = dict(getattr(context_snapshot, "request", {}) or {})
+        if not str(request_payload.get("service") or "").strip():
+            return False
+        retrieval_expansion = getattr(context_snapshot, "retrieval_expansion", None)
+        subqueries = list(getattr(retrieval_expansion, "subqueries", None) or [])
+        if any(str(getattr(item, "target", "") or "") in {"cases", "both"} for item in subqueries):
+            return True
+        if not observations:
+            return False
+        similar_cases = list(getattr(context_snapshot, "similar_cases", []) or [])
+        evidence_evaluation = self._evaluate_evidence(observations)
+        return len(similar_cases) <= 1 and not bool(evidence_evaluation.get("enough_for_output"))
+
     @staticmethod
     def _domain_native_tool_names(domain: str) -> list[str]:
         group = list(DOMAIN_TOOL_GROUPS.get(domain, []))
@@ -792,13 +1039,23 @@ class ReactSupervisor:
         primary_domains: list[str],
         observations: list[dict[str, Any]],
     ) -> bool:
-        if len(observations) < 2:
+        if self._live_observation_count(observations) < 2:
             return False
         anomaly_counts = self._domain_anomaly_counts(observations)
         primary_domain_anomalies = sum(anomaly_counts.get(domain, 0) for domain in primary_domains)
+        if self._has_tool_observation(observations, "search_knowledge_base") and primary_domain_anomalies >= 1:
+            return False
         if primary_domain_anomalies >= 2:
             return False
         return True
+
+    @staticmethod
+    def _live_observation_count(observations: list[dict[str, Any]]) -> int:
+        return sum(1 for item in observations if str(item.get("tool_name") or "") != "search_knowledge_base")
+
+    @staticmethod
+    def _has_tool_observation(observations: list[dict[str, Any]], tool_name: str) -> bool:
+        return any(str(item.get("tool_name") or "") == tool_name for item in observations)
 
     def _domain_anomaly_counts(self, observations: list[dict[str, Any]]) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -892,7 +1149,14 @@ class ReactSupervisor:
             return True
         return False
 
-    async def _run_tool_call(self, *, request, call: dict[str, Any], tool_cache: dict[str, Any]) -> dict[str, Any]:
+    async def _run_tool_call(
+        self,
+        *,
+        request,
+        call: dict[str, Any],
+        tool_cache: dict[str, Any],
+        extra_shared_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         function = call.get("function") or {}
         tool_name = str(function.get("name") or "")
         raw_arguments = function.get("arguments") or "{}"
@@ -925,6 +1189,7 @@ class ReactSupervisor:
                 "mock_scenarios": dict(request.mock_scenarios or {}),
                 "mock_tool_responses": dict(request.mock_tool_responses or {}),
                 "mock_world_state": dict(request.mock_world_state or {}),
+                **dict(extra_shared_context or {}),
             },
             allowed_actions=["run_tool"],
         )
@@ -959,6 +1224,10 @@ class ReactSupervisor:
                     tool_name=step.tool_name,
                     arguments=dict(step.params),
                     tool_cache=tool_cache,
+                    extra_shared_context=self._build_tool_shared_context(
+                        context_snapshot=context_snapshot,
+                        incident_state=incident_state,
+                    ),
                 )
                 observation = result["observation"]
                 observations.append(observation)
@@ -1059,6 +1328,7 @@ class ReactSupervisor:
         tool_name: str,
         arguments: dict[str, Any],
         tool_cache: dict[str, Any],
+        extra_shared_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         call = {
             "id": f"rule-{tool_name}-{uuid4().hex[:8]}",
@@ -1067,7 +1337,33 @@ class ReactSupervisor:
                 "arguments": json.dumps(arguments, ensure_ascii=False),
             },
         }
-        return await self._run_tool_call(request=request, call=call, tool_cache=tool_cache)
+        return await self._run_tool_call(
+            request=request,
+            call=call,
+            tool_cache=tool_cache,
+            extra_shared_context=extra_shared_context,
+        )
+
+    @staticmethod
+    def _build_tool_shared_context(*, context_snapshot, incident_state) -> dict[str, Any]:
+        shared: dict[str, Any] = {}
+        rag_context = getattr(context_snapshot, "rag_context", None)
+        if rag_context is None and incident_state is not None:
+            rag_context = getattr(incident_state, "rag_context", None)
+        if hasattr(rag_context, "model_dump"):
+            shared["rag_context"] = rag_context.model_dump()
+        elif isinstance(rag_context, dict):
+            shared["rag_context"] = dict(rag_context)
+        similar_cases = list(getattr(context_snapshot, "similar_cases", []) or []) if context_snapshot is not None else []
+        if similar_cases:
+            shared["similar_cases"] = [
+                item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                for item in similar_cases[:6]
+            ]
+        case_recall = dict(getattr(context_snapshot, "case_recall", {}) or {}) if context_snapshot is not None else {}
+        if case_recall:
+            shared["case_recall"] = case_recall
+        return shared
 
     def _build_rule_based_hypotheses(self, *, request, context_snapshot) -> list[Hypothesis]:
         message = str(request.message or "")

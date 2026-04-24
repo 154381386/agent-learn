@@ -233,6 +233,26 @@ class CaseRetrieverHybridTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CaseRetrieverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_case_retriever_degrades_to_empty_when_case_memory_fails(self) -> None:
+        async def failing_case_memory_search(**kwargs):
+            raise TimeoutError("case memory unavailable")
+
+        client = SimpleNamespace(case_memory_search=failing_case_memory_search)
+        retriever = CaseRetriever(client, Settings(rag_enabled=True))
+
+        cases = await retriever.recall(
+            service="order-service",
+            cluster="prod-shanghai-1",
+            namespace="default",
+            message="order-service timeout 502",
+            session_id="current-session",
+        )
+
+        self.assertEqual(cases, [])
+        self.assertEqual(retriever.last_recall_metadata["status"], "error")
+        self.assertEqual(retriever.last_recall_metadata["reason"], "case_memory_search_failed")
+        self.assertEqual(retriever.last_recall_metadata["error_type"], "TimeoutError")
+
     async def test_case_retriever_merges_exact_and_pattern_matches(self) -> None:
         client = SimpleNamespace(case_memory_search=self._fake_case_memory_search)
         retriever = CaseRetriever(client, Settings(rag_enabled=True))
@@ -284,6 +304,29 @@ class CaseRetrieverTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CaseVectorIndexerTest(unittest.TestCase):
+    def test_index_case_records_error_without_raising_when_case_memory_sync_fails(self) -> None:
+        from it_ticket_agent.case_vector_indexer import CaseVectorIndexer
+
+        class FailingClient:
+            async def case_memory_sync(self, *, cases):
+                raise ConnectionError("case memory sync unavailable")
+
+        indexer = CaseVectorIndexer(
+            Settings(rag_enabled=True),
+            SimpleNamespace(list_cases=lambda limit=200: []),
+            FailingClient(),
+        )
+
+        async def run_index() -> None:
+            await indexer.index_case({"case_id": "case-sync-failure", "service": "order-service"})
+
+        import asyncio
+
+        asyncio.run(run_index())
+        self.assertEqual(indexer.last_sync_metadata["status"], "error")
+        self.assertEqual(indexer.last_sync_metadata["reason"], "case_memory_sync_failed")
+        self.assertEqual(indexer.last_sync_metadata["error_type"], "ConnectionError")
+
     def test_sync_item_contains_stable_checksum_and_source_version(self) -> None:
         from it_ticket_agent.case_vector_indexer import CaseVectorIndexer
 

@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any, Optional
 
 from .models import IncidentCase, ProcessMemoryEntry, ProcessMemorySummary
+from .upsert_merge import merge_incident_case_feedback
 from ..session.models import utc_now
 
 
@@ -195,7 +196,8 @@ class ProcessMemoryStoreV2:
     def upsert_case(self, case: IncidentCase) -> IncidentCase:
         existing = self.get_case_by_session_id(case.session_id)
         now = utc_now()
-        payload = case.model_copy(
+        merged_case = merge_incident_case_feedback(existing=existing, incoming=case)
+        payload = merged_case.model_copy(
             update={
                 "case_id": existing.case_id if existing is not None else case.case_id,
                 "created_at": existing.created_at if existing is not None else case.created_at,

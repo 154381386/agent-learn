@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from it_ticket_agent.approval.pg_store import PostgresApprovalStoreV2
+from it_ticket_agent.bad_cases.models import BadCaseCandidate
+from it_ticket_agent.bad_cases.pg_store import PostgresBadCaseCandidateStoreV2
 from it_ticket_agent.approval.models import ApprovalProposal, ApprovalRequest
 from it_ticket_agent.checkpoints.models import ExecutionCheckpoint
 from it_ticket_agent.checkpoints.pg_store import PostgresCheckpointStoreV2
@@ -38,6 +40,7 @@ class PostgresStorageSmokeTest(unittest.TestCase):
         checkpoint_store = PostgresCheckpointStoreV2(self.dsn)
         execution_store = PostgresExecutionStoreV2(self.dsn)
         memory_store = PostgresProcessMemoryStoreV2(self.dsn)
+        bad_case_store = PostgresBadCaseCandidateStoreV2(self.dsn)
 
         session = session_store.create_session(
             ConversationSession(
@@ -158,6 +161,20 @@ class PostgresStorageSmokeTest(unittest.TestCase):
             )
         )
         self.assertEqual(memory_store.get_case_by_session_id(session.session_id).case_id, case.case_id)
+
+        bad_case = bad_case_store.create_candidate(
+            BadCaseCandidate(
+                session_id=session.session_id,
+                thread_id=session.thread_id,
+                ticket_id=session.ticket_id,
+                source="runtime_completion",
+                reason_codes=["retrieval_expansion_no_gain"],
+                severity="low",
+                request_payload={"message": "postgres smoke test"},
+                response_payload={"status": "completed"},
+            )
+        )
+        self.assertEqual(bad_case_store.get_candidate(bad_case.candidate_id).candidate_id, bad_case.candidate_id)
 
     def test_ranker_weights_manager_works_in_postgres_mode(self) -> None:
         with TemporaryDirectory() as tmp_dir:

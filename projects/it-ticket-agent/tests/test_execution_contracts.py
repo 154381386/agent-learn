@@ -23,7 +23,7 @@ class ExecutionContractsTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def test_execution_store_roundtrips_recovery_retry_and_dependency_contracts(self) -> None:
+    def test_execution_store_roundtrips_manual_intervention_recovery_and_dependency_contracts(self) -> None:
         plan = self.store.create_plan(
             ExecutionPlan(
                 session_id="session-1",
@@ -34,14 +34,14 @@ class ExecutionContractsTest(unittest.TestCase):
                 current_step_id="step-2",
                 summary="执行计划测试",
                 recovery=ExecutionRecoveryMetadata(
-                    can_resume=True,
-                    recovery_action="retry_execution_step",
-                    recovery_reason="主动作失败，可重试。",
+                    can_resume=False,
+                    recovery_action="manual_intervention",
+                    recovery_reason="主动作失败，需人工确认资源状态。",
                     resume_from_step_id="step-2",
                     failed_step_id="step-2",
                     last_completed_step_id="step-1",
                     suggested_retry_count=1,
-                    hints=["先确认目标资源状态。"],
+                    hints=["先人工确认目标资源状态。"],
                 ),
                 metadata={"source": "unit-test"},
             )
@@ -75,7 +75,7 @@ class ExecutionContractsTest(unittest.TestCase):
         assert loaded_plan is not None
         assert loaded_step is not None
         self.assertEqual(loaded_plan.recovery.failed_step_id, "step-2")
-        self.assertEqual(loaded_plan.recovery.recovery_action, "retry_execution_step")
+        self.assertEqual(loaded_plan.recovery.recovery_action, "manual_intervention")
         self.assertEqual(loaded_step.dependencies, ["step-1"])
         self.assertEqual(loaded_step.retry_policy.max_attempts, 2)
         self.assertIsNotNone(loaded_step.compensation)

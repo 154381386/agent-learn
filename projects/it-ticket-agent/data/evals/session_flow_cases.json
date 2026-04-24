@@ -1,10 +1,14 @@
 {
   "schema_version": 1,
-  "description": "Session-flow eval cases covering clarification, approval, feedback, and topic shift resume paths.",
+  "description": "Session-flow eval cases covering clarification, approval, feedback, topic-shift resume, and execution recovery paths.",
+  "gate": {
+    "min_pass_rate": 1.0,
+    "min_step_pass_rate": 1.0
+  },
   "cases": [
     {
-      "case_id": "clarification_resume_reaches_feedback",
-      "description": "Missing required slots should trigger clarification, then resume into diagnosis and feedback interrupt.",
+      "case_id": "clarification_resume_completes_without_feedback",
+      "description": "Missing required slots should trigger clarification, then resume into diagnosis. If there is no actionable guidance, no feedback interrupt should be created.",
       "setup": {
         "llm_mode": "disabled"
       },
@@ -41,7 +45,7 @@
           "expect": {
             "response_status": "completed",
             "session_status": "completed",
-            "pending_interrupt_type": "feedback",
+            "pending_interrupt_type": "",
             "route": "react_tool_first",
             "stop_reason": "rule_based_no_llm",
             "min_tool_calls_used": 2,
@@ -306,8 +310,8 @@
       ]
     },
     {
-      "case_id": "topic_shift_supersedes_pending_approval",
-      "description": "A new message during pending approval should supersede the old interrupt and restart analysis.",
+      "case_id": "topic_shift_supersedes_pending_approval_and_restarts_analysis",
+      "description": "A new message during pending approval should supersede the old interrupt and restart analysis. If the restarted diagnosis has no actionable guidance, it should complete without feedback interrupt.",
       "setup": {
         "llm_mode": "disabled"
       },
@@ -336,7 +340,7 @@
           "expect": {
             "response_status": "completed",
             "session_status": "completed",
-            "pending_interrupt_type": "feedback",
+            "pending_interrupt_type": "",
             "required_any_tools": [
               "inspect_connection_pool",
               "inspect_slow_queries"
@@ -351,6 +355,155 @@
               "cancelled"
             ],
             "min_current_intent_history_length": 1
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "execution_failure_returns_recovery_plan",
+      "description": "Tampering the latest approval snapshot should fail execution and expose a deterministic recovery plan.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_with_pending_approval",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-execution-recovery",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "pending_interrupt_type": "approval"
+          }
+        },
+        {
+          "step_id": "tamper_latest_approval_snapshot",
+          "action": "tamper_latest_approval",
+          "request": {
+            "proposal_patch": {
+              "params": {
+                "service": "tampered-service"
+              }
+            }
+          },
+          "expect": {}
+        },
+        {
+          "step_id": "approve_tampered_request",
+          "action": "resume_conversation",
+          "request": {
+            "approved": true,
+            "approver_id": "ops-admin",
+            "comment": "继续执行被篡改的审批单"
+          },
+          "expect": {
+            "response_status": "failed",
+            "session_status": "failed",
+            "message_contains": [
+              "snapshot mismatch"
+            ],
+            "recovery_action": "manual_intervention",
+            "execution_plan_status": "failed",
+            "failed_step_exists": true,
+            "resume_from_step_exists": true,
+            "recovery_reason_contains": [
+              "执行前校验失败"
+            ]
+          }
+        },
+        {
+          "step_id": "load_execution_recovery",
+          "action": "get_execution_recovery",
+          "request": {},
+          "expect": {
+            "response_status": "completed",
+            "session_status": "failed",
+            "recovery_action": "manual_intervention",
+            "execution_plan_status": "failed",
+            "failed_step_exists": true,
+            "resume_from_step_exists": true,
+            "recovery_reason_contains": [
+              "执行前校验失败"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "execution_tool_failure_returns_manual_intervention",
+      "description": "Primary execution tool failure should expose manual_intervention recovery guidance.",
+      "setup": {
+        "llm_mode": "disabled"
+      },
+      "steps": [
+        {
+          "step_id": "start_with_pending_approval",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "flow-execution-retry",
+            "message": "checkout-service 发布失败，需要排查最近变更",
+            "service": "checkout-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "awaiting_approval",
+            "session_status": "awaiting_approval",
+            "pending_interrupt_type": "approval"
+          }
+        },
+        {
+          "step_id": "approve_with_runtime_failure",
+          "action": "resume_conversation",
+          "runtime_patch": {
+            "execution_error": "rollback tool failed"
+          },
+          "request": {
+            "approved": true,
+            "approver_id": "ops-admin",
+            "comment": "执行失败人工介入场景"
+          },
+          "expect": {
+            "response_status": "failed",
+            "session_status": "failed",
+            "message_contains": [
+              "rollback tool failed"
+            ],
+            "recovery_action": "manual_intervention",
+            "execution_plan_status": "failed",
+            "failed_step_exists": true,
+            "resume_from_step_exists": true,
+            "recovery_reason_contains": [
+              "主动作执行失败"
+            ],
+            "recovery_hint_contains": [
+              "人工",
+              "retry_policy"
+            ]
+          }
+        },
+        {
+          "step_id": "load_execution_recovery",
+          "action": "get_execution_recovery",
+          "request": {},
+          "expect": {
+            "response_status": "completed",
+            "session_status": "failed",
+            "recovery_action": "manual_intervention",
+            "execution_plan_status": "failed",
+            "failed_step_exists": true,
+            "resume_from_step_exists": true,
+            "recovery_reason_contains": [
+              "主动作执行失败"
+            ],
+            "recovery_hint_contains": [
+              "人工",
+              "retry_policy"
+            ]
           }
         }
       ]

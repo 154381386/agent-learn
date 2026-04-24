@@ -133,6 +133,7 @@ class ConversationCreateRequest(BaseModel):
 
 class ConversationMessageRequest(BaseModel):
     message: str
+    message_mode: Literal["default", "supplement"] = "default"
     environment: Optional[str] = None
     host_identifier: Optional[str] = None
     db_name: Optional[str] = None

@@ -1,0 +1,102 @@
+Create a clean software architecture data flow diagram for the project "IT Ticket Agent".
+
+Style:
+- professional technical diagram
+- white background
+- flat 2D vector-like infographic style
+- crisp lines, subtle blue and teal accents
+- high readability
+- no 3D, no mockup devices, no decorative illustrations
+- simple English labels only
+
+Layout:
+- landscape orientation
+- four vertical swimlanes from left to right:
+  1. User and Client
+  2. Orchestrator and React Graph
+  3. Knowledge and Tooling
+  4. Persistence and Human-in-the-Loop
+- use rounded rectangles and directional arrows
+- emphasize the main left-to-right flow
+- include secondary feedback loops with thinner arrows
+
+Main nodes and flow:
+1. User
+2. Frontend / Conversation API
+3. Request Normalize
+4. Slot Resolution and Clarification Gate
+5. Retrieve RAG Context
+6. SupervisorOrchestrator
+7. React Graph
+8. Light Router
+9. Direct Answer
+10. Supervisor Loop
+11. Context Collector
+12. Candidate Domain Selection
+13. Tool-First ReAct Loop
+14. Approval Gate
+15. Await User
+16. Execute Approved Action
+17. Finalize
+
+Knowledge and tooling lane:
+- RAG Service Client
+- Knowledge Service
+- search_knowledge_base
+- Local Tool Runtime
+- Tool Execution Middleware
+- Read-only Tools
+- Action Registry
+
+Persistence and HITL lane:
+- Session Store
+- Checkpoint Store
+- Process Memory Store
+- System Event Store
+- Incident Case Store
+- Approval Store
+- Human Approval
+- Human Feedback Resume
+
+Required arrows:
+- User -> Frontend / Conversation API
+- Frontend / Conversation API -> Request Normalize
+- Request Normalize -> Slot Resolution and Clarification Gate
+- Slot Resolution and Clarification Gate -> Retrieve RAG Context
+- Retrieve RAG Context -> SupervisorOrchestrator
+- SupervisorOrchestrator -> React Graph
+- React Graph -> Light Router
+- Light Router -> Direct Answer
+- Light Router -> Supervisor Loop
+- Supervisor Loop -> Context Collector
+- Context Collector -> Candidate Domain Selection
+- Candidate Domain Selection -> Tool-First ReAct Loop
+- Tool-First ReAct Loop -> search_knowledge_base
+- Tool-First ReAct Loop -> Local Tool Runtime
+- Local Tool Runtime -> Tool Execution Middleware
+- Tool Execution Middleware -> Read-only Tools
+- Tool Execution Middleware -> Action Registry
+- Supervisor Loop -> Approval Gate
+- Approval Gate -> Await User
+- Await User -> Human Approval
+- Human Approval -> Execute Approved Action
+- Execute Approved Action -> Finalize
+- Direct Answer -> Finalize
+- Finalize -> Session Store
+- Finalize -> Checkpoint Store
+- Finalize -> Process Memory Store
+- Finalize -> System Event Store
+- Finalize -> Incident Case Store
+- Finalize -> Human Feedback Resume
+- Human Feedback Resume -> SupervisorOrchestrator
+
+Visual emphasis:
+- highlight the main path from User to Finalize with thicker blue arrows
+- show knowledge retrieval and tool execution as supporting side flows
+- show approval and feedback as orange secondary loops
+- make the diagram look like a serious internal engineering architecture artifact
+
+Text requirement:
+- all labels in clean English
+- typography should be simple and legible
+- avoid gibberish text blocks

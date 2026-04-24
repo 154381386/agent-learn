@@ -1,0 +1,1170 @@
+{
+  "schema_version": 1,
+  "description": "RAG-oriented eval cases. These cases keep the main orchestration path real, mock retrieval outputs at the knowledge boundary, and verify direct_answer routing, diagnosis fallback, and the priority of live evidence over retrieved knowledge.",
+  "gate": {
+    "min_pass_rate": 1.0,
+    "max_avg_tool_calls_used": 4.5,
+    "max_expansion_probe_cases": 3,
+    "max_rejected_tool_call_total": 1
+  },
+  "cases": [
+    {
+      "case_id": "rag_direct_answer_uses_knowledge_context",
+      "description": "FAQ 场景应直接走 direct_answer，不进入诊断工具链。",
+      "request": {
+        "user_id": "rag-direct-answer",
+        "message": "支付服务发布流程是什么？",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "llm_mode": "disabled",
+        "mock_rag_context": {
+          "query": "支付服务发布流程是什么？",
+          "query_type": "search",
+          "should_respond_directly": true,
+          "direct_answer": "支付服务发布前需要先完成构建、审批和发布窗口确认。",
+          "hits": [
+            {
+              "chunk_id": "rag-hit-1",
+              "title": "支付服务发布手册",
+              "section": "发布流程 / 第 1 段",
+              "path": "runbooks/payment-deploy.md",
+              "category": "runbook",
+              "score": 0.96,
+              "snippet": "发布前先确认构建成功、审批通过和发布窗口。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-1",
+              "title": "支付服务发布手册",
+              "section": "发布流程 / 第 1 段",
+              "path": "runbooks/payment-deploy.md",
+              "category": "runbook",
+              "score": 0.96,
+              "snippet": "发布前先确认构建成功、审批通过和发布窗口。"
+            }
+          ],
+          "citations": [
+            "支付服务发布手册 / 发布流程 / 第 1 段 / runbooks/payment-deploy.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "intent": "direct_answer",
+        "message_contains": [
+          "构建",
+          "审批",
+          "发布窗口"
+        ],
+        "conclusion_contains": [
+          "构建",
+          "审批"
+        ],
+        "max_tool_calls_used": 0,
+        "min_sources_count": 1,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rag_insufficient_falls_back_to_network_diagnosis",
+      "description": "RAG 命中不足时，应回退到诊断主链路，并优先依赖 live tool 证据。",
+      "request": {
+        "user_id": "rag-fallback-diagnosis",
+        "message": "order service为什么总是超时",
+        "service": "order-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        },
+        "mock_rag_context": {
+          "query": "order service为什么总是超时",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-2",
+              "title": "服务超时排查总览",
+              "section": "排查思路",
+              "path": "runbooks/timeout-overview.md",
+              "category": "runbook",
+              "score": 0.47,
+              "snippet": "超时问题通常需要结合网络、依赖、数据库和最近变更综合判断。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-2",
+              "title": "服务超时排查总览",
+              "section": "排查思路",
+              "path": "runbooks/timeout-overview.md",
+              "category": "runbook",
+              "score": 0.47,
+              "snippet": "超时问题通常需要结合网络、依赖、数据库和最近变更综合判断。"
+            }
+          ],
+          "citations": [
+            "服务超时排查总览 / 排查思路 / runbooks/timeout-overview.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_upstream_dependency",
+          "inspect_vpc_connectivity",
+          "inspect_load_balancer_status"
+        ],
+        "required_any_tools_min_matches": 2,
+        "evidence_contains": [
+          "timeout_ratio=0.31",
+          "2 unhealthy backends"
+        ],
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4,
+        "min_sources_count": 1,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rag_background_knowledge_supports_db_diagnosis_without_replacing_live_evidence",
+      "description": "诊断场景可以带背景知识进入上下文，但最终结论仍应由实时工具证据决定。",
+      "request": {
+        "user_id": "rag-db-background",
+        "message": "payment-service 数据库连接池打满了，接口很慢",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "连接池已经接近打满。",
+            "payload": {
+              "service": "payment-service",
+              "pool_state": "saturated",
+              "active_connections": 118,
+              "max_connections": 120
+            },
+            "evidence": [
+              "pool_state=saturated",
+              "active_connections=118/120"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "最近 5 分钟慢查询明显升高。",
+            "payload": {
+              "service": "payment-service",
+              "slow_query_count": 24,
+              "max_latency_ms": 4300
+            },
+            "evidence": [
+              "slow_query_count=24",
+              "max_latency_ms=4300"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "数据库实例健康退化。",
+            "payload": {
+              "service": "payment-service",
+              "db_health": "degraded"
+            },
+            "evidence": [
+              "db_health=degraded"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "payment-service 数据库连接池打满了，接口很慢",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-3",
+              "title": "数据库慢请求排查手册",
+              "section": "连接池与慢查询",
+              "path": "runbooks/db-latency.md",
+              "category": "runbook",
+              "score": 0.76,
+              "snippet": "接口变慢时，优先检查连接池是否饱和、慢查询是否堆积。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-3",
+              "title": "数据库慢请求排查手册",
+              "section": "连接池与慢查询",
+              "path": "runbooks/db-latency.md",
+              "category": "runbook",
+              "score": 0.76,
+              "snippet": "接口变慢时，优先检查连接池是否饱和、慢查询是否堆积。"
+            }
+          ],
+          "citations": [
+            "数据库慢请求排查手册 / 连接池与慢查询 / runbooks/db-latency.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        },
+        "mock_retrieval_expansion": {
+          "subqueries": [
+            {
+              "query": "payment-service db pool saturation slow query runbook",
+              "target": "knowledge",
+              "reason": "补充数据库退化的排查知识背景",
+              "failure_mode": "db_pool_saturation",
+              "root_cause_taxonomy": "database_degradation"
+            }
+          ]
+        },
+        "mock_rag_context_by_query": {
+          "payment-service db pool saturation slow query runbook": {
+            "query": "payment-service db pool saturation slow query runbook",
+            "query_type": "search",
+            "hits": [
+              {
+                "chunk_id": "rag-hit-4",
+                "title": "数据库退化处置指南",
+                "section": "慢查询放大",
+                "path": "runbooks/db-degradation.md",
+                "category": "runbook",
+                "score": 0.83,
+                "snippet": "连接池饱和与慢查询放大常会共同出现，应结合实例健康和查询延迟判断。"
+              }
+            ],
+            "context": [
+              {
+                "chunk_id": "rag-hit-4",
+                "title": "数据库退化处置指南",
+                "section": "慢查询放大",
+                "path": "runbooks/db-degradation.md",
+                "category": "runbook",
+                "score": 0.83,
+                "snippet": "连接池饱和与慢查询放大常会共同出现，应结合实例健康和查询延迟判断。"
+              }
+            ],
+            "citations": [
+              "数据库退化处置指南 / 慢查询放大 / runbooks/db-degradation.md"
+            ],
+            "index_info": {
+              "ready": true
+            }
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "required_any_tools_min_matches": 2,
+        "evidence_contains": [
+          "pool_state=saturated",
+          "slow_query_count=24"
+        ],
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4,
+        "min_sources_count": 2,
+        "min_retrieval_subquery_count": 1,
+        "min_added_rag_hits": 1,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "live_evidence_overrides_conflicting_rag_knowledge",
+      "description": "即使知识命中把问题描述成数据库问题，若 live evidence 指向网络阻塞，最终仍应服从实时证据。",
+      "request": {
+        "user_id": "rag-conflict-live-evidence",
+        "message": "payment-service 查询很慢，看起来像数据库有问题",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "inspect_slow_queries": {
+            "summary": "最近 5 分钟慢查询无明显异常。",
+            "payload": {
+              "service": "payment-service",
+              "slow_query_count": 0,
+              "max_latency_ms": 40
+            },
+            "evidence": []
+          },
+          "inspect_connection_pool": {
+            "summary": "连接池使用率正常。",
+            "payload": {
+              "service": "payment-service",
+              "pool_state": "healthy",
+              "active_connections": 18,
+              "max_connections": 120
+            },
+            "evidence": []
+          },
+          "inspect_db_instance_health": {
+            "summary": "数据库实例健康。",
+            "payload": {
+              "service": "payment-service",
+              "db_health": "healthy"
+            },
+            "evidence": []
+          },
+          "inspect_upstream_dependency": {
+            "summary": "上游依赖存在明显退化。",
+            "payload": {
+              "service": "payment-service",
+              "dependency_status": "degraded",
+              "timeout_ratio": 0.24
+            },
+            "evidence": [
+              "dependency_status=degraded",
+              "timeout_ratio=0.24"
+            ]
+          },
+          "inspect_vpc_connectivity": {
+            "summary": "VPC 链路存在阻塞。",
+            "payload": {
+              "service": "payment-service",
+              "connectivity_status": "blocked"
+            },
+            "evidence": [
+              "connectivity_status=blocked"
+            ]
+          },
+          "inspect_load_balancer_status": {
+            "summary": "负载均衡后端存在异常实例。",
+            "payload": {
+              "service": "payment-service",
+              "lb_status": "degraded",
+              "unhealthy_backend_count": 2
+            },
+            "evidence": [
+              "lb_status=degraded",
+              "2 unhealthy backends"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "payment-service 查询很慢，看起来像数据库有问题",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-5",
+              "title": "数据库慢请求排查手册",
+              "section": "初始判断",
+              "path": "runbooks/db-latency.md",
+              "category": "runbook",
+              "score": 0.74,
+              "snippet": "查询变慢时可优先考虑连接池、慢查询、事务竞争。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-5",
+              "title": "数据库慢请求排查手册",
+              "section": "初始判断",
+              "path": "runbooks/db-latency.md",
+              "category": "runbook",
+              "score": 0.74,
+              "snippet": "查询变慢时可优先考虑连接池、慢查询、事务竞争。"
+            }
+          ],
+          "citations": [
+            "数据库慢请求排查手册 / 初始判断 / runbooks/db-latency.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_upstream_dependency",
+          "inspect_vpc_connectivity",
+          "inspect_load_balancer_status"
+        ],
+        "required_any_tools_min_matches": 2,
+        "expanded_domains": [
+          "network"
+        ],
+        "expansion_probe_required": true,
+        "evidence_contains": [
+          "dependency_status=degraded",
+          "connectivity_status=blocked"
+        ],
+        "forbidden_tools": [
+          "check_pod_status"
+        ],
+        "min_tool_calls_used": 3,
+        "max_tool_calls_used": 6,
+        "min_sources_count": 1,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rag_case_recall_expansion_adds_history_hits",
+      "description": "当扩展检索改写到更聚焦的 query 时，应能新增知识命中与历史案例命中，而不是始终复用初始 recall 结果。",
+      "request": {
+        "user_id": "rag-case-recall-expansion",
+        "message": "checkout-service 发布后偶发 502",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "llm_mode": "disabled",
+        "mock_tool_responses": {
+          "check_recent_deployments": {
+            "summary": "最近 15 分钟有发布。",
+            "payload": {
+              "service": "checkout-service",
+              "has_recent_deploy": true
+            },
+            "evidence": [
+              "has_recent_deploy=true"
+            ]
+          },
+          "check_pipeline_status": {
+            "summary": "流水线存在失败记录。",
+            "payload": {
+              "service": "checkout-service",
+              "pipeline_status": "failed"
+            },
+            "evidence": [
+              "pipeline_status=failed"
+            ]
+          },
+          "get_change_records": {
+            "summary": "最近变更集中在网关配置。",
+            "payload": {
+              "service": "checkout-service"
+            },
+            "evidence": [
+              "gateway_config_changed=true"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "checkout-service 发布后偶发 502",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-6",
+              "title": "发布回归排查总览",
+              "section": "基础思路",
+              "path": "runbooks/release-regression.md",
+              "category": "runbook",
+              "score": 0.72,
+              "snippet": "发布后 5xx 需要先确认最近发布、流水线和配置变更。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-6",
+              "title": "发布回归排查总览",
+              "section": "基础思路",
+              "path": "runbooks/release-regression.md",
+              "category": "runbook",
+              "score": 0.72,
+              "snippet": "发布后 5xx 需要先确认最近发布、流水线和配置变更。"
+            }
+          ],
+          "citations": [
+            "发布回归排查总览 / 基础思路 / runbooks/release-regression.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        },
+        "mock_retrieval_expansion": {
+          "subqueries": [
+            {
+              "query": "checkout-service release regression 502 rollback",
+              "target": "both",
+              "reason": "补充发布回归知识和历史案例",
+              "failure_mode": "deploy_regression",
+              "root_cause_taxonomy": "release_regression"
+            }
+          ]
+        },
+        "mock_rag_context_by_query": {
+          "checkout-service release regression 502 rollback": {
+            "query": "checkout-service release regression 502 rollback",
+            "query_type": "search",
+            "hits": [
+              {
+                "chunk_id": "rag-hit-7",
+                "title": "发布后 502 回滚手册",
+                "section": "回滚判断",
+                "path": "runbooks/post-release-502.md",
+                "category": "runbook",
+                "score": 0.88,
+                "snippet": "若最近发布与网关配置变更同时出现，应优先核对发布回归。"
+              }
+            ],
+            "context": [
+              {
+                "chunk_id": "rag-hit-7",
+                "title": "发布后 502 回滚手册",
+                "section": "回滚判断",
+                "path": "runbooks/post-release-502.md",
+                "category": "runbook",
+                "score": 0.88,
+                "snippet": "若最近发布与网关配置变更同时出现，应优先核对发布回归。"
+              }
+            ],
+            "citations": [
+              "发布后 502 回滚手册 / 回滚判断 / runbooks/post-release-502.md"
+            ]
+          }
+        },
+        "mock_similar_cases_by_query": {
+          "checkout-service release regression 502 rollback": [
+            {
+              "case_id": "case-release-502",
+              "service": "checkout-service",
+              "failure_mode": "deploy_regression",
+              "root_cause_taxonomy": "release_regression",
+              "summary": "历史上曾因发布后网关配置错误导致 502。",
+              "root_cause": "发布回归引入错误网关配置",
+              "final_action": "rollback release",
+              "recall_source": "case_memory",
+              "recall_score": 0.92
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "min_retrieval_subquery_count": 1,
+        "min_added_rag_hits": 1,
+        "min_added_case_hits": 1,
+        "min_sources_count": 2,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "react_diagnosis_can_call_search_knowledge_tool",
+      "description": "当初始 RAG 稀疏且用户显式要求先看已知模式时，诊断链路应主动调用 search_knowledge_base，再结合 live signal 判断。",
+      "request": {
+        "user_id": "rag-knowledge-tool",
+        "message": "checkout-service 发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+        "service": "checkout-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "mock_tool_responses": {
+          "search_knowledge_base": {
+            "summary": "已检索到发布回归知识。",
+            "payload": {
+              "hits": [
+                {
+                  "chunk_id": "rag-hit-8",
+                  "title": "发布回归处置手册",
+                  "section": "发布后 502",
+                  "path": "runbooks/release-502.md",
+                  "category": "runbook",
+                  "score": 0.91,
+                  "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。"
+                }
+              ],
+              "citations": [
+                "发布回归处置手册 / 发布后 502 / runbooks/release-502.md"
+              ]
+            },
+            "evidence": [
+              "知识库命中：发布回归处置手册 / 发布后 502"
+            ]
+          },
+          "check_recent_deployments": {
+            "summary": "最近 15 分钟存在发布。",
+            "payload": {
+              "service": "checkout-service",
+              "has_recent_deploy": true
+            },
+            "evidence": [
+              "has_recent_deploy=true"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "checkout-service 发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [],
+          "context": [],
+          "citations": [],
+          "index_info": {
+            "ready": true
+          }
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_tools": [
+          "search_knowledge_base"
+        ],
+        "first_any_tools": [
+          "search_knowledge_base"
+        ],
+        "required_any_tools": [
+          "check_recent_deployments"
+        ],
+        "evidence_contains": [
+          "知识库命中：发布回归处置手册",
+          "has_recent_deploy=true"
+        ],
+        "min_sources_count": 1,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 7,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rag_gap_is_explicit_when_recall_stays_empty",
+      "description": "当知识检索与历史案例扩展都没有新增命中时，系统仍应显式保留检索缺口，而不是伪造知识背景。",
+      "request": {
+        "user_id": "rag-gap-empty-recall",
+        "message": "order-service 为什么总是 timeout",
+        "service": "order-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "llm_mode": "disabled",
+        "retrieval_planner_llm_mode": "disabled",
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        },
+        "mock_rag_context": {
+          "query": "order-service 为什么总是 timeout",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [],
+          "context": [],
+          "citations": [],
+          "index_info": {
+            "ready": true
+          }
+        },
+        "mock_rag_context_by_query": {
+          "order-service upstream dependency timeout ingress gateway jitter": {
+            "query": "order-service upstream dependency timeout ingress gateway jitter",
+            "query_type": "search",
+            "hits": [],
+            "context": [],
+            "citations": [],
+            "index_info": {
+              "ready": true
+            }
+          }
+        },
+        "mock_similar_cases_by_query": {
+          "order-service upstream dependency timeout ingress gateway jitter": []
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "min_retrieval_subquery_count": 1,
+        "max_retrieval_subquery_count": 1,
+        "retrieval_query_contains": [
+          "upstream dependency timeout ingress gateway jitter"
+        ],
+        "missing_evidence_contains": [
+          "上游依赖",
+          "网络链路抖动"
+        ],
+        "max_added_rag_hits": 0,
+        "max_added_case_hits": 0,
+        "max_sources_count": 0,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rules_based_query_rewrite_adds_better_hits",
+      "description": "query rewrite 评估应证明规则式 planner 真的生成更聚焦的 network/db 子查询，并通过改写后的 query 拉到新增知识与历史案例。",
+      "request": {
+        "user_id": "rag-query-rewrite",
+        "message": "payment-service 数据库连接池看起来有问题，而且接口一直 timeout",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "llm_mode": "disabled",
+        "retrieval_planner_llm_mode": "disabled",
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "连接池接近打满。",
+            "payload": {
+              "service": "payment-service",
+              "pool_state": "saturated"
+            },
+            "evidence": [
+              "pool_state=saturated"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "慢查询显著升高。",
+            "payload": {
+              "service": "payment-service",
+              "slow_query_count": 17
+            },
+            "evidence": [
+              "slow_query_count=17"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "payment-service 数据库连接池看起来有问题，而且接口一直 timeout",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-9",
+              "title": "服务超时排查总览",
+              "section": "总览",
+              "path": "runbooks/timeout-overview.md",
+              "category": "runbook",
+              "score": 0.51,
+              "snippet": "超时问题通常需要结合网络、依赖和数据库共同判断。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-9",
+              "title": "服务超时排查总览",
+              "section": "总览",
+              "path": "runbooks/timeout-overview.md",
+              "category": "runbook",
+              "score": 0.51,
+              "snippet": "超时问题通常需要结合网络、依赖和数据库共同判断。"
+            }
+          ],
+          "citations": [
+            "服务超时排查总览 / 总览 / runbooks/timeout-overview.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        },
+        "mock_rag_context_by_query": {
+          "payment-service upstream dependency timeout ingress gateway jitter": {
+            "query": "payment-service upstream dependency timeout ingress gateway jitter",
+            "query_type": "search",
+            "hits": [],
+            "context": [],
+            "citations": [],
+            "index_info": {
+              "ready": true
+            }
+          },
+          "payment-service db pool saturation slow query timeout": {
+            "query": "payment-service db pool saturation slow query timeout",
+            "query_type": "search",
+            "hits": [
+              {
+                "chunk_id": "rag-hit-10",
+                "title": "数据库超时处置指南",
+                "section": "连接池与慢查询",
+                "path": "runbooks/db-timeout.md",
+                "category": "runbook",
+                "score": 0.87,
+                "snippet": "timeout 与连接池饱和、慢查询堆积常同时出现。"
+              }
+            ],
+            "context": [
+              {
+                "chunk_id": "rag-hit-10",
+                "title": "数据库超时处置指南",
+                "section": "连接池与慢查询",
+                "path": "runbooks/db-timeout.md",
+                "category": "runbook",
+                "score": 0.87,
+                "snippet": "timeout 与连接池饱和、慢查询堆积常同时出现。"
+              }
+            ],
+            "citations": [
+              "数据库超时处置指南 / 连接池与慢查询 / runbooks/db-timeout.md"
+            ],
+            "index_info": {
+              "ready": true
+            }
+          }
+        },
+        "mock_similar_cases_by_query": {
+          "payment-service upstream dependency timeout ingress gateway jitter": [],
+          "payment-service db pool saturation slow query timeout": [
+            {
+              "case_id": "case-db-timeout-1",
+              "service": "payment-service",
+              "failure_mode": "db_pool_saturation",
+              "root_cause_taxonomy": "database_degradation",
+              "summary": "历史上曾因连接池饱和叠加慢查询导致 timeout。",
+              "root_cause": "数据库连接池饱和并伴随慢查询放大",
+              "final_action": "limit db traffic and optimize slow queries",
+              "recall_source": "case_memory",
+              "recall_score": 0.95
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "min_retrieval_subquery_count": 2,
+        "retrieval_query_contains": [
+          "payment-service upstream dependency timeout ingress gateway jitter",
+          "payment-service db pool saturation slow query timeout"
+        ],
+        "missing_evidence_contains": [
+          "上游依赖",
+          "数据库连接池"
+        ],
+        "min_added_rag_hits": 1,
+        "min_added_case_hits": 1,
+        "min_sources_count": 2,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rules_based_query_rewrite_without_gain_keeps_gap_explicit",
+      "description": "当 rewrite 只命中重复的泛化知识、没有新增 case hit 时，系统应识别这次 rewrite 无收益，并继续保留知识缺口。",
+      "request": {
+        "user_id": "rag-query-rewrite-no-gain",
+        "message": "inventory-service 发布后偶发 502",
+        "service": "inventory-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "llm_mode": "disabled",
+        "retrieval_planner_llm_mode": "disabled",
+        "mock_tool_responses": {
+          "check_recent_deployments": {
+            "summary": "最近 15 分钟有发布。",
+            "payload": {
+              "service": "inventory-service",
+              "has_recent_deploy": true
+            },
+            "evidence": [
+              "has_recent_deploy=true"
+            ]
+          },
+          "check_pipeline_status": {
+            "summary": "流水线无明显失败。",
+            "payload": {
+              "service": "inventory-service",
+              "pipeline_status": "passed"
+            },
+            "evidence": [
+              "pipeline_status=passed"
+            ]
+          },
+          "get_change_records": {
+            "summary": "最近只有常规配置同步。",
+            "payload": {
+              "service": "inventory-service"
+            },
+            "evidence": [
+              "config_sync_changed=true"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "inventory-service 发布后偶发 502",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-11",
+              "title": "发布回归排查总览",
+              "section": "基础思路",
+              "path": "runbooks/release-regression.md",
+              "category": "runbook",
+              "score": 0.72,
+              "snippet": "发布后 5xx 需要先确认最近发布、流水线和配置变更。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-11",
+              "title": "发布回归排查总览",
+              "section": "基础思路",
+              "path": "runbooks/release-regression.md",
+              "category": "runbook",
+              "score": 0.72,
+              "snippet": "发布后 5xx 需要先确认最近发布、流水线和配置变更。"
+            }
+          ],
+          "citations": [
+            "发布回归排查总览 / 基础思路 / runbooks/release-regression.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        },
+        "mock_rag_context_by_query": {
+          "inventory-service release regression deploy rollback 5xx": {
+            "query": "inventory-service release regression deploy rollback 5xx",
+            "query_type": "search",
+            "hits": [
+              {
+                "chunk_id": "rag-hit-11",
+                "title": "发布回归排查总览",
+                "section": "基础思路",
+                "path": "runbooks/release-regression.md",
+                "category": "runbook",
+                "score": 0.72,
+                "snippet": "发布后 5xx 需要先确认最近发布、流水线和配置变更。"
+              }
+            ],
+            "context": [
+              {
+                "chunk_id": "rag-hit-11",
+                "title": "发布回归排查总览",
+                "section": "基础思路",
+                "path": "runbooks/release-regression.md",
+                "category": "runbook",
+                "score": 0.72,
+                "snippet": "发布后 5xx 需要先确认最近发布、流水线和配置变更。"
+              }
+            ],
+            "citations": [
+              "发布回归排查总览 / 基础思路 / runbooks/release-regression.md"
+            ],
+            "index_info": {
+              "ready": true
+            }
+          }
+        },
+        "mock_similar_cases_by_query": {
+          "inventory-service release regression deploy rollback 5xx": []
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "min_retrieval_subquery_count": 1,
+        "max_retrieval_subquery_count": 1,
+        "retrieval_query_contains": [
+          "inventory-service release regression deploy rollback 5xx"
+        ],
+        "missing_evidence_contains": [
+          "近期发布回归",
+          "配置变更"
+        ],
+        "max_added_rag_hits": 0,
+        "max_added_case_hits": 0,
+        "min_sources_count": 1,
+        "max_sources_count": 1,
+        "approval_required": false
+      }
+    },
+    {
+      "case_id": "rules_based_query_rewrite_partial_gain_preserves_quality_signal",
+      "description": "当多个 rewrite 里只有部分 query 真正带来新增知识与案例时，评估应保留这种部分有效的收益质量信号。",
+      "request": {
+        "user_id": "rag-query-rewrite-partial-gain",
+        "message": "payment-service db 连接池告警，而且接口一直 timeout",
+        "service": "payment-service",
+        "environment": "prod"
+      },
+      "setup": {
+        "llm_mode": "disabled",
+        "retrieval_planner_llm_mode": "disabled",
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "连接池接近打满。",
+            "payload": {
+              "service": "payment-service",
+              "pool_state": "saturated"
+            },
+            "evidence": [
+              "pool_state=saturated"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "慢查询显著升高。",
+            "payload": {
+              "service": "payment-service",
+              "slow_query_count": 19
+            },
+            "evidence": [
+              "slow_query_count=19"
+            ]
+          }
+        },
+        "mock_rag_context": {
+          "query": "payment-service db 连接池告警，而且接口一直 timeout",
+          "query_type": "search",
+          "should_respond_directly": false,
+          "hits": [
+            {
+              "chunk_id": "rag-hit-12",
+              "title": "服务超时排查总览",
+              "section": "总览",
+              "path": "runbooks/timeout-overview.md",
+              "category": "runbook",
+              "score": 0.56,
+              "snippet": "超时问题通常需要结合网络、依赖和数据库共同判断。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-12",
+              "title": "服务超时排查总览",
+              "section": "总览",
+              "path": "runbooks/timeout-overview.md",
+              "category": "runbook",
+              "score": 0.56,
+              "snippet": "超时问题通常需要结合网络、依赖和数据库共同判断。"
+            }
+          ],
+          "citations": [
+            "服务超时排查总览 / 总览 / runbooks/timeout-overview.md"
+          ],
+          "index_info": {
+            "ready": true
+          }
+        },
+        "mock_rag_context_by_query": {
+          "payment-service upstream dependency timeout ingress gateway jitter": {
+            "query": "payment-service upstream dependency timeout ingress gateway jitter",
+            "query_type": "search",
+            "hits": [
+              {
+                "chunk_id": "rag-hit-12",
+                "title": "服务超时排查总览",
+                "section": "总览",
+                "path": "runbooks/timeout-overview.md",
+                "category": "runbook",
+                "score": 0.56,
+                "snippet": "超时问题通常需要结合网络、依赖和数据库共同判断。"
+              }
+            ],
+            "context": [
+              {
+                "chunk_id": "rag-hit-12",
+                "title": "服务超时排查总览",
+                "section": "总览",
+                "path": "runbooks/timeout-overview.md",
+                "category": "runbook",
+                "score": 0.56,
+                "snippet": "超时问题通常需要结合网络、依赖和数据库共同判断。"
+              }
+            ],
+            "citations": [
+              "服务超时排查总览 / 总览 / runbooks/timeout-overview.md"
+            ],
+            "index_info": {
+              "ready": true
+            }
+          },
+          "payment-service db pool saturation slow query timeout": {
+            "query": "payment-service db pool saturation slow query timeout",
+            "query_type": "search",
+            "hits": [
+              {
+                "chunk_id": "rag-hit-13",
+                "title": "数据库超时处置指南",
+                "section": "连接池与慢查询",
+                "path": "runbooks/db-timeout.md",
+                "category": "runbook",
+                "score": 0.89,
+                "snippet": "timeout 与连接池饱和、慢查询堆积常同时出现。"
+              }
+            ],
+            "context": [
+              {
+                "chunk_id": "rag-hit-13",
+                "title": "数据库超时处置指南",
+                "section": "连接池与慢查询",
+                "path": "runbooks/db-timeout.md",
+                "category": "runbook",
+                "score": 0.89,
+                "snippet": "timeout 与连接池饱和、慢查询堆积常同时出现。"
+              }
+            ],
+            "citations": [
+              "数据库超时处置指南 / 连接池与慢查询 / runbooks/db-timeout.md"
+            ],
+            "index_info": {
+              "ready": true
+            }
+          }
+        },
+        "mock_similar_cases_by_query": {
+          "payment-service upstream dependency timeout ingress gateway jitter": [],
+          "payment-service db pool saturation slow query timeout": [
+            {
+              "case_id": "case-db-timeout-partial-gain",
+              "service": "payment-service",
+              "failure_mode": "db_pool_saturation",
+              "root_cause_taxonomy": "database_degradation",
+              "summary": "历史上曾因连接池饱和叠加慢查询导致 timeout。",
+              "root_cause": "数据库连接池饱和并伴随慢查询放大",
+              "final_action": "limit db traffic and optimize slow queries",
+              "recall_source": "case_memory",
+              "recall_score": 0.93
+            }
+          ]
+        }
+      },
+      "expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "min_retrieval_subquery_count": 2,
+        "max_retrieval_subquery_count": 2,
+        "retrieval_query_contains": [
+          "payment-service upstream dependency timeout ingress gateway jitter",
+          "payment-service db pool saturation slow query timeout"
+        ],
+        "missing_evidence_contains": [
+          "上游依赖",
+          "数据库连接池"
+        ],
+        "min_added_rag_hits": 1,
+        "max_added_rag_hits": 1,
+        "min_added_case_hits": 1,
+        "max_added_case_hits": 1,
+        "retrieval_query_metrics": [
+          {
+            "query_contains": "payment-service upstream dependency timeout ingress gateway jitter",
+            "added_rag_hits": 0,
+            "added_case_hits": 0,
+            "root_cause_taxonomy": "network_path_instability",
+            "matches_primary_root_cause_taxonomy": false
+          },
+          {
+            "query_contains": "payment-service db pool saturation slow query timeout",
+            "added_rag_hits": 1,
+            "added_case_hits": 1,
+            "root_cause_taxonomy": "database_degradation",
+            "matches_primary_root_cause_taxonomy": true
+          }
+        ],
+        "min_sources_count": 2,
+        "approval_required": false
+      }
+    }
+  ]
+}

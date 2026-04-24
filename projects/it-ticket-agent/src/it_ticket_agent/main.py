@@ -47,8 +47,21 @@ async def lifespan(app: FastAPI):
     process_memory_store = stores.process_memory_store
     execution_store = stores.execution_store
     incident_case_store = stores.incident_case_store
+    bad_case_candidate_store = stores.bad_case_candidate_store
     system_event_store = stores.system_event_store
-    app.state.supervisor_orchestrator = SupervisorOrchestrator(settings, approval_store, session_store, interrupt_store, checkpoint_store, process_memory_store, execution_store=execution_store, session_service=session_service, incident_case_store=incident_case_store, system_event_store=system_event_store)
+    app.state.supervisor_orchestrator = SupervisorOrchestrator(
+        settings,
+        approval_store,
+        session_store,
+        interrupt_store,
+        checkpoint_store,
+        process_memory_store,
+        execution_store=execution_store,
+        session_service=session_service,
+        incident_case_store=incident_case_store,
+        bad_case_candidate_store=bad_case_candidate_store,
+        system_event_store=system_event_store,
+    )
     app.state.approval_store = approval_store
     app.state.session_store = session_store
     app.state.session_service = session_service
@@ -57,6 +70,7 @@ async def lifespan(app: FastAPI):
     app.state.process_memory_store = process_memory_store
     app.state.execution_store = execution_store
     app.state.incident_case_store = incident_case_store
+    app.state.bad_case_candidate_store = bad_case_candidate_store
     app.state.system_event_store = system_event_store
     app.state.observability = observability
     try:

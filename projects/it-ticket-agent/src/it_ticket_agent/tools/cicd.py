@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from ..mcp import MCPClient
 from ..rag_client import RAGServiceClient
 from ..runtime.contracts import TaskEnvelope
+from ..case_retrieval import infer_failure_mode, infer_root_cause_taxonomy
 from ..service_names import canonical_service_name, infer_service_name
 from .mock_helpers import resolve_world_state_mock
 from .contracts import ReadOnlyTool, ToolExecutionResult
@@ -282,6 +283,92 @@ class SearchKnowledgeBaseTool(ReadOnlyTool):
             status="completed",
             summary="已检索部署与故障相关知识。",
             payload={"hits": hits, "citations": result.get("citations", [])},
+            evidence=evidence,
+        )
+
+
+class SearchSimilarIncidentsTool(ReadOnlyTool):
+    name = "search_similar_incidents"
+    summary = "Search structured historical incident cases after concrete symptom clues are available"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Concrete symptom, narrowed summary, or suspected root cause"},
+            "service": {"type": "string", "description": "Target service name"},
+            "cluster": {"type": "string", "description": "Target cluster if known"},
+            "namespace": {"type": "string", "description": "Target namespace if known"},
+            "failure_mode": {"type": "string", "description": "Optional narrowed failure mode"},
+            "root_cause_taxonomy": {"type": "string", "description": "Optional narrowed root cause taxonomy"},
+            "top_k": {"type": "integer", "description": "Maximum cases to return", "default": 4},
+        },
+    }
+
+    def __init__(self, knowledge_client: RAGServiceClient) -> None:
+        self.knowledge_client = knowledge_client
+
+    async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
+        mocked = _resolve_mock_result(task, self.name, arguments)
+        if mocked is not None:
+            return mocked
+
+        arguments = arguments or {}
+        query = str(arguments.get("query") or task.shared_context.get("message") or "").strip()
+        service = str(arguments.get("service") or task.shared_context.get("service") or "").strip()
+        cluster = str(arguments.get("cluster") or task.shared_context.get("cluster") or "").strip()
+        namespace = str(arguments.get("namespace") or task.shared_context.get("namespace") or "").strip()
+        failure_mode = str(arguments.get("failure_mode") or "").strip() or infer_failure_mode(query)
+        root_cause_taxonomy = str(arguments.get("root_cause_taxonomy") or "").strip() or infer_root_cause_taxonomy(query)
+        top_k = max(1, min(int(arguments.get("top_k") or 4), 6))
+        shared_cases = [
+            dict(item)
+            for item in list(task.shared_context.get("similar_cases") or [])
+            if isinstance(item, dict)
+        ]
+        exclude_case_ids = [str(item.get("case_id") or "") for item in shared_cases if str(item.get("case_id") or "").strip()]
+
+        try:
+            result = await self.knowledge_client.case_memory_search(
+                query=query,
+                service=service,
+                cluster=cluster,
+                namespace=namespace,
+                failure_mode=failure_mode,
+                root_cause_taxonomy=root_cause_taxonomy,
+                exclude_case_ids=exclude_case_ids,
+                top_k=top_k,
+            )
+        except Exception:
+            result = {
+                "query": query,
+                "hits": [],
+                "index_info": {"source": "search_similar_incidents", "error": "case_memory_search_failed"},
+            }
+
+        hits = [dict(item) for item in list(result.get("hits") or []) if isinstance(item, dict)]
+        evidence = [
+            (
+                f"历史案例命中：{item.get('service') or 'unknown-service'} / "
+                f"{item.get('failure_mode') or 'unknown-mode'} / "
+                f"{item.get('root_cause_taxonomy') or 'unknown-taxonomy'}"
+            )
+            for item in hits[:2]
+        ]
+        return ToolExecutionResult(
+            tool_name=self.name,
+            status="completed",
+            summary="已检索相似历史案例。" if hits else "未命中明显相似的历史案例。",
+            payload={
+                "query": query,
+                "cases": hits,
+                "index_info": dict(result.get("index_info") or {}),
+                "applied_filters": {
+                    "service": service,
+                    "cluster": cluster,
+                    "namespace": namespace,
+                    "failure_mode": failure_mode,
+                    "root_cause_taxonomy": root_cause_taxonomy,
+                },
+            },
             evidence=evidence,
         )
 

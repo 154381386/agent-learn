@@ -757,7 +757,7 @@ legacy skill pipeline 已移出代码主干
 
 - 当前已在审批恢复后的执行节点前后补写 `execution_started` / `execution_step_finished` checkpoint
 - 已补齐执行失败分支的 `execution_failed` checkpoint、failed plan / failed step 回写，以及失败态 session 收口
-- 已新增 `GET /api/v1/sessions/{session_id}/execution-recovery`，可基于最新 checkpoint 与 execution plan 推导 `retry_execution_step / finalize_execution / none`
+- 已新增 `GET /api/v1/sessions/{session_id}/execution-recovery`，可基于最新 checkpoint 与 execution plan 暴露 `manual_intervention / none` 恢复建议
 - `tests/test_runtime_smoke.py` 已覆盖执行失败后的 checkpoint、恢复建议与 failed plan / step 验证
 
 目标：关键步骤执行前后写 checkpoint。
@@ -765,11 +765,11 @@ legacy skill pipeline 已移出代码主干
 验收标准：
 
 - 失败后能看到最后成功 checkpoint
-- 可据此决定恢复策略
+- 可据此定位人工介入点
 
 确认方式：
 
-- 执行中断后，能从最近 checkpoint 恢复
+- 执行中断后，能基于最近 checkpoint、failed step 和 recovery hints 交给人工处理
 
 ---
 

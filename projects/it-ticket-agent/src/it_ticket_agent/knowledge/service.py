@@ -54,9 +54,9 @@ class KnowledgeService:
             bundle = RAGContextBundle.model_validate(payload)
         except Exception as exc:
             logger.warning(
-                "knowledge.retrieve_failed ticket_id=%s service=%s error=%s",
-                request.ticket_id,
-                request.service,
+                "knowledge.retrieve_failed query=%s service=%s error=%s",
+                query,
+                service,
                 exc,
             )
             return RAGContextBundle(

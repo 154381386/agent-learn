@@ -1,6 +1,12 @@
 {
   "schema_version": 2,
   "description": "Real-LLM agent eval cases backed by mocked tool responses only. Covers single-domain convergence, cross-domain expansion, and noisy-signal containment.",
+  "gate": {
+    "min_pass_rate": 0.9,
+    "max_avg_tool_calls_used": 4.2,
+    "max_expansion_probe_cases": 6,
+    "max_rejected_tool_call_total": 1
+  },
   "cases": [
     {
       "case_id": "network_profile_prefers_network_tools",

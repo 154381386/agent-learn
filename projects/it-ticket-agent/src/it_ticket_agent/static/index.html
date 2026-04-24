@@ -33,13 +33,76 @@
           <button class="quick-fill" data-message="支付服务网络超时，怀疑 DNS 有问题">网络超时</button>
           <button class="quick-fill" data-message="order-service 怎么接入？">接入问题</button>
         </div>
+
+        <div class="sidebar-stack">
+          <section class="sidebar-card">
+            <div class="card-header">
+              <h3>会话状态</h3>
+              <button id="reloadSessionBtn" class="ghost-btn small-btn" type="button">刷新</button>
+            </div>
+            <div id="sessionSummary" class="detail-list empty-state">当前无活跃会话</div>
+          </section>
+
+          <section class="sidebar-card">
+            <div class="card-header">
+              <h3>待处理节点</h3>
+              <span id="interruptBadge" class="status-pill hidden"></span>
+            </div>
+            <div id="interruptSummary" class="detail-list empty-state">当前无待处理人工节点</div>
+            <button id="openApprovalPanelBtn" class="primary-btn secondary-action hidden" type="button">打开审批面板</button>
+
+            <form id="clarificationForm" class="interrupt-form hidden">
+              <p class="helper-text">补充的信息会作为当前会话的澄清答案继续执行。</p>
+              <label>
+                <span>补充信息</span>
+                <textarea id="clarificationAnswer" rows="4" placeholder="补充环境、时间点、异常现象或你已经做过的排查"></textarea>
+              </label>
+              <div class="inline-actions">
+                <button id="clarificationSubmitBtn" class="primary-btn" type="submit">提交澄清</button>
+              </div>
+            </form>
+
+            <form id="feedbackForm" class="interrupt-form hidden">
+              <p class="helper-text">这里只保留两个动作：接受当前建议，或者在给出建议动作/审批后拒绝并重新分析。</p>
+              <label>
+                <span>处理方式</span>
+                <select id="feedbackResolution">
+                  <option value="accept">接受当前建议</option>
+                  <option id="feedbackRejectOption" value="reject_reopen">拒绝并重新分析</option>
+                </select>
+              </label>
+              <p id="feedbackCapabilityHint" class="helper-text"></p>
+              <div id="feedbackRejectFields" class="hidden">
+                <label>
+                  <span>新的根因判断（可选）</span>
+                  <textarea id="feedbackRootCause" rows="3" placeholder="补充你认为更准确的根因判断"></textarea>
+                </label>
+                <label>
+                  <span>补充说明（至少填写一项）</span>
+                  <textarea id="feedbackComment" rows="3" placeholder="说明为什么拒绝当前建议，或希望系统优先重查什么"></textarea>
+                </label>
+              </div>
+              <div class="inline-actions">
+                <button id="feedbackSubmitBtn" class="primary-btn" type="submit">提交人工反馈</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="sidebar-card">
+            <div class="card-header">
+              <h3>执行恢复</h3>
+              <button id="refreshRecoveryBtn" class="ghost-btn small-btn" type="button">刷新</button>
+            </div>
+            <div id="executionRecoveryPanel" class="detail-list empty-state">当前无执行恢复需求</div>
+          </section>
+        </div>
       </aside>
 
       <main class="chat-panel">
         <header class="chat-header">
           <div>
             <h2>Agent 对话</h2>
-            <p>在这里发起工单，审批请求会自动弹出。</p>
+            <p>在这里发起工单；审批、澄清、人工确认和执行失败接管都会同步到右侧面板。</p>
           </div>
           <button id="clearChatBtn" class="ghost-btn">清空</button>
         </header>
@@ -47,14 +110,23 @@
         <section id="chatMessages" class="chat-messages"></section>
 
         <form id="messageForm" class="composer">
-          <input
-            id="messageInput"
-            class="composer-input"
-            type="text"
-            placeholder="输入工单问题，例如：order-service Pod 频繁重启，2小时前发版过"
-            required
-          />
-          <button id="sendBtn" class="primary-btn" type="submit">发送</button>
+          <div class="composer-modebar">
+            <div class="mode-switch">
+              <button id="messageModeDefault" class="mode-chip active" type="button">普通提问</button>
+              <button id="messageModeSupplement" class="mode-chip" type="button">补充信息</button>
+            </div>
+            <p id="composerModeHint" class="helper-text composer-hint">默认模式：把这条消息作为当前会话的正常追问或继续诊断。</p>
+          </div>
+          <div class="composer-row">
+            <input
+              id="messageInput"
+              class="composer-input"
+              type="text"
+              placeholder="输入工单问题，例如：order-service Pod 频繁重启，2小时前发版过"
+              required
+            />
+            <button id="sendBtn" class="primary-btn" type="submit">发送</button>
+          </div>
         </form>
       </main>
     </div>

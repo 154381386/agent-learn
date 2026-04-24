@@ -8,7 +8,9 @@ from time import perf_counter
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field
+from unittest.mock import AsyncMock
 
+from ..case_retrieval import infer_root_cause_taxonomy
 from ..approval_store import ApprovalStore
 from ..checkpoint_store import CheckpointStore
 from ..execution_store import ExecutionStore
@@ -17,6 +19,7 @@ from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..runtime.orchestrator import SupervisorOrchestrator
 from ..schemas import ConversationCreateRequest
 from ..settings import Settings
+from ..state.models import RAGContextBundle, RetrievalExpansion, SimilarIncidentCase
 from ..session_store import SessionStore
 from ..system_event_store import SystemEventStore
 from ..tools.mock_helpers import DEFAULT_CASE_PROFILES_PATH
@@ -31,7 +34,13 @@ class AgentEvalSetup(BaseModel):
     tool_profile: ToolProfileRef | None = None
     mock_tool_responses: dict[str, dict[str, Any]] = Field(default_factory=dict)
     world_state: dict[str, Any] = Field(default_factory=dict)
+    mock_rag_context: dict[str, Any] = Field(default_factory=dict)
+    mock_rag_context_by_query: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    mock_similar_cases: list[dict[str, Any]] = Field(default_factory=list)
+    mock_similar_cases_by_query: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    mock_retrieval_expansion: dict[str, Any] = Field(default_factory=dict)
     llm_mode: Literal["live", "disabled"] = "live"
+    retrieval_planner_llm_mode: Literal["inherit", "disabled"] = "inherit"
 
 
 class DisabledEvalLLM:
@@ -43,6 +52,14 @@ class DisabledEvalLLM:
     @staticmethod
     def extract_json(content: str):
         return {}
+
+
+class RetrievalQueryMetricExpectation(BaseModel):
+    query_contains: str
+    added_rag_hits: int | None = None
+    added_case_hits: int | None = None
+    root_cause_taxonomy: str | None = None
+    matches_primary_root_cause_taxonomy: bool | None = None
 
 
 class AgentEvalExpectation(BaseModel):
@@ -69,6 +86,26 @@ class AgentEvalExpectation(BaseModel):
     min_tool_calls_used: int | None = None
     max_tool_calls_used: int | None = None
     max_rejected_tool_calls: int | None = None
+    min_sources_count: int | None = None
+    max_sources_count: int | None = None
+    min_retrieval_subquery_count: int | None = None
+    max_retrieval_subquery_count: int | None = None
+    min_added_rag_hits: int | None = None
+    max_added_rag_hits: int | None = None
+    min_added_case_hits: int | None = None
+    max_added_case_hits: int | None = None
+    retrieval_query_contains: list[str] = Field(default_factory=list)
+    retrieval_query_metrics: list[RetrievalQueryMetricExpectation] = Field(default_factory=list)
+    missing_evidence_contains: list[str] = Field(default_factory=list)
+
+
+class AgentEvalGate(BaseModel):
+    min_pass_rate: float | None = None
+    max_avg_tool_calls_used: float | None = None
+    max_avg_duration_ms: float | None = None
+    max_expansion_probe_cases: int | None = None
+    max_rejected_tool_call_cases: int | None = None
+    max_rejected_tool_call_total: int | None = None
 
 
 class AgentEvalCase(BaseModel):
@@ -82,7 +119,18 @@ class AgentEvalCase(BaseModel):
 class AgentEvalDataset(BaseModel):
     schema_version: int = 1
     description: str = ""
+    gate: AgentEvalGate = Field(default_factory=AgentEvalGate)
     cases: list[AgentEvalCase] = Field(default_factory=list)
+
+
+@dataclass
+class RetrievalQueryMetricObservation:
+    query: str
+    target: str = ""
+    root_cause_taxonomy: str = ""
+    added_rag_hits: int = 0
+    added_case_hits: int = 0
+    matches_primary_root_cause_taxonomy: bool = False
 
 
 @dataclass
@@ -99,12 +147,20 @@ class AgentEvalObservation:
     tool_names: list[str]
     tool_calls_used: int
     evidence: list[str]
+    primary_root_cause_taxonomy: str = ""
     transition_notes: list[str] = field(default_factory=list)
     expanded_domains: list[str] = field(default_factory=list)
     expansion_probe_count: int = 0
     expansion_probe_tools: list[str] = field(default_factory=list)
     rejected_tool_call_count: int = 0
     rejected_tool_call_names: list[str] = field(default_factory=list)
+    sources_count: int = 0
+    retrieval_subquery_count: int = 0
+    added_rag_hits: int = 0
+    added_case_hits: int = 0
+    retrieval_queries: list[str] = field(default_factory=list)
+    retrieval_query_metrics: list[RetrievalQueryMetricObservation] = field(default_factory=list)
+    missing_evidence: list[str] = field(default_factory=list)
     raw_result: dict[str, Any] = field(default_factory=dict)
 
 
@@ -123,6 +179,14 @@ class AgentEvalScore:
     passed_checks: int
     total_checks: int
     score: float
+    checks: list[AgentEvalCheck] = field(default_factory=list)
+
+
+@dataclass
+class EvalGateResult:
+    passed: bool
+    passed_checks: int
+    total_checks: int
     checks: list[AgentEvalCheck] = field(default_factory=list)
 
 
@@ -153,6 +217,7 @@ class AgentEvalReport:
     rejected_tool_call_cases: int = 0
     rejected_tool_call_total: int = 0
     stop_reason_counts: dict[str, int] = field(default_factory=dict)
+    gate_result: EvalGateResult | None = None
     results: list[AgentEvalCaseResult] = field(default_factory=list)
 
 
@@ -217,7 +282,15 @@ def extract_eval_observation(result: Mapping[str, Any]) -> AgentEvalObservation:
     ranked_result = dict(ranked_result) if isinstance(ranked_result, Mapping) else {}
     routing = diagnosis.get("routing")
     routing = dict(routing) if isinstance(routing, Mapping) else {}
+    context_snapshot = diagnosis.get("context_snapshot")
+    context_snapshot = dict(context_snapshot) if isinstance(context_snapshot, Mapping) else {}
+    retrieval_expansion = context_snapshot.get("retrieval_expansion")
+    retrieval_expansion = dict(retrieval_expansion) if isinstance(retrieval_expansion, Mapping) else {}
     primary_root_cause = _extract_primary_root_cause(diagnosis, incident_state, ranked_result)
+    primary_root_cause_taxonomy = infer_root_cause_taxonomy(
+        primary_root_cause
+        or str(diagnosis.get("conclusion") or payload.get("message") or "")
+    )
     tool_names = _extract_tool_names(diagnosis, incident_state)
     evidence = _extract_evidence(diagnosis)
     tool_calls_used = _extract_tool_call_count(diagnosis, tool_names)
@@ -241,6 +314,7 @@ def extract_eval_observation(result: Mapping[str, Any]) -> AgentEvalObservation:
         message=str(payload.get("message") or ""),
         conclusion=str(diagnosis.get("conclusion") or payload.get("message") or ""),
         primary_root_cause=primary_root_cause,
+        primary_root_cause_taxonomy=primary_root_cause_taxonomy,
         tool_names=tool_names,
         tool_calls_used=tool_calls_used,
         evidence=evidence,
@@ -250,6 +324,16 @@ def extract_eval_observation(result: Mapping[str, Any]) -> AgentEvalObservation:
         expansion_probe_tools=expansion_probe_tools,
         rejected_tool_call_count=_safe_int(react_runtime.get("rejected_tool_call_count")),
         rejected_tool_call_names=rejected_tool_call_names,
+        sources_count=len(_extract_string_list(diagnosis.get("sources"))),
+        retrieval_subquery_count=len(list(retrieval_expansion.get("subqueries") or [])),
+        added_rag_hits=_safe_int(retrieval_expansion.get("added_rag_hits")),
+        added_case_hits=_safe_int(retrieval_expansion.get("added_case_hits")),
+        retrieval_queries=_extract_retrieval_queries(retrieval_expansion.get("subqueries")),
+        retrieval_query_metrics=_extract_retrieval_query_metrics(
+            retrieval_expansion.get("subqueries"),
+            primary_root_cause_taxonomy=primary_root_cause_taxonomy,
+        ),
+        missing_evidence=_extract_string_list(retrieval_expansion.get("missing_evidence")),
         raw_result=payload,
     )
 
@@ -441,6 +525,127 @@ def score_agent_eval_case(expectation: AgentEvalExpectation, observation: AgentE
             expected=expectation.max_rejected_tool_calls,
             actual=observation.rejected_tool_call_count,
         )
+    if expectation.min_sources_count is not None:
+        add_check(
+            "min_sources_count",
+            observation.sources_count >= expectation.min_sources_count,
+            expected=expectation.min_sources_count,
+            actual=observation.sources_count,
+        )
+    if expectation.max_sources_count is not None:
+        add_check(
+            "max_sources_count",
+            observation.sources_count <= expectation.max_sources_count,
+            expected=expectation.max_sources_count,
+            actual=observation.sources_count,
+        )
+    if expectation.min_retrieval_subquery_count is not None:
+        add_check(
+            "min_retrieval_subquery_count",
+            observation.retrieval_subquery_count >= expectation.min_retrieval_subquery_count,
+            expected=expectation.min_retrieval_subquery_count,
+            actual=observation.retrieval_subquery_count,
+        )
+    if expectation.max_retrieval_subquery_count is not None:
+        add_check(
+            "max_retrieval_subquery_count",
+            observation.retrieval_subquery_count <= expectation.max_retrieval_subquery_count,
+            expected=expectation.max_retrieval_subquery_count,
+            actual=observation.retrieval_subquery_count,
+        )
+    if expectation.min_added_rag_hits is not None:
+        add_check(
+            "min_added_rag_hits",
+            observation.added_rag_hits >= expectation.min_added_rag_hits,
+            expected=expectation.min_added_rag_hits,
+            actual=observation.added_rag_hits,
+        )
+    if expectation.max_added_rag_hits is not None:
+        add_check(
+            "max_added_rag_hits",
+            observation.added_rag_hits <= expectation.max_added_rag_hits,
+            expected=expectation.max_added_rag_hits,
+            actual=observation.added_rag_hits,
+        )
+    if expectation.min_added_case_hits is not None:
+        add_check(
+            "min_added_case_hits",
+            observation.added_case_hits >= expectation.min_added_case_hits,
+            expected=expectation.min_added_case_hits,
+            actual=observation.added_case_hits,
+        )
+    if expectation.max_added_case_hits is not None:
+        add_check(
+            "max_added_case_hits",
+            observation.added_case_hits <= expectation.max_added_case_hits,
+            expected=expectation.max_added_case_hits,
+            actual=observation.added_case_hits,
+        )
+    if expectation.retrieval_query_contains:
+        joined = "\n".join(observation.retrieval_queries).lower()
+        missing = [fragment for fragment in expectation.retrieval_query_contains if fragment.lower() not in joined]
+        add_check(
+            "retrieval_query_contains",
+            not missing,
+            expected=expectation.retrieval_query_contains,
+            actual=observation.retrieval_queries,
+            detail="" if not missing else f"missing={missing}",
+        )
+    for item in expectation.retrieval_query_metrics:
+        observed_metric = next(
+            (
+                metric
+                for metric in observation.retrieval_query_metrics
+                if item.query_contains.lower() in metric.query.lower()
+            ),
+            None,
+        )
+        add_check(
+            f"retrieval_query_metrics[{item.query_contains}].present",
+            observed_metric is not None,
+            expected=item.query_contains,
+            actual=[metric.query for metric in observation.retrieval_query_metrics],
+        )
+        if observed_metric is None:
+            continue
+        if item.added_rag_hits is not None:
+            add_check(
+                f"retrieval_query_metrics[{item.query_contains}].added_rag_hits",
+                observed_metric.added_rag_hits == item.added_rag_hits,
+                expected=item.added_rag_hits,
+                actual=observed_metric.added_rag_hits,
+            )
+        if item.added_case_hits is not None:
+            add_check(
+                f"retrieval_query_metrics[{item.query_contains}].added_case_hits",
+                observed_metric.added_case_hits == item.added_case_hits,
+                expected=item.added_case_hits,
+                actual=observed_metric.added_case_hits,
+            )
+        if item.root_cause_taxonomy is not None:
+            add_check(
+                f"retrieval_query_metrics[{item.query_contains}].root_cause_taxonomy",
+                observed_metric.root_cause_taxonomy == item.root_cause_taxonomy,
+                expected=item.root_cause_taxonomy,
+                actual=observed_metric.root_cause_taxonomy,
+            )
+        if item.matches_primary_root_cause_taxonomy is not None:
+            add_check(
+                f"retrieval_query_metrics[{item.query_contains}].matches_primary_root_cause_taxonomy",
+                observed_metric.matches_primary_root_cause_taxonomy == item.matches_primary_root_cause_taxonomy,
+                expected=item.matches_primary_root_cause_taxonomy,
+                actual=observed_metric.matches_primary_root_cause_taxonomy,
+            )
+    if expectation.missing_evidence_contains:
+        joined = "\n".join(observation.missing_evidence).lower()
+        missing = [fragment for fragment in expectation.missing_evidence_contains if fragment.lower() not in joined]
+        add_check(
+            "missing_evidence_contains",
+            not missing,
+            expected=expectation.missing_evidence_contains,
+            actual=observation.missing_evidence,
+            detail="" if not missing else f"missing={missing}",
+        )
 
     passed_checks = sum(1 for check in checks if check.passed)
     total_checks = len(checks)
@@ -489,6 +694,69 @@ def build_eval_report(results: Sequence[AgentEvalCaseResult]) -> AgentEvalReport
     )
 
 
+def evaluate_agent_eval_gate(gate: AgentEvalGate, report: AgentEvalReport) -> EvalGateResult | None:
+    thresholds = gate.model_dump(exclude_none=True)
+    if not thresholds:
+        return None
+
+    checks: list[AgentEvalCheck] = []
+
+    def add_check(name: str, passed: bool, *, expected: Any = None, actual: Any = None, detail: str = "") -> None:
+        checks.append(AgentEvalCheck(name=name, passed=passed, expected=expected, actual=actual, detail=detail))
+
+    if gate.min_pass_rate is not None:
+        add_check(
+            "min_pass_rate",
+            report.pass_rate >= gate.min_pass_rate,
+            expected=gate.min_pass_rate,
+            actual=report.pass_rate,
+        )
+    if gate.max_avg_tool_calls_used is not None:
+        add_check(
+            "max_avg_tool_calls_used",
+            report.avg_tool_calls_used <= gate.max_avg_tool_calls_used,
+            expected=gate.max_avg_tool_calls_used,
+            actual=report.avg_tool_calls_used,
+        )
+    if gate.max_avg_duration_ms is not None:
+        add_check(
+            "max_avg_duration_ms",
+            report.avg_duration_ms <= gate.max_avg_duration_ms,
+            expected=gate.max_avg_duration_ms,
+            actual=report.avg_duration_ms,
+        )
+    if gate.max_expansion_probe_cases is not None:
+        add_check(
+            "max_expansion_probe_cases",
+            report.expansion_probe_cases <= gate.max_expansion_probe_cases,
+            expected=gate.max_expansion_probe_cases,
+            actual=report.expansion_probe_cases,
+        )
+    if gate.max_rejected_tool_call_cases is not None:
+        add_check(
+            "max_rejected_tool_call_cases",
+            report.rejected_tool_call_cases <= gate.max_rejected_tool_call_cases,
+            expected=gate.max_rejected_tool_call_cases,
+            actual=report.rejected_tool_call_cases,
+        )
+    if gate.max_rejected_tool_call_total is not None:
+        add_check(
+            "max_rejected_tool_call_total",
+            report.rejected_tool_call_total <= gate.max_rejected_tool_call_total,
+            expected=gate.max_rejected_tool_call_total,
+            actual=report.rejected_tool_call_total,
+        )
+
+    passed_checks = sum(1 for check in checks if check.passed)
+    total_checks = len(checks)
+    return EvalGateResult(
+        passed=passed_checks == total_checks,
+        passed_checks=passed_checks,
+        total_checks=total_checks,
+        checks=checks,
+    )
+
+
 class AgentEvalRunner:
     def __init__(
         self,
@@ -511,6 +779,7 @@ class AgentEvalRunner:
             try:
                 db_path = str(Path(temp_dir) / f"{case.case_id}.db")
                 orchestrator = self._build_orchestrator(db_path)
+                self._configure_case_mocks(orchestrator, case)
                 if self.configure_orchestrator is not None:
                     self.configure_orchestrator(orchestrator)
                 if case.setup.llm_mode == "disabled":
@@ -612,6 +881,89 @@ class AgentEvalRunner:
             system_event_store=system_event_store,
         )
 
+    def _configure_case_mocks(self, orchestrator: SupervisorOrchestrator, case: AgentEvalCase) -> None:
+        if case.setup.retrieval_planner_llm_mode == "disabled":
+            orchestrator.retrieval_planner.llm = DisabledEvalLLM()
+
+        default_bundle = (
+            RAGContextBundle.model_validate(case.setup.mock_rag_context)
+            if dict(case.setup.mock_rag_context or {})
+            else None
+        )
+        bundle_by_query = {
+            str(query).strip(): RAGContextBundle.model_validate(payload)
+            for query, payload in dict(case.setup.mock_rag_context_by_query or {}).items()
+            if str(query).strip()
+        }
+        if default_bundle is not None or bundle_by_query:
+            original_retrieve_for_request = orchestrator.knowledge_service.retrieve_for_request
+            original_retrieve_query = orchestrator.knowledge_service.retrieve_query
+
+            async def retrieve_for_request(request, *, top_k=None):
+                query = str(getattr(request, "message", "") or "").strip()
+                bundle = bundle_by_query.get(query) or default_bundle
+                if bundle is not None:
+                    return bundle.model_copy(deep=True)
+                return await original_retrieve_for_request(request, top_k=top_k)
+
+            async def retrieve_query(*, query: str, service: str = "", top_k: int | None = None):
+                bundle = bundle_by_query.get(str(query).strip()) or default_bundle
+                if bundle is not None:
+                    return bundle.model_copy(deep=True)
+                return await original_retrieve_query(query=query, service=service, top_k=top_k)
+
+            orchestrator.knowledge_service.retrieve_for_request = retrieve_for_request
+            orchestrator.knowledge_service.retrieve_query = retrieve_query
+
+        default_similar_cases = [
+            SimilarIncidentCase.model_validate(item)
+            for item in list(case.setup.mock_similar_cases or [])
+        ]
+        similar_cases_by_query = {
+            str(query).strip(): [
+                SimilarIncidentCase.model_validate(item)
+                for item in list(payload or [])
+            ]
+            for query, payload in dict(case.setup.mock_similar_cases_by_query or {}).items()
+            if str(query).strip()
+        }
+        if default_similar_cases or similar_cases_by_query:
+            original_recall = orchestrator.case_retriever.recall
+
+            async def recall(
+                *,
+                service: str,
+                cluster: str,
+                namespace: str,
+                message: str,
+                session_id: str,
+                limit: int = 6,
+                failure_mode: str = "",
+                root_cause_taxonomy: str = "",
+            ):
+                query = str(message or "").strip()
+                matched_cases = similar_cases_by_query.get(query)
+                if matched_cases is not None:
+                    return [item.model_copy(deep=True) for item in matched_cases]
+                if default_similar_cases:
+                    return [item.model_copy(deep=True) for item in default_similar_cases]
+                return await original_recall(
+                    service=service,
+                    cluster=cluster,
+                    namespace=namespace,
+                    message=message,
+                    session_id=session_id,
+                    limit=limit,
+                    failure_mode=failure_mode,
+                    root_cause_taxonomy=root_cause_taxonomy,
+                )
+
+            orchestrator.case_retriever.recall = AsyncMock(side_effect=recall)
+
+        if case.setup.mock_retrieval_expansion:
+            expansion = RetrievalExpansion.model_validate(case.setup.mock_retrieval_expansion)
+            orchestrator.retrieval_planner.plan = AsyncMock(return_value=expansion.model_copy(deep=True))
+
 
 def _extract_primary_root_cause(
     diagnosis: Mapping[str, Any],
@@ -708,6 +1060,51 @@ def _extract_string_list(value: Any) -> list[str]:
     return items
 
 
+def _extract_retrieval_queries(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    queries: list[str] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        text = str(item.get("query") or "").strip()
+        if text and text not in queries:
+            queries.append(text)
+    return queries
+
+
+def _extract_retrieval_query_metrics(
+    value: Any,
+    *,
+    primary_root_cause_taxonomy: str = "",
+) -> list[RetrievalQueryMetricObservation]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    metrics: list[RetrievalQueryMetricObservation] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        query = str(item.get("query") or "").strip()
+        if not query:
+            continue
+        query_root_cause_taxonomy = str(item.get("root_cause_taxonomy") or "").strip()
+        metrics.append(
+            RetrievalQueryMetricObservation(
+                query=query,
+                target=str(item.get("target") or ""),
+                root_cause_taxonomy=query_root_cause_taxonomy,
+                added_rag_hits=_safe_int(item.get("added_rag_hits")),
+                added_case_hits=_safe_int(item.get("added_case_hits")),
+                matches_primary_root_cause_taxonomy=bool(
+                    query_root_cause_taxonomy
+                    and primary_root_cause_taxonomy
+                    and query_root_cause_taxonomy == primary_root_cause_taxonomy
+                ),
+            )
+        )
+    return metrics
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -728,6 +1125,16 @@ def serialize_report(report: AgentEvalReport) -> dict[str, Any]:
         "rejected_tool_call_cases": report.rejected_tool_call_cases,
         "rejected_tool_call_total": report.rejected_tool_call_total,
         "stop_reason_counts": dict(report.stop_reason_counts),
+        "gate_result": (
+            {
+                "passed": report.gate_result.passed,
+                "passed_checks": report.gate_result.passed_checks,
+                "total_checks": report.gate_result.total_checks,
+                "checks": [asdict(check) for check in report.gate_result.checks],
+            }
+            if report.gate_result is not None
+            else None
+        ),
         "results": [
             {
                 "case_id": item.case_id,

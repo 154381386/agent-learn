@@ -58,6 +58,8 @@ class RetrievalSubquery(BaseModel):
     reason: str = ""
     failure_mode: str = ""
     root_cause_taxonomy: str = ""
+    added_rag_hits: int = 0
+    added_case_hits: int = 0
 
 
 class RetrievalExpansion(BaseModel):
@@ -71,6 +73,7 @@ class ContextSnapshot(BaseModel):
     request: Dict[str, Any] = Field(default_factory=dict)
     rag_context: Optional[RAGContextBundle] = None
     similar_cases: List[SimilarIncidentCase] = Field(default_factory=list)
+    case_recall: Dict[str, Any] = Field(default_factory=dict)
     live_signals: Dict[str, Any] = Field(default_factory=dict)
     context_quality: float = 0.0
     available_tools: List[Dict[str, Any]] = Field(default_factory=list)

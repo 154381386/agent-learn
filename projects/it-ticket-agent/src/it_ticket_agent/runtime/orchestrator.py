@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from ..approval.adapters import legacy_decision_to_record
 from ..approval_store import ApprovalStore
+from ..bad_case_store import BadCaseCandidateStore
 from ..checkpoint_store import CheckpointStore
 from ..execution_store import ExecutionStore
 from ..context import ContextAssembler
@@ -36,7 +37,7 @@ from ..schemas import (
     TicketRequest,
 )
 from ..session import SessionService
-from ..session.models import ConversationTurn
+from ..session.models import ConversationTurn, utc_now
 from ..session_store import SessionStore
 from ..settings import Settings
 from ..state.approval_transformers import apply_approval_resume_result_to_state
@@ -64,6 +65,7 @@ class SupervisorOrchestrator:
         system_event_store: SystemEventStore | None = None,
         session_service: SessionService | None = None,
         incident_case_store: IncidentCaseStore | None = None,
+        bad_case_candidate_store: BadCaseCandidateStore | None = None,
     ) -> None:
         self.settings = settings
         if self.settings.orchestration_mode != "react_tool_first":
@@ -77,6 +79,7 @@ class SupervisorOrchestrator:
         self.process_memory_store = process_memory_store or ProcessMemoryStore(settings.approval_db_path)
         self.execution_store = execution_store or ExecutionStore(settings.approval_db_path)
         self.incident_case_store = incident_case_store or IncidentCaseStore(settings.approval_db_path)
+        self.bad_case_candidate_store = bad_case_candidate_store or BadCaseCandidateStore(settings.approval_db_path)
         self.system_event_store = system_event_store or SystemEventStore(settings.approval_db_path)
         self.observability = configure_observability(settings)
         self.context_assembler = ContextAssembler()
@@ -309,6 +312,273 @@ class SupervisorOrchestrator:
                 pass
         return saved_case
 
+    @staticmethod
+    def _as_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump()
+            return dict(dumped) if isinstance(dumped, dict) else {}
+        return {}
+
+    @staticmethod
+    def _dedupe_reason_codes(reason_codes: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for item in reason_codes:
+            value = str(item or "").strip()
+            if value and value not in deduped:
+                deduped.append(value)
+        return deduped
+
+    def _build_bad_case_request_payload(
+        self,
+        *,
+        session: dict[str, Any],
+        incident_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        session_memory = dict(session.get("session_memory") or {})
+        shared_context = dict(incident_state.get("shared_context") or {})
+        return {
+            "session_id": session.get("session_id"),
+            "thread_id": session.get("thread_id"),
+            "ticket_id": session.get("ticket_id"),
+            "user_id": session.get("user_id"),
+            "message": incident_state.get("message") or session_memory.get("original_user_message"),
+            "original_user_message": session_memory.get("original_user_message"),
+            "service": incident_state.get("service"),
+            "environment": incident_state.get("environment"),
+            "host_identifier": incident_state.get("host_identifier"),
+            "db_name": incident_state.get("db_name"),
+            "db_type": incident_state.get("db_type"),
+            "cluster": incident_state.get("cluster"),
+            "namespace": incident_state.get("namespace"),
+            "channel": incident_state.get("channel"),
+            "mock_scenario": shared_context.get("mock_scenario"),
+            "mock_scenarios": dict(shared_context.get("mock_scenarios") or {}),
+            "mock_tool_responses": dict(shared_context.get("mock_tool_responses") or {}),
+            "mock_world_state": dict(shared_context.get("mock_world_state") or {}),
+            "current_intent": dict(session_memory.get("current_intent") or {}),
+            "current_intent_history": list(session_memory.get("current_intent_history") or []),
+            "session_event_queue": [dict(item) for item in list(session_memory.get("session_event_queue") or []) if isinstance(item, dict)],
+        }
+
+    @staticmethod
+    def _normalize_bad_case_response_payload(response: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(response, dict):
+            return {}
+        return {
+            "status": response.get("status"),
+            "message": response.get("message"),
+            "diagnosis": dict(response.get("diagnosis") or {}) if isinstance(response.get("diagnosis"), dict) else {},
+            "approval_request": (
+                dict(response.get("approval_request") or {})
+                if isinstance(response.get("approval_request"), dict)
+                else {}
+            ),
+            "pending_interrupt": (
+                dict(response.get("pending_interrupt") or {})
+                if isinstance(response.get("pending_interrupt"), dict)
+                else {}
+            ),
+        }
+
+    def _latest_assistant_response_payload(self, session_id: str) -> dict[str, Any]:
+        turns = self.session_store.list_turns(session_id, limit=20)
+        for turn in reversed(turns):
+            if str(turn.get("role") or "") != "assistant":
+                continue
+            structured_payload = dict(turn.get("structured_payload") or {})
+            return {
+                "status": structured_payload.get("status"),
+                "message": turn.get("content"),
+                "diagnosis": (
+                    dict(structured_payload.get("diagnosis") or {})
+                    if isinstance(structured_payload.get("diagnosis"), dict)
+                    else {}
+                ),
+                "approval_request": (
+                    dict(structured_payload.get("approval_request") or {})
+                    if isinstance(structured_payload.get("approval_request"), dict)
+                    else {}
+                ),
+            }
+        return {}
+
+    @staticmethod
+    def _resolve_bad_case_severity(reason_codes: list[str]) -> str:
+        codes = set(reason_codes)
+        if codes.intersection({"human_feedback_negative", "actual_root_cause_provided", "feedback_reopen"}):
+            return "high"
+        if codes.intersection(
+            {
+                "tool_budget_reached",
+                "iteration_guardrail_reached",
+                "rejected_tool_call_detected",
+                "retrieval_misaligned_with_primary_root_cause",
+            }
+        ):
+            return "medium"
+        return "low"
+
+    def _detect_bad_case_reason_codes(
+        self,
+        *,
+        source: str,
+        response_payload: dict[str, Any],
+        incident_state_snapshot: dict[str, Any],
+        incident_case: dict[str, Any] | None,
+        human_feedback: dict[str, Any] | None = None,
+    ) -> list[str]:
+        diagnosis = dict(response_payload.get("diagnosis") or {})
+        incident_metadata = dict(incident_state_snapshot.get("metadata") or {})
+        context_snapshot = self._as_dict(diagnosis.get("context_snapshot")) or self._as_dict(
+            incident_state_snapshot.get("context_snapshot")
+        )
+        react_runtime = self._as_dict(diagnosis.get("react_runtime")) or self._as_dict(
+            incident_metadata.get("react_runtime")
+        )
+        retrieval_expansion = self._as_dict(context_snapshot.get("retrieval_expansion"))
+        stop_reason = str(diagnosis.get("stop_reason") or react_runtime.get("stop_reason") or "").strip()
+        reason_codes: list[str] = []
+
+        if stop_reason in {"tool_budget_reached", "iteration_guardrail_reached"}:
+            reason_codes.append(stop_reason)
+
+        if int(react_runtime.get("rejected_tool_call_count") or 0) > 0:
+            reason_codes.append("rejected_tool_call_detected")
+
+        subqueries = [
+            self._as_dict(item)
+            for item in list(retrieval_expansion.get("subqueries") or [])
+            if isinstance(item, dict) or hasattr(item, "model_dump")
+        ]
+        added_rag_hits = int(retrieval_expansion.get("added_rag_hits") or 0)
+        added_case_hits = int(retrieval_expansion.get("added_case_hits") or 0)
+        if subqueries and added_rag_hits == 0 and added_case_hits == 0:
+            reason_codes.append("retrieval_expansion_no_gain")
+
+        primary_root_cause_taxonomy = str((incident_case or {}).get("root_cause_taxonomy") or "").strip()
+        if not primary_root_cause_taxonomy:
+            primary_text = str(
+                (incident_case or {}).get("root_cause")
+                or diagnosis.get("summary")
+                or response_payload.get("message")
+                or ""
+            )
+            primary_root_cause_taxonomy = infer_root_cause_taxonomy(primary_text)
+        for item in subqueries:
+            query_taxonomy = str(item.get("root_cause_taxonomy") or "").strip()
+            query_added_hits = int(item.get("added_rag_hits") or 0) + int(item.get("added_case_hits") or 0)
+            if query_added_hits > 0 and primary_root_cause_taxonomy and query_taxonomy and query_taxonomy != primary_root_cause_taxonomy:
+                reason_codes.append("retrieval_misaligned_with_primary_root_cause")
+                break
+
+        feedback_payload = dict(human_feedback or {})
+        if feedback_payload.get("human_verified") is False:
+            reason_codes.append("human_feedback_negative")
+        if str(feedback_payload.get("actual_root_cause_hypothesis") or "").strip():
+            reason_codes.append("actual_root_cause_provided")
+        if source == "feedback_reopen":
+            reason_codes.append("feedback_reopen")
+
+        return self._dedupe_reason_codes(reason_codes)
+
+    def _create_bad_case_candidate(
+        self,
+        *,
+        session: dict[str, Any],
+        source: str,
+        response_payload: dict[str, Any],
+        incident_state_snapshot: dict[str, Any],
+        incident_case: dict[str, Any] | None = None,
+        human_feedback: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        reason_codes = self._detect_bad_case_reason_codes(
+            source=source,
+            response_payload=response_payload,
+            incident_state_snapshot=incident_state_snapshot,
+            incident_case=incident_case,
+            human_feedback=human_feedback,
+        )
+        if not reason_codes:
+            return None
+        context_snapshot = self._as_dict((response_payload.get("diagnosis") or {}).get("context_snapshot")) or self._as_dict(
+            incident_state_snapshot.get("context_snapshot")
+        )
+        retrieval_expansion = self._as_dict(context_snapshot.get("retrieval_expansion"))
+        observations = list((response_payload.get("diagnosis") or {}).get("observations") or [])
+        if not observations:
+            observations = list(dict(incident_state_snapshot.get("metadata") or {}).get("react_observations") or [])
+        conversation_turns = self.session_store.list_turns(str(session.get("session_id") or ""), limit=20)
+        system_events = self.system_event_store.list_for_session(str(session.get("session_id") or ""), limit=40)
+        return self.bad_case_candidate_store.create(
+            {
+                "session_id": str(session.get("session_id") or ""),
+                "thread_id": str(session.get("thread_id") or session.get("session_id") or ""),
+                "ticket_id": str(session.get("ticket_id") or session.get("session_id") or ""),
+                "source": source,
+                "reason_codes": reason_codes,
+                "severity": self._resolve_bad_case_severity(reason_codes),
+                "request_payload": self._build_bad_case_request_payload(
+                    session=session,
+                    incident_state=incident_state_snapshot,
+                ),
+                "response_payload": response_payload,
+                "incident_state_snapshot": incident_state_snapshot,
+                "context_snapshot": context_snapshot,
+                "observations": [dict(item) for item in observations if isinstance(item, dict)],
+                "retrieval_expansion": retrieval_expansion,
+                "human_feedback": dict(human_feedback or {}),
+                "conversation_turns": [dict(item) for item in conversation_turns if isinstance(item, dict)],
+                "system_events": [dict(item) for item in system_events if isinstance(item, dict)],
+            }
+        )
+
+    def _maybe_create_bad_case_candidate_from_run(
+        self,
+        *,
+        session: dict[str, Any] | None,
+        response: dict[str, Any],
+        incident_state: dict[str, Any],
+        incident_case: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(session, dict):
+            return None
+        return self._create_bad_case_candidate(
+            session=session,
+            source="runtime_completion",
+            response_payload=self._normalize_bad_case_response_payload(response),
+            incident_state_snapshot=incident_state,
+            incident_case=incident_case,
+        )
+
+    def _maybe_create_bad_case_candidate_from_feedback(
+        self,
+        *,
+        session: dict[str, Any],
+        answer_payload: dict[str, Any],
+        incident_case: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        source = "feedback_reopen" if self._has_feedback_reopen_signal(answer_payload) else "feedback_negative"
+        return self._create_bad_case_candidate(
+            session=session,
+            source=source,
+            response_payload=self._latest_assistant_response_payload(str(session.get("session_id") or "")),
+            incident_state_snapshot=dict(session.get("incident_state") or {}),
+            incident_case=incident_case,
+            human_feedback={
+                "human_verified": bool(answer_payload.get("human_verified")),
+                "actual_root_cause_hypothesis": str(answer_payload.get("actual_root_cause_hypothesis") or "").strip(),
+                "comment": str(answer_payload.get("comment") or "").strip(),
+                "hypothesis_accuracy": {
+                    str(key): float(value)
+                    for key, value in dict(answer_payload.get("hypothesis_accuracy") or {}).items()
+                    if isinstance(value, (int, float))
+                },
+            },
+        )
+
     def _append_user_turn(self, session_id: str, *, content: str, structured_payload: dict[str, Any]) -> dict[str, Any]:
         return self.session_store.append_turn(
             ConversationTurn(
@@ -318,6 +588,272 @@ class SupervisorOrchestrator:
                 structured_payload=structured_payload,
             )
         )
+
+    @staticmethod
+    def _session_event_queue(session: dict[str, Any] | None) -> list[dict[str, Any]]:
+        memory = dict((session or {}).get("session_memory") or {})
+        queue: list[dict[str, Any]] = []
+        for item in list(memory.get("session_event_queue") or []):
+            if isinstance(item, dict):
+                queue.append(dict(item))
+        return queue
+
+    def _build_session_event(
+        self,
+        *,
+        source: str,
+        event_type: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "event_id": f"evt-{uuid4().hex[:12]}",
+            "source": source,
+            "event_type": event_type,
+            "message": str(message or "").strip(),
+            "metadata": dict(metadata or {}),
+            "created_at": utc_now(),
+            "consumed_at": None,
+        }
+
+    def _persist_session_event_queue(
+        self,
+        session: dict[str, Any],
+        *,
+        queue: list[dict[str, Any]],
+        original_user_message: str | None = None,
+    ) -> dict[str, Any]:
+        updated = self.session_service.update_session_state(
+            str(session["session_id"]),
+            incident_state=dict(session.get("incident_state") or {}),
+            status=str(session.get("status") or "active"),
+            current_stage=str(session.get("current_stage") or "routing"),
+            current_agent=session.get("current_agent"),
+            latest_approval_id=session.get("latest_approval_id"),
+            pending_interrupt_id=session.get("pending_interrupt_id"),
+            last_checkpoint_id=session.get("last_checkpoint_id"),
+            session_memory=self._merge_session_memory(
+                session,
+                original_user_message=original_user_message,
+                session_event_queue=queue[-20:],
+            ),
+        )
+        return updated or session
+
+    def _queue_session_event(
+        self,
+        session: dict[str, Any],
+        *,
+        event: dict[str, Any],
+        original_user_message: str | None = None,
+    ) -> dict[str, Any]:
+        queue = self._session_event_queue(session)
+        queue.append(dict(event))
+        return self._persist_session_event_queue(
+            session,
+            queue=queue,
+            original_user_message=original_user_message,
+        )
+
+    def _mark_session_events_consumed(
+        self,
+        session: dict[str, Any],
+        *,
+        event_ids: list[str],
+    ) -> dict[str, Any]:
+        if not event_ids:
+            return session
+        queue = self._session_event_queue(session)
+        if not queue:
+            return session
+        now = utc_now()
+        touched = False
+        target_ids = set(event_ids)
+        for item in queue:
+            if str(item.get("event_id") or "") in target_ids and not item.get("consumed_at"):
+                item["consumed_at"] = now
+                touched = True
+        if not touched:
+            return session
+        return self._persist_session_event_queue(session, queue=queue)
+
+    def _classify_user_message_event(
+        self,
+        *,
+        session: dict[str, Any],
+        message: str,
+        message_mode: str = "default",
+    ) -> dict[str, Any]:
+        normalized = str(message or "").strip()
+        lowered = normalized.lower()
+        topic_shift = self._detect_topic_shift_for_session(session=session, current_message=normalized)
+        explicit_mode = str(message_mode or "default").strip().lower()
+        if explicit_mode == "supplement":
+            reason_tags = ["explicit_message_mode", "supplement_mode"]
+            if bool(topic_shift.get("topic_shift_detected")):
+                reason_tags.append("topic_shift_detected")
+            return {
+                "event_type": "supplement",
+                "message": normalized,
+                "topic_shift": topic_shift,
+                "reason_tags": reason_tags,
+                "incremental_tool_domains": list(topic_shift.get("incremental_tool_domains") or []),
+                "message_tokens": lowered[:120],
+            }
+        correction_markers = (
+            "不是",
+            "不对",
+            "误判",
+            "纠正",
+            "而是",
+            "其实",
+            "更像",
+            "不准确",
+            "你错了",
+            "判断错",
+            "真实根因",
+            "实际根因",
+            "先别",
+        )
+        supplement_markers = (
+            "补充",
+            "另外",
+            "还有",
+            "新增",
+            "发现",
+            "进一步",
+            "刚刚",
+            "日志",
+            "线索",
+            "观测",
+            "只在",
+            "只有",
+            "仅在",
+        )
+        new_issue_markers = (
+            "另一个问题",
+            "另外一个问题",
+            "新问题",
+            "还有个问题",
+            "再问一个",
+            "顺便问",
+        )
+        reason_tags: list[str] = []
+        if any(marker in normalized for marker in new_issue_markers):
+            event_type = "new_issue"
+            reason_tags.append("explicit_new_issue")
+        elif any(marker in normalized for marker in correction_markers):
+            event_type = "correction"
+            reason_tags.append("correction_marker")
+        elif any(marker in normalized for marker in supplement_markers):
+            event_type = "supplement"
+            reason_tags.append("supplement_marker")
+        elif bool(topic_shift.get("topic_shift_detected")):
+            event_type = "new_issue"
+            reason_tags.append("topic_shift")
+        else:
+            event_type = "supplement"
+            reason_tags.append("default_followup")
+        if bool(topic_shift.get("topic_shift_detected")):
+            reason_tags.append("topic_shift_detected")
+        return {
+            "event_type": event_type,
+            "message": normalized,
+            "topic_shift": topic_shift,
+            "reason_tags": reason_tags,
+            "incremental_tool_domains": list(topic_shift.get("incremental_tool_domains") or []),
+            "message_tokens": lowered[:120],
+        }
+
+    @staticmethod
+    def _has_feedback_reopen_signal(answer_payload: dict[str, Any]) -> bool:
+        actual_root = str(answer_payload.get("actual_root_cause_hypothesis") or "").strip()
+        comment = str(answer_payload.get("comment") or "").strip()
+        hypothesis_accuracy = dict(answer_payload.get("hypothesis_accuracy") or {})
+        return bool(actual_root or comment or hypothesis_accuracy)
+
+    @staticmethod
+    def _build_feedback_reopen_message(answer_payload: dict[str, Any]) -> str:
+        actual_root = str(answer_payload.get("actual_root_cause_hypothesis") or "").strip()
+        comment = str(answer_payload.get("comment") or "").strip()
+        hypothesis_accuracy = {
+            str(key): float(value)
+            for key, value in dict(answer_payload.get("hypothesis_accuracy") or {}).items()
+            if isinstance(value, (int, float))
+        }
+        parts = ["人工反馈认为上一轮诊断不准确，请基于新信息重新分析。"]
+        if actual_root:
+            parts.append(f"真实根因假设：{actual_root}")
+        if comment:
+            parts.append(f"补充说明：{comment}")
+        if hypothesis_accuracy:
+            ranked = sorted(hypothesis_accuracy.items(), key=lambda item: item[1], reverse=True)
+            parts.append(
+                "人工准确度判断："
+                + "，".join(f"{hypothesis_id}={score:.2f}" for hypothesis_id, score in ranked[:3])
+            )
+        return "\n".join(parts)
+
+    @staticmethod
+    def _feedback_reopen_capability(
+        session: dict[str, Any],
+        *,
+        interrupt: dict[str, Any] | None = None,
+        incident_case: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        interrupt_metadata = dict((interrupt or {}).get("metadata") or {})
+        if bool(interrupt_metadata.get("can_reject_reopen")):
+            return {
+                "allowed": True,
+                "action_name": str(interrupt_metadata.get("action_name") or ""),
+                "action_source": str(interrupt_metadata.get("action_source") or ""),
+                "approval_present": bool(interrupt_metadata.get("approval_present")),
+            }
+        if isinstance(incident_case, dict):
+            final_action = str(incident_case.get("final_action") or "").strip()
+            if final_action or bool(incident_case.get("approval_required")):
+                return {
+                    "allowed": True,
+                    "action_name": final_action,
+                    "action_source": "incident_case",
+                    "approval_present": bool(incident_case.get("approval_required")),
+                }
+        incident_state = dict(session.get("incident_state") or {})
+        ranked_result = dict(incident_state.get("ranked_result") or {})
+        primary = dict(ranked_result.get("primary") or {})
+        recommended_action = str(primary.get("recommended_action") or "").strip()
+        approval_proposals = list(incident_state.get("approval_proposals") or [])
+        approved_actions = list(incident_state.get("approved_actions") or [])
+        metadata = dict(incident_state.get("metadata") or {})
+        approval_request = dict(metadata.get("approval_request") or {})
+        proposal_action = (
+            str(dict(approval_proposals[0]).get("action") or "").strip()
+            if approval_proposals and isinstance(approval_proposals[0], dict)
+            else ""
+        )
+        approved_action = (
+            str(dict(approved_actions[0]).get("action") or "").strip()
+            if approved_actions and isinstance(approved_actions[0], dict)
+            else ""
+        )
+        approval_action = str(approval_request.get("action") or "").strip()
+        action_name = recommended_action or proposal_action or approved_action or approval_action
+        return {
+            "allowed": bool(action_name),
+            "action_name": action_name,
+            "action_source": (
+                "recommended_action"
+                if recommended_action
+                else "approval_proposal"
+                if proposal_action
+                else "approved_action"
+                if approved_action
+                else "approval_request"
+                if approval_action
+                else ""
+            ),
+            "approval_present": bool(proposal_action or approved_action or approval_action),
+        }
 
     def _attach_observability(self, payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if payload is None:
@@ -566,12 +1102,32 @@ class SupervisorOrchestrator:
             str(key): float(value)
             for key, value in dict(answer_payload.get("hypothesis_accuracy") or {}).items()
         }
+        reopen_capability = self._feedback_reopen_capability(
+            session,
+            interrupt=interrupt,
+            incident_case=self.incident_case_store.get_by_session_id(session_id),
+        )
+        if not human_verified and self._has_feedback_reopen_signal(answer_payload) and not reopen_capability["allowed"]:
+            raise RuntimeError("reject and reopen is only allowed after actionable guidance or approval")
+        if not human_verified and not self._has_feedback_reopen_signal(answer_payload):
+            raise ValueError("reject and reopen requires new information such as actual_root_cause_hypothesis or comment")
         updated_case = self.incident_case_store.update_feedback(
             session_id,
             human_verified=human_verified,
             hypothesis_accuracy=hypothesis_accuracy,
             actual_root_cause_hypothesis=actual_root,
         )
+        reopen_capability = self._feedback_reopen_capability(
+            session,
+            interrupt=interrupt,
+            incident_case=updated_case,
+        )
+        if not human_verified:
+            self._maybe_create_bad_case_candidate_from_feedback(
+                session=session,
+                answer_payload=answer_payload,
+                incident_case=updated_case,
+            )
         if updated_case is not None and self.case_vector_indexer.enabled:
             try:
                 asyncio.get_running_loop().create_task(self.case_vector_indexer.index_case(updated_case))
@@ -604,6 +1160,118 @@ class SupervisorOrchestrator:
             },
             metadata={"source": "orchestrator", "interrupt_id": interrupt.get("interrupt_id")},
         )
+        if not human_verified and self._has_feedback_reopen_signal(answer_payload):
+            restored_state = self._restore_incident_state_for_session(session)
+            restored_metadata = dict(restored_state.get("metadata") or {})
+            restored_metadata.pop("feedback_interrupt", None)
+            restored_state["metadata"] = restored_metadata
+            shared_context = dict(restored_state.get("shared_context") or {})
+            shared_context["feedback_reopen"] = {
+                "human_verified": human_verified,
+                "actual_root_cause_hypothesis": actual_root,
+                "comment": str(answer_payload.get("comment") or "").strip(),
+                "action_name": reopen_capability["action_name"],
+                "action_source": reopen_capability["action_source"],
+            }
+            restored_state["shared_context"] = shared_context
+            active_session = self.session_store.update_state(
+                session_id,
+                incident_state=restored_state,
+                status="active",
+                current_stage="routing",
+                latest_approval_id=session.get("latest_approval_id"),
+                pending_interrupt_id=None,
+                last_checkpoint_id=session.get("last_checkpoint_id"),
+                session_memory=self._merge_session_memory(
+                    session,
+                    current_stage="routing",
+                    pending_interrupt=None,
+                ),
+            )
+            next_session = active_session or session
+            feedback_message = self._build_feedback_reopen_message(answer_payload)
+            feedback_event = self._build_session_event(
+                source="feedback",
+                event_type="correction",
+                message=feedback_message,
+                metadata={
+                    "interrupt_id": interrupt.get("interrupt_id"),
+                    "human_verified": False,
+                    "actual_root_cause_hypothesis": actual_root,
+                    "reason": "feedback_reopen",
+                },
+            )
+            queued_session = self._queue_session_event(next_session, event=feedback_event)
+            self._append_process_entry(
+                session_id=session_id,
+                thread_id=str(session.get("thread_id") or session_id),
+                ticket_id=str(session.get("ticket_id") or session_id),
+                event_type="manual_intervention",
+                stage="routing",
+                source="orchestrator",
+                summary="人工反馈附带新信息，已重新开启诊断。",
+                payload={
+                    "actual_root_cause_hypothesis": actual_root,
+                    "comment": str(answer_payload.get("comment") or ""),
+                },
+                refs={"interrupt_id": interrupt.get("interrupt_id")},
+            )
+            self._append_system_event(
+                session_id=session_id,
+                thread_id=str(session.get("thread_id") or session_id),
+                ticket_id=str(session.get("ticket_id") or session_id),
+                event_type="feedback.reopened",
+                payload={
+                    "actual_root_cause_hypothesis": actual_root,
+                    "comment": str(answer_payload.get("comment") or ""),
+                },
+                metadata={"source": "orchestrator", "interrupt_id": interrupt.get("interrupt_id")},
+            )
+            ticket_request = TicketRequest(
+                ticket_id=str(session.get("ticket_id") or session_id),
+                user_id=str(session.get("user_id") or ""),
+                message=feedback_message,
+                service=restored_state.get("service"),
+                environment=restored_state.get("environment"),
+                host_identifier=restored_state.get("host_identifier"),
+                db_name=restored_state.get("db_name"),
+                db_type=restored_state.get("db_type"),
+                cluster=str(restored_state.get("cluster") or "prod-shanghai-1"),
+                namespace=str(restored_state.get("namespace") or "default"),
+                channel=str(restored_state.get("channel") or "feishu"),
+                mock_scenario=str(shared_context.get("mock_scenario") or "") or None,
+                mock_scenarios=dict(shared_context.get("mock_scenarios") or {}),
+                mock_tool_responses=dict(shared_context.get("mock_tool_responses") or {}),
+                mock_world_state=dict(shared_context.get("mock_world_state") or {}),
+            )
+            reopened = await self._run_ticket_message(
+                ticket_request,
+                session_id=session_id,
+                thread_id=str(session.get("thread_id") or session_id),
+                create_session=False,
+                incident_state_override=restored_state,
+                entrypoint="feedback_reopen",
+                user_turn_payload={
+                    "interrupt_id": interrupt.get("interrupt_id"),
+                    "interrupt_type": interrupt.get("type"),
+                    "answer_payload": answer_payload,
+                    "message_event": {
+                        "event_type": "correction",
+                        "source": "feedback",
+                    },
+                },
+            )
+            reopened_session = reopened.get("session")
+            if isinstance(reopened_session, dict):
+                reopened["session"] = self._mark_session_events_consumed(
+                    reopened_session,
+                    event_ids=[str(feedback_event.get("event_id") or "")],
+                )
+            diagnosis = dict(reopened.get("diagnosis") or {})
+            diagnosis["feedback"] = updated_case
+            diagnosis["feedback_reopened"] = True
+            reopened["diagnosis"] = diagnosis
+            return reopened
         updated_session = self.session_store.update_state(
             session_id,
             incident_state=session.get("incident_state") or {},
@@ -645,6 +1313,7 @@ class SupervisorOrchestrator:
         pending_approval: dict[str, Any] | None = None,
         current_stage: str | None = None,
         pending_interrupt: dict[str, Any] | None = None,
+        session_event_queue: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         memory = dict(session.get("session_memory") or {})
         if original_user_message is not None:
@@ -665,6 +1334,8 @@ class SupervisorOrchestrator:
         if current_stage is not None:
             memory["current_stage"] = current_stage
         memory["pending_interrupt"] = pending_interrupt if pending_interrupt is not None else memory.get("pending_interrupt")
+        if session_event_queue is not None:
+            memory["session_event_queue"] = [dict(item) for item in session_event_queue[-20:] if isinstance(item, dict)]
         return memory
 
     @staticmethod
@@ -832,12 +1503,14 @@ class SupervisorOrchestrator:
         session: dict[str, Any],
         pending_interrupt: dict[str, Any],
         request: ConversationMessageRequest,
+        message_event: dict[str, Any],
     ) -> dict[str, Any]:
         session_id = str(session["session_id"])
         interrupt_type = str(pending_interrupt.get("type") or "")
-        topic_shift = self._detect_topic_shift_for_session(session=session, current_message=request.message)
+        topic_shift = dict(message_event.get("topic_shift") or {})
+        event_type = str(message_event.get("event_type") or "")
         should_supersede = interrupt_type == "feedback" or (
-            interrupt_type == "approval" and bool(topic_shift.get("topic_shift_detected"))
+            interrupt_type == "approval" and event_type in {"supplement", "correction", "new_issue"}
         )
         if not should_supersede:
             raise RuntimeError("conversation is awaiting resume; use the resume endpoint")
@@ -870,6 +1543,7 @@ class SupervisorOrchestrator:
             payload={
                 "interrupt_id": pending_interrupt.get("interrupt_id"),
                 "interrupt_type": interrupt_type,
+                "message_event_type": event_type,
                 "new_message": request.message,
                 "topic_shift_detected": bool(topic_shift.get("topic_shift_detected")),
             },
@@ -1007,6 +1681,7 @@ class SupervisorOrchestrator:
                         "pending_approval": None,
                         "current_stage": "awaiting_clarification",
                         "pending_interrupt": None,
+                        "session_event_queue": [],
                     },
                 )
             current_session = self.session_service.get_session(session_id)
@@ -1153,6 +1828,7 @@ class SupervisorOrchestrator:
                     "pending_approval": None,
                     "current_stage": "ingest",
                     "pending_interrupt": None,
+                    "session_event_queue": [],
                 },
             )
             self._append_system_event(
@@ -1465,8 +2141,9 @@ class SupervisorOrchestrator:
                 pending_interrupt_id=pending_interrupt_id,
                 last_checkpoint_id=checkpoint["checkpoint_id"],
             )
+            saved_case = None
             if session is not None and final_status in {"completed", "failed"}:
-                self._upsert_incident_case(
+                saved_case = self._upsert_incident_case(
                     session=session,
                     response=response,
                     incident_state=final_incident_state.model_dump(),
@@ -1486,6 +2163,13 @@ class SupervisorOrchestrator:
                     },
                 )
         assistant_turn = self._append_assistant_turn(session_id, response=response)
+        if session is not None and final_status in {"completed", "failed"}:
+            self._maybe_create_bad_case_candidate_from_run(
+                session=session,
+                response=response,
+                incident_state=final_incident_state.model_dump(),
+                incident_case=saved_case,
+            )
         payload = {
             "session": session,
             "status": response.get("status"),
@@ -1543,12 +2227,37 @@ class SupervisorOrchestrator:
         if session is None:
             raise ValueError("session not found")
         pending_interrupt = self._get_pending_interrupt(session)
+        message_event = self._classify_user_message_event(
+            session=session,
+            message=request.message,
+            message_mode=request.message_mode,
+        )
         if pending_interrupt is not None:
             session = self._supersede_pending_interrupt_for_new_message(
                 session=session,
                 pending_interrupt=pending_interrupt,
                 request=request,
+                message_event=message_event,
             )
+        queued_event = self._build_session_event(
+            source="user_message",
+            event_type=str(message_event.get("event_type") or "supplement"),
+            message=request.message,
+            metadata={
+                "reason_tags": list(message_event.get("reason_tags") or []),
+                "topic_shift_detected": bool((message_event.get("topic_shift") or {}).get("topic_shift_detected")),
+                "incremental_tool_domains": list(message_event.get("incremental_tool_domains") or []),
+            },
+        )
+        session = self._queue_session_event(
+            session,
+            event=queued_event,
+            original_user_message=(
+                request.message
+                if str(message_event.get("event_type") or "") == "new_issue"
+                else None
+            ),
+        )
         incident_state = dict(session.get("incident_state") or {})
         shared_context = dict(incident_state.get("shared_context") or {})
         ticket_request = TicketRequest(
@@ -1586,13 +2295,43 @@ class SupervisorOrchestrator:
             input={"session_id": session_id, "message": request.message},
             metadata={"entrypoint": "conversation_message"},
         ):
-            return await self._run_ticket_message(
+            payload = await self._run_ticket_message(
                 ticket_request,
                 session_id=str(session["session_id"]),
                 thread_id=str(session.get("thread_id") or session["session_id"]),
                 create_session=False,
                 entrypoint="conversation_message",
+                user_turn_payload={
+                    "message": request.message,
+                    "message_mode": request.message_mode,
+                    "environment": request.environment,
+                    "host_identifier": request.host_identifier,
+                    "db_name": request.db_name,
+                    "db_type": request.db_type,
+                    "mock_scenario": request.mock_scenario,
+                    "message_event": {
+                        "event_type": message_event.get("event_type"),
+                        "reason_tags": list(message_event.get("reason_tags") or []),
+                        "topic_shift_detected": bool((message_event.get("topic_shift") or {}).get("topic_shift_detected")),
+                        "incremental_tool_domains": list(message_event.get("incremental_tool_domains") or []),
+                    },
+                },
             )
+            updated_session = payload.get("session")
+            if isinstance(updated_session, dict):
+                payload["session"] = self._mark_session_events_consumed(
+                    updated_session,
+                    event_ids=[str(queued_event.get("event_id") or "")],
+                )
+            diagnosis = dict(payload.get("diagnosis") or {})
+            diagnosis["message_event"] = {
+                "event_type": message_event.get("event_type"),
+                "reason_tags": list(message_event.get("reason_tags") or []),
+                "topic_shift_detected": bool((message_event.get("topic_shift") or {}).get("topic_shift_detected")),
+                "incremental_tool_domains": list(message_event.get("incremental_tool_domains") or []),
+            }
+            payload["diagnosis"] = diagnosis
+            return payload
 
     async def resume_conversation(self, session_id: str, request: ConversationResumeRequest) -> dict[str, Any]:
         session = self.session_service.get_session(session_id)
@@ -1871,14 +2610,22 @@ class SupervisorOrchestrator:
             last_completed_step_id = plan_recovery.get("last_completed_step_id")
             recovery_hints = list(plan_recovery.get("hints") or [])
             if plan_recovery.get("recovery_action"):
-                recovery_action = str(plan_recovery.get("recovery_action") or "none")
-                reason = str(plan_recovery.get("recovery_reason") or reason)
-            elif stage == "execution_started" or stage == "execution_failed" or response_status == "failed" or step_status == "failed" or next_action == "retry_execution_step":
-                recovery_action = "retry_execution_step"
-                reason = "最近一次执行在步骤内失败或中断，可基于最新 checkpoint 重试当前 step。"
+                stored_recovery_action = str(plan_recovery.get("recovery_action") or "none")
+                if stored_recovery_action in {"retry_execution_step", "finalize_execution"}:
+                    recovery_action = "manual_intervention"
+                    reason = "会话命中了旧版执行恢复语义；当前阶段统一转人工介入。"
+                else:
+                    recovery_action = stored_recovery_action
+                    reason = str(plan_recovery.get("recovery_reason") or reason)
+            elif stage == "execution_started" or stage == "execution_failed" or response_status == "failed" or step_status == "failed" or next_action in {"retry_execution_step", "manual_intervention"}:
+                recovery_action = "manual_intervention"
+                reason = "最近一次执行失败或中断，当前阶段统一转人工介入。"
+                failed_step_id = failed_step_id or str(metadata.get("failed_step_id") or metadata.get("step_id") or "") or None
+                resume_from_step_id = resume_from_step_id or failed_step_id
             elif stage == "execution_step_finished" or next_action == "finalize_execution":
-                recovery_action = "finalize_execution"
-                reason = "执行步骤已完成，若会话尚未闭环，可从最近 checkpoint 继续完成收尾。"
+                recovery_action = "manual_intervention"
+                reason = "主动作可能已经执行，但会话未完整收尾，需人工确认外部状态后再继续处理。"
+                last_completed_step_id = last_completed_step_id or str(metadata.get("current_step_id") or "") or None
 
         return {
             "session_id": session_id,
@@ -1892,6 +2639,9 @@ class SupervisorOrchestrator:
             "last_completed_step_id": last_completed_step_id,
             "recovery_hints": recovery_hints,
         }
+
+    async def resume_execution_recovery(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("execution recovery is manual-only in the current stage; automatic resume is not supported")
 
     async def handle_ticket(self, request: TicketRequest) -> Dict[str, object]:
         with self.observability.start_span(
@@ -1984,7 +2734,7 @@ class SupervisorOrchestrator:
                 next_incident_state=next_incident_state,
                 actor_id=request.approver_id,
                 process_summary=(
-                    "审批已通过，但执行失败，可基于 checkpoint 决定是否重试"
+                    "审批已通过，但执行失败，已保留 checkpoint 与 failed step 等待人工介入"
                     if request.approved and str(response.get("status") or "") == "failed"
                     else "审批已通过，流程继续执行"
                     if request.approved
@@ -2151,7 +2901,12 @@ class SupervisorOrchestrator:
 
         response_status = str(response.get("status") or "completed")
         session_status = "failed" if response_status == "failed" else "completed"
-        checkpoint_next_action = "retry_execution_step" if response_status == "failed" else "complete"
+        execution_recovery_action = (
+            ((response.get("diagnosis") or {}).get("execution_limit") or {}).get("recovery_action")
+            if isinstance(response.get("diagnosis"), dict)
+            else None
+        )
+        checkpoint_next_action = str(execution_recovery_action or "manual_intervention") if response_status == "failed" else "complete"
         next_state_metadata = dict(next_incident_state.get("metadata") or {})
         _, pending_interrupt_payload = self._resolve_pending_interrupt(
             final_status=session_status,
@@ -2221,7 +2976,7 @@ class SupervisorOrchestrator:
         )
         if updated_session is None:
             raise RuntimeError("session checkpoint backfill failed after approval decision")
-        self._upsert_incident_case(
+        saved_case = self._upsert_incident_case(
             session=updated_session,
             response=response,
             incident_state=next_incident_state,
@@ -2312,6 +3067,12 @@ class SupervisorOrchestrator:
                 **response,
                 "approval_request": response.get("approval_request"),
             },
+        )
+        self._maybe_create_bad_case_candidate_from_run(
+            session=updated_session,
+            response=response,
+            incident_state=next_incident_state,
+            incident_case=saved_case,
         )
         return {
             **response,

@@ -9,7 +9,7 @@ from ..approval.adapters import (
     approval_request_to_legacy_payload,
     legacy_decision_to_record,
 )
-from ..case_retrieval import CaseRetriever
+from ..case_retrieval import CaseRetriever, infer_failure_mode
 from ..approval.models import ApprovalRequest
 from ..approval_store import ApprovalStore
 from ..interrupt_store import InterruptStore
@@ -235,13 +235,15 @@ class OrchestratorGraphNodes:
             input={"ticket_id": request.ticket_id, "service": request.service, "message": request.message},
             metadata={"node": "context_collector"},
         ) as span:
-            similar_cases = await self._load_similar_cases(
+            case_recall_lookup = await self._load_similar_cases(
                 service=str(request.service or incident_state.service or ""),
                 cluster=str(request.cluster or incident_state.cluster or ""),
                 namespace=str(request.namespace or incident_state.namespace or ""),
                 message=str(request.message or ""),
                 session_id=str(state.get("session_id") or ""),
             )
+            similar_cases = list(case_recall_lookup.get("similar_cases") or [])
+            case_recall = dict(case_recall_lookup.get("case_recall") or {})
             matched_categories = self._match_tool_domains(
                 request=request,
                 incident_state=incident_state,
@@ -262,6 +264,7 @@ class OrchestratorGraphNodes:
                 request=request.model_dump(),
                 rag_context=self._normalize_rag_context(incident_state.rag_context),
                 similar_cases=similar_cases,
+                case_recall=case_recall,
                 live_signals={},
                 context_quality=self._score_context_quality(
                     request=request,
@@ -288,6 +291,8 @@ class OrchestratorGraphNodes:
                     "available_tool_names": [],
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
+                    "case_prefetch_enabled": bool(case_recall.get("auto_prefetch_enabled")),
+                    "case_prefetch_reason": str(case_recall.get("prefetch_reason") or ""),
                     "context_quality": snapshot.context_quality,
                     "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
                     "added_rag_hits": snapshot.retrieval_expansion.added_rag_hits,
@@ -305,6 +310,8 @@ class OrchestratorGraphNodes:
                     "available_tool_names": [],
                     "similar_case_count": len(similar_cases),
                     "case_recall_sources": [item.recall_source for item in similar_cases],
+                    "case_prefetch_enabled": bool(case_recall.get("auto_prefetch_enabled")),
+                    "case_prefetch_reason": str(case_recall.get("prefetch_reason") or ""),
                     "context_quality": snapshot.context_quality,
                     "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
                     "added_rag_hits": snapshot.retrieval_expansion.added_rag_hits,
@@ -398,20 +405,22 @@ class OrchestratorGraphNodes:
     ) -> dict[str, Any] | None:
         if incident_state.ranked_result is None or incident_state.ranked_result.primary is None:
             return None
+        feedback_policy = self._feedback_reopen_policy(incident_state)
+        if not feedback_policy["can_reject_reopen"]:
+            return None
         existing = incident_state.metadata.get("feedback_interrupt") if isinstance(incident_state.metadata, dict) else None
         if isinstance(existing, dict) and existing.get("interrupt_id"):
             return existing
         interrupt = self.interrupt_store.create_feedback_interrupt(
             session_id=session_id,
             ticket_id=ticket_id,
-            reason="诊断已完成，需要人工确认根因与建议动作是否准确。",
-            question="请确认本次根因判断是否正确；如不正确，可补充真实根因假设和各假设准确度。",
+            reason="诊断已完成，已给出建议动作或审批结果，请确认是否接受。",
+            question="请确认是否接受本次诊断结论与建议动作；如果不接受，可拒绝并重新分析。",
             expected_input_schema={
                 "type": "object",
                 "properties": {
                     "human_verified": {"type": "boolean"},
                     "actual_root_cause_hypothesis": {"type": "string"},
-                    "hypothesis_accuracy": {"type": "object"},
                     "comment": {"type": "string"},
                 },
                 "required": ["human_verified"],
@@ -420,6 +429,7 @@ class OrchestratorGraphNodes:
                 "thread_id": thread_id,
                 "selected_hypothesis_id": incident_state.ranked_result.primary.hypothesis_id,
                 "ranked_result": incident_state.ranked_result.model_dump(),
+                **feedback_policy,
             },
         )
         incident_state.metadata["feedback_interrupt"] = interrupt
@@ -445,6 +455,44 @@ class OrchestratorGraphNodes:
         return interrupt
 
     @staticmethod
+    def _feedback_reopen_policy(incident_state: IncidentState) -> dict[str, Any]:
+        primary = incident_state.ranked_result.primary if incident_state.ranked_result is not None else None
+        recommended_action = str(primary.recommended_action if primary is not None else "").strip()
+        proposal_action = (
+            str(incident_state.approval_proposals[0].action or "").strip()
+            if incident_state.approval_proposals
+            else ""
+        )
+        approved_action = (
+            str(incident_state.approved_actions[0].action or "").strip()
+            if incident_state.approved_actions
+            else ""
+        )
+        approval_request = (
+            dict(incident_state.metadata.get("approval_request") or {})
+            if isinstance(incident_state.metadata, dict)
+            else {}
+        )
+        approval_action = str(approval_request.get("action") or "").strip()
+        action_name = recommended_action or proposal_action or approved_action or approval_action
+        approval_present = bool(proposal_action or approved_action or approval_action)
+        action_source = ""
+        if recommended_action:
+            action_source = "recommended_action"
+        elif proposal_action:
+            action_source = "approval_proposal"
+        elif approved_action:
+            action_source = "approved_action"
+        elif approval_action:
+            action_source = "approval_request"
+        return {
+            "can_reject_reopen": bool(action_name),
+            "action_name": action_name,
+            "action_source": action_source,
+            "approval_present": approval_present,
+        }
+
+    @staticmethod
     def _normalize_rag_context(rag_context: RAGContextBundle | dict[str, Any] | None) -> RAGContextBundle:
         if isinstance(rag_context, RAGContextBundle):
             return rag_context
@@ -460,16 +508,129 @@ class OrchestratorGraphNodes:
         namespace: str,
         message: str,
         session_id: str,
-    ) -> list[SimilarIncidentCase]:
+    ) -> dict[str, Any]:
         if not service or self.case_retriever is None:
-            return []
-        return await self.case_retriever.recall(
+            return {
+                "similar_cases": [],
+                "case_recall": {
+                    "auto_prefetch_enabled": False,
+                    "prefetch_reason": "missing_service_or_retriever",
+                    "prefetch_status": "skipped",
+                    "prefetched_case_count": 0,
+                    "case_memory_reason": "missing_service_or_retriever",
+                },
+            }
+        should_prefetch, prefetch_reason = self._should_prefetch_similar_cases(
+            message=message,
             service=service,
             cluster=cluster,
             namespace=namespace,
-            message=message,
-            session_id=session_id,
         )
+        if not should_prefetch:
+            return {
+                "similar_cases": [],
+                "case_recall": {
+                    "auto_prefetch_enabled": False,
+                    "prefetch_reason": prefetch_reason,
+                    "prefetch_status": "skipped",
+                    "prefetched_case_count": 0,
+                    "case_memory_reason": prefetch_reason,
+                },
+            }
+        try:
+            similar_cases = await self.case_retriever.recall(
+                service=service,
+                cluster=cluster,
+                namespace=namespace,
+                message=message,
+                session_id=session_id,
+            )
+            recall_metadata = dict(getattr(self.case_retriever, "last_recall_metadata", {}) or {})
+        except Exception as exc:
+            similar_cases = []
+            recall_metadata = {
+                "status": "error",
+                "reason": "case_memory_search_failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "hit_count": 0,
+            }
+        return {
+            "similar_cases": similar_cases,
+            "case_recall": {
+                "auto_prefetch_enabled": True,
+                "prefetch_reason": prefetch_reason,
+                "prefetched_case_count": len(similar_cases),
+                "prefetch_status": str(recall_metadata.get("status") or "completed"),
+                "prefetch_error_type": str(recall_metadata.get("error_type") or ""),
+                "prefetch_error": str(recall_metadata.get("error") or ""),
+                "case_memory_reason": str(recall_metadata.get("reason") or ""),
+            },
+        }
+
+    @staticmethod
+    def _should_prefetch_similar_cases(
+        *,
+        message: str,
+        service: str,
+        cluster: str,
+        namespace: str,
+    ) -> tuple[bool, str]:
+        if not str(service or "").strip():
+            return False, "missing_service"
+        normalized_message = str(message or "").strip()
+        if not normalized_message:
+            return False, "empty_message"
+        inferred_failure_mode = infer_failure_mode(normalized_message)
+        if inferred_failure_mode:
+            return True, f"failure_mode:{inferred_failure_mode}"
+        lowered = normalized_message.lower()
+        symptom_keywords = (
+            "timeout",
+            "超时",
+            "502",
+            "503",
+            "504",
+            "失败",
+            "报错",
+            "error",
+            "告警",
+            "慢查询",
+            "连接池",
+            "deadlock",
+            "死锁",
+            "pod",
+            "重启",
+            "oom",
+            "cpu",
+            "内存",
+            "发布",
+            "回滚",
+            "pipeline",
+            "dns",
+            "gateway",
+            "ingress",
+            "依赖",
+            "抖动",
+        )
+        matched = [keyword for keyword in symptom_keywords if keyword.lower() in lowered]
+        if len(matched) >= 2:
+            return True, "multiple_symptom_keywords"
+        if matched and (str(cluster or "").strip() or str(namespace or "").strip()):
+            return True, f"symptom_keyword:{matched[0]}"
+        generic_phrases = (
+            "出问题",
+            "有问题",
+            "异常了",
+            "看看",
+            "帮我看",
+            "排查一下",
+            "怎么了",
+            "不太对",
+        )
+        if any(phrase in normalized_message for phrase in generic_phrases):
+            return False, "query_too_generic"
+        return False, "insufficient_symptom_precision"
 
     async def _expand_context_retrieval(
         self,
@@ -512,6 +673,8 @@ class OrchestratorGraphNodes:
         namespace = str(request.namespace or incident_state.namespace or "")
 
         for subquery in expansion.subqueries:
+            subquery_added_rag_hits = 0
+            subquery_added_case_hits = 0
             if subquery.target in {"knowledge", "both"} and self.knowledge_service is not None:
                 extra_bundle = await self.knowledge_service.retrieve_query(
                     query=subquery.query,
@@ -520,25 +683,43 @@ class OrchestratorGraphNodes:
                 )
                 merged_rag, delta = self._merge_rag_bundles(merged_rag, extra_bundle)
                 added_rag_hits += delta
+                subquery_added_rag_hits += delta
             if subquery.target in {"cases", "both"} and self.case_retriever is not None:
-                extra_cases = await self.case_retriever.recall(
-                    service=service,
-                    cluster=cluster,
-                    namespace=namespace,
-                    message=subquery.query,
-                    session_id=session_id,
-                    limit=3,
-                    failure_mode=subquery.failure_mode,
-                    root_cause_taxonomy=subquery.root_cause_taxonomy,
-                )
+                try:
+                    extra_cases = await self.case_retriever.recall(
+                        service=service,
+                        cluster=cluster,
+                        namespace=namespace,
+                        message=subquery.query,
+                        session_id=session_id,
+                        limit=3,
+                        failure_mode=subquery.failure_mode,
+                        root_cause_taxonomy=subquery.root_cause_taxonomy,
+                    )
+                    recall_metadata = dict(getattr(self.case_retriever, "last_recall_metadata", {}) or {})
+                    if recall_metadata.get("status") == "error":
+                        missing = (
+                            f"case memory search failed for query: {subquery.query} "
+                            f"({recall_metadata.get('error_type') or 'case_memory_search_failed'})"
+                        )
+                        if missing not in expansion.missing_evidence:
+                            expansion.missing_evidence.append(missing)
+                except Exception as exc:
+                    extra_cases = []
+                    missing = f"case memory search failed for query: {subquery.query} ({type(exc).__name__})"
+                    if missing not in expansion.missing_evidence:
+                        expansion.missing_evidence.append(missing)
                 for case in extra_cases:
                     existing = merged_cases.get(case.case_id)
                     if existing is None:
                         merged_cases[case.case_id] = case
                         added_case_hits += 1
+                        subquery_added_case_hits += 1
                         continue
                     if case.recall_score > existing.recall_score:
                         merged_cases[case.case_id] = case
+            subquery.added_rag_hits = subquery_added_rag_hits
+            subquery.added_case_hits = subquery_added_case_hits
         expansion.added_rag_hits = added_rag_hits
         expansion.added_case_hits = added_case_hits
         return {
@@ -972,7 +1153,7 @@ class OrchestratorGraphNodes:
                         "suggested_retry_count": 0,
                         "hints": [
                             "执行计划采用 precheck -> primary_action -> finalize 三段式控制。",
-                            "若高风险动作失败，应先参考 failed_step 和 recovery_hints 再决定是否重试。",
+                            "若高风险动作失败，应先参考 failed_step 和 recovery_hints，由人工确认资源状态与后续处置。",
                         ],
                     },
                     "metadata": {
@@ -1172,7 +1353,7 @@ class OrchestratorGraphNodes:
                             "last_completed_step_id": precheck_step["step_id"],
                             "suggested_retry_count": 0,
                             "hints": [
-                                "若主动作失败，可根据 retry_policy 和 compensation 评估是否重试。",
+                                "若主动作失败，当前阶段统一转人工处理，并结合 retry_policy 与 compensation 做判断。",
                                 "外部动作执行前已完成审批快照校验。",
                             ],
                         },
@@ -1205,7 +1386,7 @@ class OrchestratorGraphNodes:
                 )
         except Exception as exc:
             transition_notes.append(
-                "approved action execution failed before finalize; latest execution checkpoint can be used for recovery"
+                "approved action execution failed before finalize; latest execution checkpoint can be used for manual troubleshooting"
             )
             failure_summary = f"审批已通过，但执行失败：{exc}"
             if isinstance(exc, ExecutionSafetyError):
@@ -1215,7 +1396,7 @@ class OrchestratorGraphNodes:
                 attempt=int((primary_step or {}).get("attempt") or 1),
                 error=exc,
             )
-            failure_recovery_action = "manual_intervention" if isinstance(exc, ExecutionSafetyError) else "retry_execution_step"
+            failure_recovery_action = "manual_intervention"
             recovery_hints = [str(retry_state.get("operator_hint") or "")]
             if primary_step is not None and primary_step.get("compensation"):
                 compensation = dict(primary_step.get("compensation") or {})
@@ -1266,9 +1447,9 @@ class OrchestratorGraphNodes:
                         "can_resume": True,
                         "recovery_action": failure_recovery_action,
                         "recovery_reason": (
-                            "执行前校验失败，需先修复审批快照或动作注册问题。"
+                            "执行前校验失败，需人工核对审批快照、动作注册与目标资源状态。"
                             if isinstance(exc, ExecutionSafetyError)
-                            else "主动作执行失败，可基于失败 step 和 retry policy 决定是否重试。"
+                            else "主动作执行失败，当前阶段统一转人工处理，需先确认外部资源状态后再决定后续动作。"
                         ),
                         "resume_from_step_id": failed_step_ref,
                         "failed_step_id": failed_step_ref,
@@ -1508,7 +1689,8 @@ class OrchestratorGraphNodes:
 
         if execution_plan is not None and self.execution_store is not None:
             plan_status = "completed" if primary_execution_state.status != "failed" else "failed"
-            next_action = "finalize_execution" if plan_status == "completed" else "retry_execution_step"
+            recovery_action = "none" if plan_status == "completed" else "manual_intervention"
+            next_action = "complete" if plan_status == "completed" else "manual_intervention"
             self.execution_store.update_plan(
                 execution_plan["plan_id"],
                 status=plan_status,
@@ -1516,21 +1698,21 @@ class OrchestratorGraphNodes:
                 current_step_id=finalize_step.get("step_id") if plan_status == "completed" and finalize_step is not None else primary_step.get("step_id") if primary_step is not None else None,
                 summary=primary_execution_state.summary,
                 recovery={
-                    "can_resume": plan_status == "completed",
-                    "recovery_action": next_action,
+                    "can_resume": False,
+                    "recovery_action": recovery_action,
                     "recovery_reason": (
-                        "执行动作已完成，若会话尚未闭环，可从 finalize 阶段继续收尾。"
+                        "执行动作已完成；若系统在收尾前中断，需人工确认动作是否已实际生效。"
                         if plan_status == "completed"
-                        else "主动作执行失败，可基于失败 step 重试。"
+                        else "主动作执行失败，当前阶段统一转人工处理。"
                     ),
-                    "resume_from_step_id": finalize_step.get("step_id") if plan_status == "completed" and finalize_step is not None else primary_step.get("step_id") if primary_step is not None else None,
+                    "resume_from_step_id": None if plan_status == "completed" else primary_step.get("step_id") if primary_step is not None else None,
                     "failed_step_id": primary_step.get("step_id") if plan_status != "completed" and primary_step is not None else None,
                     "last_completed_step_id": finalize_step.get("step_id") if finalize_step is not None else primary_step.get("step_id") if primary_step is not None else None,
                     "suggested_retry_count": 0,
                     "hints": (
-                        ["执行计划已完成，若 finalize 前崩溃，可从当前 checkpoint 继续闭环。"]
+                        ["执行计划已完成；若会话在收尾前中断，请先人工确认动作是否已实际生效。"]
                         if plan_status == "completed"
-                        else ["参考 retry_policy 和补偿策略评估是否重新执行主动作。"]
+                        else ["参考 retry_policy、补偿策略与外部资源状态，由人工决定后续动作。"]
                     ),
                 },
                 metadata={
@@ -1554,7 +1736,7 @@ class OrchestratorGraphNodes:
                             "action": primary_execution_state.action,
                             "step_status": primary_execution_state.status,
                             "current_step_id": finalize_step.get("step_id") if finalize_step is not None else primary_step.get("step_id") if primary_step is not None else None,
-                            "recovery_action": next_action,
+                            "recovery_action": recovery_action,
                         },
                     }
                 )
@@ -1570,7 +1752,7 @@ class OrchestratorGraphNodes:
             "plan_id": execution_plan.get("plan_id") if execution_plan is not None else None,
             "step_ids": [step.get("step_id") for step in created_steps],
             "failed_step_id": None,
-            "recovery_action": "finalize_execution" if primary_execution_state.status != "failed" else "retry_execution_step",
+            "recovery_action": "none" if primary_execution_state.status != "failed" else "manual_intervention",
         }
         approval_result["diagnosis"] = diagnosis
 

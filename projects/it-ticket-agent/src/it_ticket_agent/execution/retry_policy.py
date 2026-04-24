@@ -22,14 +22,14 @@ def default_retry_policy(action: str, *, risk: str = "low", step_kind: str = "to
             backoff_seconds=15,
             strategy="exponential",
             retryable_errors=["TimeoutError", "ConnectionError", "RuntimeError"],
-            operator_hint="高风险动作最多自动重试一次；若仍失败，应先人工确认资源状态。",
+            operator_hint="高风险动作失败后不要自动重试，应先人工确认资源状态、幂等性和外部副作用。",
         )
     return ExecutionRetryPolicy(
         max_attempts=2,
         backoff_seconds=5,
         strategy="fixed",
         retryable_errors=["TimeoutError", "ConnectionError"],
-        operator_hint="低风险动作可短暂重试；若错误持续存在，应转入人工排查。",
+        operator_hint="低风险动作失败后也先转人工排查；如后续开放白名单自动恢复，再按动作类型细分。",
     )
 
 

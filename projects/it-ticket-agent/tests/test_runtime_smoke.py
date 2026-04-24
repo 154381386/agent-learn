@@ -9,17 +9,22 @@ from unittest.mock import AsyncMock, patch
 
 from it_ticket_agent.approval import ApprovalStateError
 from it_ticket_agent.approval_store import ApprovalStore
+from it_ticket_agent.bad_case_store import BadCaseCandidateStore
 from it_ticket_agent.checkpoint_store import CheckpointStore
 from it_ticket_agent.execution_store import ExecutionStore
 from it_ticket_agent.interrupt_store import InterruptStore
 from it_ticket_agent.memory_store import IncidentCaseStore, ProcessMemoryStore
 from it_ticket_agent.runtime.orchestrator import SupervisorOrchestrator
-from it_ticket_agent.schemas import ConversationCreateRequest, ConversationMessageRequest, ConversationResumeRequest
+from it_ticket_agent.schemas import (
+    ConversationCreateRequest,
+    ConversationMessageRequest,
+    ConversationResumeRequest,
+)
 from it_ticket_agent.settings import Settings
 from it_ticket_agent.session.models import ConversationSession
 from it_ticket_agent.system_event_store import SystemEventStore
 from it_ticket_agent.state.incident_state import IncidentState
-from it_ticket_agent.state.models import Hypothesis, RAGContextBundle, VerificationStep
+from it_ticket_agent.state.models import Hypothesis, RAGContextBundle, RetrievalExpansion, RetrievalSubquery, SimilarIncidentCase, VerificationStep
 
 
 class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
@@ -43,6 +48,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.execution_store = ExecutionStore(db_path)
         self.system_event_store = SystemEventStore(db_path)
         self.incident_case_store = IncidentCaseStore(db_path)
+        self.bad_case_candidate_store = BadCaseCandidateStore(db_path)
         from it_ticket_agent.session_store import SessionStore
 
         self.session_store = SessionStore(db_path)
@@ -55,6 +61,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
             self.process_memory_store,
             execution_store=self.execution_store,
             incident_case_store=self.incident_case_store,
+            bad_case_candidate_store=self.bad_case_candidate_store,
             system_event_store=self.system_event_store,
         )
 
@@ -235,7 +242,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending["type"], "clarification")
         self.assertIn("environment", str(pending.get("expected_input_schema") or ""))
 
-    async def test_clarification_resume_switches_pending_interrupt_to_feedback(self) -> None:
+    async def test_clarification_resume_completes_without_feedback_when_no_actionable_guidance(self) -> None:
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u-clarify-resume",
@@ -261,12 +268,11 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(resumed["status"], "completed")
-        self.assertIsNotNone(resumed["pending_interrupt"])
-        self.assertEqual(resumed["pending_interrupt"]["type"], "feedback")
+        self.assertIsNone(resumed["pending_interrupt"])
         session = self.session_store.get(session_id)
         self.assertIsNotNone(session)
         self.assertEqual(session["status"], "completed")
-        self.assertEqual(session["pending_interrupt_id"], resumed["pending_interrupt"]["interrupt_id"])
+        self.assertIsNone(session["pending_interrupt_id"])
 
     async def test_missing_host_identifier_triggers_clarification(self) -> None:
         result = await self.orchestrator.start_conversation(
@@ -481,6 +487,198 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(case["actual_root_cause_hypothesis"], actual_hypothesis_id)
         self.assertEqual(case["hypothesis_accuracy"][actual_hypothesis_id], 1.0)
 
+    async def test_feedback_resume_with_new_information_reopens_diagnosis(self) -> None:
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-feedback-reopen",
+                message="checkout-service 需要一个低风险自动修复动作",
+                service="checkout-service",
+                environment="prod",
+            )
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNotNone(result["pending_interrupt"])
+        self.assertEqual(result["pending_interrupt"]["type"], "feedback")
+        session_id = result["session"]["session_id"]
+        feedback_interrupt = result["pending_interrupt"]
+
+        resumed = await self.orchestrator.resume_conversation(
+            session_id,
+            ConversationResumeRequest(
+                interrupt_id=feedback_interrupt["interrupt_id"],
+                answer_payload={
+                    "human_verified": False,
+                    "actual_root_cause_hypothesis": "真实根因更像数据库连接池耗尽",
+                    "hypothesis_accuracy": {"hypothesis-db": 0.9},
+                    "comment": "补充：只有 prod 受影响，而且慢查询明显升高",
+                },
+            ),
+        )
+        self.assertTrue(resumed["diagnosis"]["feedback_reopened"])
+        self.assertFalse(resumed["diagnosis"]["feedback"]["human_verified"])
+        self.assertEqual(
+            resumed["diagnosis"]["feedback"]["actual_root_cause_hypothesis"],
+            "真实根因更像数据库连接池耗尽",
+        )
+        self.assertIsNotNone(resumed["pending_interrupt"])
+        self.assertNotEqual(resumed["pending_interrupt"]["interrupt_id"], feedback_interrupt["interrupt_id"])
+        session = self.session_store.get(session_id)
+        assert session is not None
+        self.assertEqual(session["pending_interrupt_id"], resumed["pending_interrupt"]["interrupt_id"])
+        event_queue = list((session.get("session_memory") or {}).get("session_event_queue") or [])
+        self.assertTrue(event_queue)
+        self.assertEqual(event_queue[-1]["source"], "feedback")
+        self.assertEqual(event_queue[-1]["event_type"], "correction")
+        self.assertIsNotNone(event_queue[-1]["consumed_at"])
+        case = self.incident_case_store.get_by_session_id(session_id)
+        assert case is not None
+        self.assertFalse(case["human_verified"])
+        self.assertEqual(case["actual_root_cause_hypothesis"], "真实根因更像数据库连接池耗尽")
+        self.assertEqual(case["hypothesis_accuracy"], {"hypothesis-db": 0.9})
+        candidates = self.bad_case_candidate_store.list_candidates(session_id=session_id, limit=10)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["source"], "feedback_reopen")
+        self.assertIn("human_feedback_negative", candidates[0]["reason_codes"])
+        self.assertIn("actual_root_cause_provided", candidates[0]["reason_codes"])
+
+    async def test_runtime_completion_creates_bad_case_candidate_when_retrieval_expansion_has_no_gain(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="payment-service timeout 并且数据库告警",
+                query_type="search",
+                should_respond_directly=False,
+            )
+        )
+        self.orchestrator.knowledge_service.retrieve_query = AsyncMock(
+            return_value=RAGContextBundle(
+                query="payment-service network timeout retry",
+                query_type="search",
+                should_respond_directly=False,
+            )
+        )
+        self.orchestrator.case_retriever.recall = AsyncMock(return_value=[])
+        self.orchestrator.retrieval_planner.plan = AsyncMock(
+            return_value=RetrievalExpansion(
+                subqueries=[
+                    RetrievalSubquery(
+                        query="payment-service network timeout retry",
+                        target="both",
+                        reason="补充 timeout 背景知识",
+                        failure_mode="dependency_timeout",
+                        root_cause_taxonomy="network_dependency",
+                    )
+                ]
+            )
+        )
+
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-bad-case-runtime",
+                message="payment-service timeout 并且数据库告警",
+                service="payment-service",
+                environment="prod",
+            )
+        )
+
+        self.assertEqual(result["status"], "completed")
+        session_id = result["session"]["session_id"]
+        candidates = self.bad_case_candidate_store.list_candidates(session_id=session_id, limit=10)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["source"], "runtime_completion")
+        self.assertIn("retrieval_expansion_no_gain", candidates[0]["reason_codes"])
+        self.assertEqual(candidates[0]["retrieval_expansion"]["added_rag_hits"], 0)
+        self.assertEqual(candidates[0]["retrieval_expansion"]["added_case_hits"], 0)
+
+    async def test_generic_diagnosis_skips_auto_case_prefetch_until_more_precise_symptom(self) -> None:
+        self.orchestrator.case_retriever.recall = AsyncMock(
+            return_value=[
+                SimilarIncidentCase(
+                    case_id="case-order-timeout",
+                    service="order-service",
+                    failure_mode="dependency_timeout",
+                    root_cause_taxonomy="network_path_instability",
+                    symptom="order-service timeout",
+                    root_cause="上游依赖抖动",
+                    summary="历史上曾因上游依赖抖动导致超时",
+                    recall_source="semantic_hybrid",
+                    recall_score=0.71,
+                )
+            ]
+        )
+
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-generic-case-prefetch",
+                message="order-service 出问题了，帮我排查一下",
+                service="order-service",
+                environment="prod",
+                cluster="prod-shanghai-1",
+            )
+        )
+
+        self.assertEqual(self.orchestrator.case_retriever.recall.await_count, 0)
+        snapshot = dict(result["diagnosis"]["context_snapshot"] or {})
+        self.assertFalse(snapshot["case_recall"]["auto_prefetch_enabled"])
+        self.assertEqual(snapshot["case_recall"]["prefetch_reason"], "query_too_generic")
+        self.assertEqual(snapshot["similar_cases"], [])
+
+    async def test_specific_diagnosis_prefetches_similar_cases_as_background_hint(self) -> None:
+        self.orchestrator.case_retriever.recall = AsyncMock(
+            return_value=[
+                SimilarIncidentCase(
+                    case_id="case-order-timeout",
+                    service="order-service",
+                    failure_mode="dependency_timeout",
+                    root_cause_taxonomy="network_path_instability",
+                    symptom="order-service timeout and 502",
+                    root_cause="上游依赖超时",
+                    final_action="observe_service",
+                    summary="历史上曾因上游依赖超时导致 502",
+                    recall_source="semantic_hybrid",
+                    recall_score=0.83,
+                )
+            ]
+        )
+
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-specific-case-prefetch",
+                message="order-service 连续 timeout 并出现 502，请排查",
+                service="order-service",
+                environment="prod",
+                cluster="prod-shanghai-1",
+            )
+        )
+
+        self.assertEqual(self.orchestrator.case_retriever.recall.await_count, 1)
+        snapshot = dict(result["diagnosis"]["context_snapshot"] or {})
+        self.assertTrue(snapshot["case_recall"]["auto_prefetch_enabled"])
+        self.assertIn("failure_mode:dependency_timeout", snapshot["case_recall"]["prefetch_reason"])
+        self.assertEqual(len(snapshot["similar_cases"]), 1)
+
+    async def test_specific_diagnosis_degrades_when_auto_case_prefetch_fails(self) -> None:
+        self.orchestrator.case_retriever.recall = AsyncMock(side_effect=TimeoutError("case memory timeout"))
+        self.orchestrator.retrieval_planner.plan = AsyncMock(return_value=RetrievalExpansion())
+
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-case-prefetch-failure",
+                message="order-service 连续 timeout 并出现 502，请排查",
+                service="order-service",
+                environment="prod",
+                cluster="prod-shanghai-1",
+            )
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(self.orchestrator.case_retriever.recall.await_count, 1)
+        snapshot = dict(result["diagnosis"]["context_snapshot"] or {})
+        self.assertTrue(snapshot["case_recall"]["auto_prefetch_enabled"])
+        self.assertEqual(snapshot["case_recall"]["prefetch_status"], "error")
+        self.assertEqual(snapshot["case_recall"]["prefetch_error_type"], "TimeoutError")
+        self.assertEqual(snapshot["case_recall"]["case_memory_reason"], "case_memory_search_failed")
+        self.assertEqual(snapshot["similar_cases"], [])
+
     async def test_post_message_records_topic_shift_history(self) -> None:
         self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
             return_value=RAGContextBundle(
@@ -513,6 +711,12 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         history = list((session.get("session_memory") or {}).get("current_intent_history") or [])
         self.assertTrue(history)
         self.assertTrue(history[-1]["topic_shift_detected"])
+        event_queue = list((session.get("session_memory") or {}).get("session_event_queue") or [])
+        self.assertTrue(event_queue)
+        self.assertEqual(event_queue[-1]["source"], "user_message")
+        self.assertEqual(event_queue[-1]["event_type"], "correction")
+        self.assertIsNotNone(event_queue[-1]["consumed_at"])
+        self.assertEqual(updated["diagnosis"]["message_event"]["event_type"], "correction")
         snapshot = updated["diagnosis"]["context_snapshot"]
         self.assertIn("db", snapshot["matched_tool_domains"])
 
@@ -542,6 +746,153 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         assert session is not None
         history = list((session.get("session_memory") or {}).get("current_intent_history") or [])
         self.assertTrue(history)
+
+    async def test_supplement_message_supersedes_pending_approval_without_topic_shift(self) -> None:
+        session_id = "supplement-approval"
+        approval, interrupt = self._create_pending_approval_fixture(
+            session_id=session_id,
+            ticket_id="SUPPLEMENT-TICKET-1",
+            service="checkout-service",
+        )
+
+        updated = await self.orchestrator.post_message(
+            session_id,
+            ConversationMessageRequest(
+                message="补充：22:10 发布后错误率开始升高，只有 prod 异常。",
+            ),
+        )
+
+        self.assertIn(updated["status"], {"completed", "awaiting_approval"})
+        approval_record = self.approval_store.get(approval["approval_id"])
+        self.assertIsNotNone(approval_record)
+        self.assertEqual(approval_record["status"], "cancelled")
+        interrupt_record = self.interrupt_store.get(interrupt["interrupt_id"])
+        self.assertIsNotNone(interrupt_record)
+        self.assertEqual(interrupt_record["status"], "cancelled")
+        self.assertEqual(updated["diagnosis"]["message_event"]["event_type"], "supplement")
+        session = self.session_store.get(session_id)
+        assert session is not None
+        event_queue = list((session.get("session_memory") or {}).get("session_event_queue") or [])
+        self.assertTrue(event_queue)
+        self.assertEqual(event_queue[-1]["event_type"], "supplement")
+        self.assertIsNotNone(event_queue[-1]["consumed_at"])
+
+    async def test_explicit_supplement_message_mode_overrides_default_classifier(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="发布流程是什么",
+                query_type="search",
+                should_respond_directly=True,
+                direct_answer="标准发布流程包括构建、审批、发布和回滚验证。",
+                citations=["发布手册 / 发布流程"],
+                index_info={"ready": True},
+            )
+        )
+        created = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-supplement-mode",
+                message="发布流程是什么？",
+                service="checkout-service",
+                environment="prod",
+            )
+        )
+        session_id = created["session"]["session_id"]
+
+        updated = await self.orchestrator.post_message(
+            session_id,
+            ConversationMessageRequest(
+                message="网络问题，重点排查下",
+                message_mode="supplement",
+            ),
+        )
+
+        self.assertEqual(updated["diagnosis"]["message_event"]["event_type"], "supplement")
+        session = self.session_store.get(session_id)
+        assert session is not None
+        event_queue = list((session.get("session_memory") or {}).get("session_event_queue") or [])
+        self.assertTrue(event_queue)
+        self.assertEqual(event_queue[-1]["event_type"], "supplement")
+
+    async def test_feedback_reopen_is_rejected_without_actionable_guidance(self) -> None:
+        session_id = "feedback-no-action"
+        ticket_id = "FEEDBACK-NO-ACTION-1"
+        interrupt = self.interrupt_store.create_feedback_interrupt(
+            session_id=session_id,
+            ticket_id=ticket_id,
+            reason="诊断结束，但没有动作建议。",
+            question="只允许接受当前结论。",
+            expected_input_schema={"type": "object"},
+            metadata={
+                "selected_hypothesis_id": "hypothesis-plain",
+                "can_reject_reopen": False,
+            },
+        )
+        incident_state = IncidentState(
+            ticket_id=ticket_id,
+            user_id="feedback-user",
+            message="服务偶发超时",
+            thread_id=session_id,
+            service="checkout-service",
+            environment="prod",
+            cluster="prod-shanghai-1",
+            namespace="default",
+            channel="feishu",
+            status="completed",
+            metadata={},
+        )
+        self.session_store.create(
+            ConversationSession(
+                session_id=session_id,
+                thread_id=session_id,
+                ticket_id=ticket_id,
+                user_id="feedback-user",
+                status="completed",
+                current_stage="finalize",
+                current_agent="diagnosis_agent",
+                pending_interrupt_id=interrupt["interrupt_id"],
+                incident_state=incident_state,
+                session_memory={
+                    "original_user_message": incident_state.message,
+                    "current_intent": {},
+                    "key_entities": {"service": "checkout-service", "environment": "prod"},
+                    "clarification_answers": {},
+                    "pending_approval": None,
+                    "current_stage": "finalize",
+                    "pending_interrupt": {"interrupt_id": interrupt["interrupt_id"], "type": "feedback"},
+                    "session_event_queue": [],
+                },
+            )
+        )
+        self.incident_case_store.upsert(
+            {
+                "session_id": session_id,
+                "thread_id": session_id,
+                "ticket_id": ticket_id,
+                "service": "checkout-service",
+                "cluster": "prod-shanghai-1",
+                "namespace": "default",
+                "current_agent": "diagnosis_agent",
+                "symptom": "服务偶发超时",
+                "root_cause": "线索不足",
+                "key_evidence": [],
+                "final_action": "",
+                "approval_required": False,
+                "final_conclusion": "当前没有足够证据给出建议动作。",
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "actionable guidance or approval"):
+            await self.orchestrator.resume_conversation(
+                session_id,
+                ConversationResumeRequest(
+                    interrupt_id=interrupt["interrupt_id"],
+                    answer_payload={
+                        "human_verified": False,
+                        "actual_root_cause_hypothesis": "更像网络抖动",
+                        "comment": "请重新分析",
+                    },
+                ),
+            )
 
     async def test_resume_rejects_selector_mismatch(self) -> None:
         approval, interrupt = self._create_pending_approval_fixture(
@@ -710,7 +1061,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session["last_checkpoint_id"])
         checkpoint = self.checkpoint_store.get(session["last_checkpoint_id"])
         self.assertIsNotNone(checkpoint)
-        self.assertEqual(checkpoint["next_action"], "retry_execution_step")
+        self.assertEqual(checkpoint["next_action"], "manual_intervention")
         self.assertEqual(checkpoint["metadata"]["response_status"], "failed")
         plans = self.execution_store.list_plans(session_id)
         self.assertEqual(len(plans), 1)
@@ -722,7 +1073,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[2]["status"], "pending")
         recovery = self.orchestrator.get_execution_recovery(session_id)
         self.assertIsNotNone(recovery)
-        self.assertEqual(recovery["recovery_action"], "retry_execution_step")
+        self.assertEqual(recovery["recovery_action"], "manual_intervention")
         self.assertEqual(recovery["failed_step_id"], steps[1]["step_id"])
         self.assertEqual(recovery["resume_from_step_id"], steps[1]["step_id"])
         self.assertIsNotNone(recovery["latest_checkpoint"])
@@ -733,6 +1084,44 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("execution.started", event_types)
         self.assertIn("execution.step_finished", event_types)
         self.assertIn("conversation.closed", event_types)
+
+    async def test_d5_execution_recovery_resume_is_rejected(self) -> None:
+        session_id = "d5-manual-only-session"
+        approval, interrupt = self._create_pending_approval_fixture(
+            session_id=session_id,
+            ticket_id="D5-TICKET",
+            service="recovery-service",
+        )
+
+        with patch(
+            "it_ticket_agent.graph.nodes.MCPClient.call_tool",
+            side_effect=RuntimeError("rollback tool failed"),
+        ):
+            resumed = await self.orchestrator.resume_conversation(
+                session_id,
+                ConversationResumeRequest(
+                    interrupt_id=interrupt["interrupt_id"],
+                    approval_id=approval["approval_id"],
+                    approved=True,
+                    approver_id="ops-admin",
+                    comment="执行失败，等待人工介入",
+                ),
+            )
+
+        self.assertEqual(resumed["status"], "failed")
+        recovery = self.orchestrator.get_execution_recovery(session_id)
+        self.assertEqual(recovery["recovery_action"], "manual_intervention")
+
+        with self.assertRaisesRegex(RuntimeError, "manual-only"):
+            await self.orchestrator.resume_execution_recovery(
+                session_id,
+                {"actor_id": "ops-admin", "comment": "尝试自动恢复"},
+            )
+
+        system_events = self.system_event_store.list_for_session(session_id)
+        event_types = [event["event_type"] for event in system_events]
+        self.assertNotIn("execution.recovery_started", event_types)
+        self.assertNotIn("execution.recovery_finished", event_types)
 
     async def test_c1_illegal_approval_transition_is_rejected(self) -> None:
         approval, _ = self._create_pending_approval_fixture(

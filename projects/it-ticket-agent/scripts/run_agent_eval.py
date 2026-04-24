@@ -15,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
 from it_ticket_agent.evals import AgentEvalRunner, load_agent_eval_dataset, serialize_report
 from it_ticket_agent.evals import (
     SessionFlowEvalRunner,
+    evaluate_agent_eval_gate,
+    evaluate_session_flow_gate,
     load_session_flow_eval_dataset,
     serialize_session_flow_report,
 )
@@ -58,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-llm-disabled",
         action="store_true",
         help="Allow running without an active LLM. Mainly useful for local harness debugging.",
+    )
+    parser.add_argument(
+        "--ignore-gates",
+        action="store_true",
+        help="Do not enforce dataset-level regression gates.",
     )
     return parser
 
@@ -138,6 +145,24 @@ def print_session_flow_report(report) -> None:
     )
 
 
+def print_gate_result(gate_result, *, skipped: bool = False) -> None:
+    if skipped:
+        print("gate: skipped (subset selection active)")
+        return
+    if gate_result is None:
+        print("gate: none")
+        return
+    label = "PASS" if gate_result.passed else "FAIL"
+    print(f"gate: [{label}] checks={gate_result.passed_checks}/{gate_result.total_checks}")
+    failed_checks = [check for check in gate_result.checks if not check.passed]
+    for check in failed_checks[:6]:
+        detail = f" detail={check.detail}" if check.detail else ""
+        print(
+            f"  gate_check={check.name} expected={json.dumps(check.expected, ensure_ascii=False)} "
+            f"actual={json.dumps(check.actual, ensure_ascii=False)}{detail}"
+        )
+
+
 def detect_dataset_mode(dataset_path: str) -> str:
     payload = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
     if isinstance(payload, dict):
@@ -155,6 +180,8 @@ async def main() -> int:
 
     dataset_mode = detect_dataset_mode(args.dataset)
     settings = Settings()
+    gate_result = None
+    gate_skipped = bool(args.case_id)
     if dataset_mode == "session_flow":
         dataset = load_session_flow_eval_dataset(args.dataset)
         runner = SessionFlowEvalRunner(
@@ -168,6 +195,9 @@ async def main() -> int:
             selected_case_ids=args.case_id,
             fail_fast=args.fail_fast,
         )
+        if not args.ignore_gates and not gate_skipped:
+            gate_result = evaluate_session_flow_gate(dataset.gate, report)
+            report.gate_result = gate_result
     else:
         dataset = load_agent_eval_dataset(args.dataset)
         runner = AgentEvalRunner(
@@ -181,6 +211,9 @@ async def main() -> int:
             selected_case_ids=args.case_id,
             fail_fast=args.fail_fast,
         )
+        if not args.ignore_gates and not gate_skipped:
+            gate_result = evaluate_agent_eval_gate(dataset.gate, report)
+            report.gate_result = gate_result
     if report.total_cases == 0:
         print("no eval cases selected")
         return 2
@@ -192,6 +225,7 @@ async def main() -> int:
         print_session_flow_report(report)
     else:
         print_agent_report(report)
+    print_gate_result(gate_result, skipped=(gate_skipped and not args.ignore_gates))
     if args.output:
         serialized = (
             serialize_session_flow_report(report)
@@ -199,7 +233,9 @@ async def main() -> int:
             else serialize_report(report)
         )
         Path(args.output).write_text(json.dumps(serialized, ensure_ascii=False, indent=2), encoding="utf-8")
-    return 0 if report.failed_cases == 0 and report.errored_cases == 0 else 1
+    failed = report.failed_cases > 0 or report.errored_cases > 0
+    gate_failed = gate_result is not None and not gate_result.passed
+    return 0 if not failed and not gate_failed else 1
 
 
 if __name__ == "__main__":

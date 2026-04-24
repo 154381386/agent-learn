@@ -1,0 +1,334 @@
+{
+  "schema_version": 1,
+  "description": "Real-LLM session-flow eval cases. These cases keep the LLM enabled, mock only tool responses, and assert stable high-level multi-turn behavior instead of deterministic interrupt-by-interrupt state transitions.",
+  "gate": {
+    "min_pass_rate": 1.0,
+    "min_step_pass_rate": 1.0
+  },
+  "cases": [
+    {
+      "case_id": "live_clarification_resume_completes_network_diagnosis",
+      "description": "真实 LLM 下，缺少环境信息时先进入 clarification，恢复后应完成诊断，不强求 feedback interrupt。",
+      "setup": {
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        }
+      },
+      "steps": [
+        {
+          "step_id": "start_missing_env",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "live-flow-clarification",
+            "message": "订单服务超时怎么办",
+            "service": "order-service",
+            "cluster": "",
+            "namespace": "",
+            "environment": null
+          },
+          "expect": {
+            "response_status": "awaiting_clarification",
+            "session_status": "awaiting_clarification",
+            "pending_interrupt_type": "clarification",
+            "new_system_event_types": [
+              "clarification.requested"
+            ]
+          }
+        },
+        {
+          "step_id": "resume_with_environment",
+          "action": "resume_conversation",
+          "request": {
+            "answer_payload": {
+              "environment": "prod"
+            }
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "route": "react_tool_first",
+            "case_exists": true,
+            "required_any_tools": [
+              "inspect_upstream_dependency",
+              "inspect_vpc_connectivity",
+              "inspect_load_balancer_status"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "new_system_event_types": [
+              "conversation.resumed"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "live_followup_supplement_marker_keeps_followup_mode",
+      "description": "默认 classifier 下，带补充标记的 follow-up 应继续按 supplement 处理。",
+      "setup": {
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        }
+      },
+      "steps": [
+        {
+          "step_id": "start_network_timeout",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "live-flow-supplement-marker",
+            "message": "order service为什么总是超时",
+            "service": "order-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "route": "react_tool_first",
+            "required_any_tools": [
+              "inspect_upstream_dependency",
+              "inspect_vpc_connectivity",
+              "inspect_load_balancer_status"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "case_exists": true
+          }
+        },
+        {
+          "step_id": "post_supplement_marker",
+          "action": "post_message",
+          "request": {
+            "message": "补充：只有 prod 异常，22:10 开始超时"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "message_event_type": "supplement",
+            "route": "react_tool_first",
+            "required_any_tools": [
+              "inspect_upstream_dependency",
+              "inspect_vpc_connectivity",
+              "inspect_load_balancer_status"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "case_exists": true,
+            "min_current_intent_history_length": 1,
+            "new_system_event_types": [
+              "message.received"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "live_explicit_supplement_mode_overrides_topic_shift_to_db",
+      "description": "显式 supplement mode 即使携带明显的新排查方向，也应保持 supplement 语义，同时把增量域带到下一轮真实 LLM 诊断。",
+      "setup": {
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        },
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "order-service 连接池已经接近打满。",
+            "payload": {
+              "service": "order-service",
+              "pool_state": "saturated",
+              "active_connections": 118,
+              "max_connections": 120
+            },
+            "evidence": [
+              "pool_state=saturated",
+              "active_connections=118/120"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "order-service 最近 5 分钟慢查询明显升高。",
+            "payload": {
+              "service": "order-service",
+              "slow_query_count": 24,
+              "max_latency_ms": 4300
+            },
+            "evidence": [
+              "slow_query_count=24",
+              "max_latency_ms=4300"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "order-service 数据库实例健康退化。",
+            "payload": {
+              "service": "order-service",
+              "db_health": "degraded"
+            },
+            "evidence": [
+              "db_health=degraded"
+            ]
+          }
+        }
+      },
+      "steps": [
+        {
+          "step_id": "start_network_timeout",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "live-flow-supplement-mode",
+            "message": "order service为什么总是超时",
+            "service": "order-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "route": "react_tool_first",
+            "required_any_tools": [
+              "inspect_upstream_dependency",
+              "inspect_vpc_connectivity",
+              "inspect_load_balancer_status"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "case_exists": true
+          }
+        },
+        {
+          "step_id": "post_explicit_supplement_mode",
+          "action": "post_message",
+          "request": {
+            "message": "更可能是数据库连接池耗尽和慢查询，你重点排查下",
+            "message_mode": "supplement"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "message_event_type": "supplement",
+            "message_event_topic_shift_detected": true,
+            "message_event_incremental_tool_domains": [
+              "db"
+            ],
+            "route": "react_tool_first",
+            "required_any_tools": [
+              "inspect_connection_pool",
+              "inspect_slow_queries",
+              "inspect_db_instance_health"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "case_exists": true,
+            "min_current_intent_history_length": 1,
+            "new_system_event_types": [
+              "message.received"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "live_new_issue_marker_restarts_into_db_diagnosis",
+      "description": "显式 new issue marker 应触发新的诊断语义，并把搜索重心切到 DB 工具域。",
+      "setup": {
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
+        },
+        "mock_tool_responses": {
+          "inspect_connection_pool": {
+            "summary": "order-service 连接池已经接近打满。",
+            "payload": {
+              "service": "order-service",
+              "pool_state": "saturated",
+              "active_connections": 118,
+              "max_connections": 120
+            },
+            "evidence": [
+              "pool_state=saturated",
+              "active_connections=118/120"
+            ]
+          },
+          "inspect_slow_queries": {
+            "summary": "order-service 最近 5 分钟慢查询明显升高。",
+            "payload": {
+              "service": "order-service",
+              "slow_query_count": 24,
+              "max_latency_ms": 4300
+            },
+            "evidence": [
+              "slow_query_count=24",
+              "max_latency_ms=4300"
+            ]
+          },
+          "inspect_db_instance_health": {
+            "summary": "order-service 数据库实例健康退化。",
+            "payload": {
+              "service": "order-service",
+              "db_health": "degraded"
+            },
+            "evidence": [
+              "db_health=degraded"
+            ]
+          }
+        }
+      },
+      "steps": [
+        {
+          "step_id": "start_network_timeout",
+          "action": "start_conversation",
+          "request": {
+            "user_id": "live-flow-new-issue",
+            "message": "order service为什么总是超时",
+            "service": "order-service",
+            "environment": "prod"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "route": "react_tool_first",
+            "required_any_tools": [
+              "inspect_upstream_dependency",
+              "inspect_vpc_connectivity",
+              "inspect_load_balancer_status"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "case_exists": true
+          }
+        },
+        {
+          "step_id": "post_new_issue_marker",
+          "action": "post_message",
+          "request": {
+            "message": "新问题：order-service 数据库连接池已经打满了，接口很慢"
+          },
+          "expect": {
+            "response_status": "completed",
+            "session_status": "completed",
+            "pending_interrupt_type": "",
+            "message_event_type": "new_issue",
+            "message_event_topic_shift_detected": true,
+            "message_event_incremental_tool_domains": [
+              "db"
+            ],
+            "route": "react_tool_first",
+            "required_any_tools": [
+              "inspect_connection_pool",
+              "inspect_slow_queries",
+              "inspect_db_instance_health"
+            ],
+            "required_any_tools_min_matches": 2,
+            "min_tool_calls_used": 2,
+            "case_exists": true,
+            "min_current_intent_history_length": 1,
+            "new_system_event_types": [
+              "message.received"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

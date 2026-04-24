@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..approval_store import ApprovalStore
+from ..bad_case_store import BadCaseCandidateStore
 from ..checkpoint_store import CheckpointStore
 from ..execution_store import ExecutionStore
 from ..interrupt_store import InterruptStore
@@ -11,6 +12,7 @@ from ..session_store import SessionStore
 from ..settings import Settings
 from ..system_event_store import SystemEventStore
 from ..approval.pg_store import PostgresApprovalStoreV2
+from ..bad_cases.pg_store import PostgresBadCaseCandidateStoreV2
 from ..checkpoints.pg_store import PostgresCheckpointStoreV2
 from ..events.pg_store import PostgresSystemEventStore
 from ..execution.pg_store import PostgresExecutionStoreV2
@@ -28,6 +30,7 @@ class StoreBundle:
     process_memory_store: ProcessMemoryStore
     execution_store: ExecutionStore
     incident_case_store: IncidentCaseStore
+    bad_case_candidate_store: BadCaseCandidateStore
     system_event_store: SystemEventStore | PostgresSystemEventStore
 
 
@@ -50,6 +53,10 @@ class StoreProvider:
                 process_memory_store=ProcessMemoryStore(db_path, backend=memory_backend),
                 execution_store=ExecutionStore(db_path, backend=PostgresExecutionStoreV2(self.settings.postgres_dsn)),
                 incident_case_store=IncidentCaseStore(db_path, backend=memory_backend),
+                bad_case_candidate_store=BadCaseCandidateStore(
+                    db_path,
+                    backend=PostgresBadCaseCandidateStoreV2(self.settings.postgres_dsn),
+                ),
                 system_event_store=PostgresSystemEventStore(self.settings.postgres_dsn),
             )
         return StoreBundle(
@@ -60,5 +67,6 @@ class StoreProvider:
             process_memory_store=ProcessMemoryStore(db_path),
             execution_store=ExecutionStore(db_path),
             incident_case_store=IncidentCaseStore(db_path),
+            bad_case_candidate_store=BadCaseCandidateStore(db_path),
             system_event_store=SystemEventStore(db_path),
         )

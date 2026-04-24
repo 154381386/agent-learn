@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from ..rag_client import RAGServiceClient
+from ..settings import Settings
 from ..state.incident_state import IncidentState
 from .cicd import (
     CheckCanaryStatusTool,
@@ -20,6 +22,8 @@ from .cicd import (
     InspectPodEventsTool,
     InspectPodLogsTool,
     InspectThreadPoolStatusTool,
+    SearchKnowledgeBaseTool,
+    SearchSimilarIncidentsTool,
 )
 from .contracts import BaseTool
 from .db import (
@@ -41,8 +45,8 @@ from .network import (
 from .sde import GetQuotaStatusTool
 
 
-def build_default_tools() -> dict[str, BaseTool]:
-    return {
+def build_default_tools(*, settings: Settings | None = None) -> dict[str, BaseTool]:
+    tools: dict[str, BaseTool] = {
         "check_recent_deployments": CheckRecentDeploymentsTool(),
         "check_pipeline_status": CheckPipelineStatusTool(),
         "get_deployment_status": GetDeploymentStatusTool(),
@@ -73,11 +77,16 @@ def build_default_tools() -> dict[str, BaseTool]:
         "inspect_transaction_rollback_rate": InspectTransactionRollbackRateTool(),
         "get_quota_status": GetQuotaStatusTool(),
     }
+    if settings is not None:
+        knowledge_client = RAGServiceClient(settings)
+        tools["search_knowledge_base"] = SearchKnowledgeBaseTool(knowledge_client)
+        tools["search_similar_incidents"] = SearchSimilarIncidentsTool(knowledge_client)
+    return tools
 
 
 class LocalToolRuntime:
-    def __init__(self) -> None:
-        self.tools = build_default_tools()
+    def __init__(self, *, settings: Settings | None = None) -> None:
+        self.tools = build_default_tools(settings=settings)
 
     async def execute_action(
         self,
