@@ -52,6 +52,24 @@ class SimilarIncidentCase(BaseModel):
     recall_score: float = 0.0
 
 
+
+class DiagnosisPlaybookCard(BaseModel):
+    playbook_id: str = ""
+    version: int = 1
+    title: str = ""
+    service_type: str = ""
+    failure_modes: List[str] = Field(default_factory=list)
+    matched_failure_modes: List[str] = Field(default_factory=list)
+    matched_signals: List[str] = Field(default_factory=list)
+    diagnostic_goal: str = ""
+    recommended_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence_requirements: List[str] = Field(default_factory=list)
+    guardrails: List[str] = Field(default_factory=list)
+    common_false_positives: List[str] = Field(default_factory=list)
+    recall_score: float = 0.0
+    recall_reason: str = ""
+
+
 class RetrievalSubquery(BaseModel):
     query: str
     target: Literal["knowledge", "cases", "both"] = "both"
@@ -74,6 +92,8 @@ class ContextSnapshot(BaseModel):
     rag_context: Optional[RAGContextBundle] = None
     similar_cases: List[SimilarIncidentCase] = Field(default_factory=list)
     case_recall: Dict[str, Any] = Field(default_factory=dict)
+    diagnosis_playbooks: List[DiagnosisPlaybookCard] = Field(default_factory=list)
+    playbook_recall: Dict[str, Any] = Field(default_factory=dict)
     live_signals: Dict[str, Any] = Field(default_factory=dict)
     context_quality: float = 0.0
     available_tools: List[Dict[str, Any]] = Field(default_factory=list)

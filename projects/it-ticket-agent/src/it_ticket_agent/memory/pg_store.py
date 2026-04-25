@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from .models import AgentEvent, AgentEventSummary, IncidentCase, ProcessMemoryEntry, ProcessMemorySummary
+from .models import AgentEvent, AgentEventSummary, DiagnosisPlaybook, IncidentCase, ProcessMemoryEntry, ProcessMemorySummary
 from .upsert_merge import merge_incident_case_feedback
 from ..session.models import utc_now
 from ..storage.postgres import postgres_connection
@@ -16,6 +16,16 @@ _CASE_COLUMNS = """
     human_verified, hypothesis_accuracy_json, actual_root_cause_hypothesis, selected_hypothesis_id,
     selected_ranker_features_json, final_conclusion, reviewed_by, reviewed_at, review_note,
     created_at, updated_at, closed_at
+"""
+
+
+_PLAYBOOK_COLUMNS = """
+    playbook_id, version, title, status, human_verified, service_type,
+    failure_modes_json, environments_json, trigger_conditions_json, signal_patterns_json,
+    negative_conditions_json, required_entities_json, diagnostic_goal, diagnostic_steps_json,
+    evidence_requirements_json, guardrails_json, common_false_positives_json, source_case_ids_json,
+    success_count, failure_count, last_eval_passed, reviewed_by, reviewed_at, review_note,
+    created_at, updated_at, retired_at
 """
 
 
@@ -33,6 +43,18 @@ def _normalized_case_status(case: IncidentCase) -> str:
     if case.case_status == "verified":
         return "pending_review"
     return case.case_status
+
+
+def _normalized_playbook_status(playbook: DiagnosisPlaybook) -> str:
+    if playbook.status == "retired":
+        return "retired"
+    if playbook.status == "rejected":
+        return "rejected"
+    if playbook.human_verified:
+        return "verified"
+    if playbook.status == "verified":
+        return "pending_review"
+    return playbook.status
 
 
 class PostgresProcessMemoryStoreV2:
@@ -110,30 +132,6 @@ class PostgresProcessMemoryStoreV2:
                 )
                 """
             )
-            conn.execute(
-                """
-                create index if not exists idx_incident_case_service_closed_at
-                on incident_case (service, closed_at desc, case_id desc)
-                """
-            )
-            conn.execute(
-                """
-                create index if not exists idx_incident_case_ticket_id
-                on incident_case (ticket_id)
-                """
-            )
-            conn.execute(
-                """
-                create index if not exists idx_incident_case_status_updated_at
-                on incident_case (case_status, updated_at desc, case_id desc)
-                """
-            )
-            conn.execute(
-                """
-                create index if not exists idx_agent_event_session_created_at
-                on agent_event (session_id, created_at desc, event_id desc)
-                """
-            )
             columns = {
                 row["column_name"]
                 for row in conn.execute(
@@ -172,6 +170,76 @@ class PostgresProcessMemoryStoreV2:
                 conn.execute("alter table incident_case add column review_note text not null default ''")
             conn.execute("update incident_case set case_status = 'pending_review' where case_status is null or case_status = ''")
             conn.execute("update incident_case set case_status = 'verified' where human_verified = true")
+            conn.execute(
+                """
+                create index if not exists idx_incident_case_service_closed_at
+                on incident_case (service, closed_at desc, case_id desc)
+                """
+            )
+            conn.execute(
+                """
+                create index if not exists idx_incident_case_ticket_id
+                on incident_case (ticket_id)
+                """
+            )
+            conn.execute(
+                """
+                create index if not exists idx_incident_case_status_updated_at
+                on incident_case (case_status, updated_at desc, case_id desc)
+                """
+            )
+
+            conn.execute(
+                """
+                create table if not exists diagnosis_playbook (
+                    playbook_id text primary key,
+                    version integer not null default 1,
+                    title text not null,
+                    status text not null default 'pending_review',
+                    human_verified boolean not null default false,
+                    service_type text not null default '',
+                    failure_modes_json jsonb not null default '[]'::jsonb,
+                    environments_json jsonb not null default '[]'::jsonb,
+                    trigger_conditions_json jsonb not null default '[]'::jsonb,
+                    signal_patterns_json jsonb not null default '[]'::jsonb,
+                    negative_conditions_json jsonb not null default '[]'::jsonb,
+                    required_entities_json jsonb not null default '[]'::jsonb,
+                    diagnostic_goal text not null default '',
+                    diagnostic_steps_json jsonb not null default '[]'::jsonb,
+                    evidence_requirements_json jsonb not null default '[]'::jsonb,
+                    guardrails_json jsonb not null default '[]'::jsonb,
+                    common_false_positives_json jsonb not null default '[]'::jsonb,
+                    source_case_ids_json jsonb not null default '[]'::jsonb,
+                    success_count integer not null default 0,
+                    failure_count integer not null default 0,
+                    last_eval_passed boolean,
+                    reviewed_by text not null default '',
+                    reviewed_at timestamptz,
+                    review_note text not null default '',
+                    created_at timestamptz not null,
+                    updated_at timestamptz not null,
+                    retired_at timestamptz
+                )
+                """
+            )
+            conn.execute(
+                """
+                create index if not exists idx_diagnosis_playbook_status_updated_at
+                on diagnosis_playbook (status, updated_at desc, playbook_id desc)
+                """
+            )
+            conn.execute(
+                """
+                create index if not exists idx_diagnosis_playbook_service_type
+                on diagnosis_playbook (service_type, status, updated_at desc)
+                """
+            )
+            conn.execute(
+                """
+                create index if not exists idx_agent_event_session_created_at
+                on agent_event (session_id, created_at desc, event_id desc)
+                """
+            )
 
     def append_entry(self, entry: ProcessMemoryEntry) -> ProcessMemoryEntry:
         payload = entry.model_copy(update={"created_at": utc_now()})
@@ -423,6 +491,165 @@ class PostgresProcessMemoryStoreV2:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [case for row in rows if (case := self._row_to_case(row)) is not None]
 
+
+    def upsert_playbook(self, playbook: DiagnosisPlaybook) -> DiagnosisPlaybook:
+        existing = self.get_playbook(playbook.playbook_id)
+        now = utc_now()
+        payload = playbook.model_copy(
+            update={
+                "status": _normalized_playbook_status(playbook),
+                "created_at": existing.created_at if existing is not None else playbook.created_at,
+                "updated_at": now,
+            }
+        )
+        with postgres_connection(self.dsn) as conn:
+            conn.execute(
+                """
+                insert into diagnosis_playbook (
+                    playbook_id, version, title, status, human_verified, service_type,
+                    failure_modes_json, environments_json, trigger_conditions_json, signal_patterns_json,
+                    negative_conditions_json, required_entities_json, diagnostic_goal, diagnostic_steps_json,
+                    evidence_requirements_json, guardrails_json, common_false_positives_json, source_case_ids_json,
+                    success_count, failure_count, last_eval_passed, reviewed_by, reviewed_at, review_note,
+                    created_at, updated_at, retired_at
+                ) values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict(playbook_id) do update set
+                    version = excluded.version,
+                    title = excluded.title,
+                    status = excluded.status,
+                    human_verified = excluded.human_verified,
+                    service_type = excluded.service_type,
+                    failure_modes_json = excluded.failure_modes_json,
+                    environments_json = excluded.environments_json,
+                    trigger_conditions_json = excluded.trigger_conditions_json,
+                    signal_patterns_json = excluded.signal_patterns_json,
+                    negative_conditions_json = excluded.negative_conditions_json,
+                    required_entities_json = excluded.required_entities_json,
+                    diagnostic_goal = excluded.diagnostic_goal,
+                    diagnostic_steps_json = excluded.diagnostic_steps_json,
+                    evidence_requirements_json = excluded.evidence_requirements_json,
+                    guardrails_json = excluded.guardrails_json,
+                    common_false_positives_json = excluded.common_false_positives_json,
+                    source_case_ids_json = excluded.source_case_ids_json,
+                    success_count = excluded.success_count,
+                    failure_count = excluded.failure_count,
+                    last_eval_passed = excluded.last_eval_passed,
+                    reviewed_by = excluded.reviewed_by,
+                    reviewed_at = excluded.reviewed_at,
+                    review_note = excluded.review_note,
+                    updated_at = excluded.updated_at,
+                    retired_at = excluded.retired_at
+                """,
+                (
+                    payload.playbook_id,
+                    payload.version,
+                    payload.title,
+                    payload.status,
+                    payload.human_verified,
+                    payload.service_type,
+                    json.dumps(payload.failure_modes, ensure_ascii=False),
+                    json.dumps(payload.environments, ensure_ascii=False),
+                    json.dumps(payload.trigger_conditions, ensure_ascii=False),
+                    json.dumps(payload.signal_patterns, ensure_ascii=False),
+                    json.dumps(payload.negative_conditions, ensure_ascii=False),
+                    json.dumps(payload.required_entities, ensure_ascii=False),
+                    payload.diagnostic_goal,
+                    json.dumps(payload.diagnostic_steps, ensure_ascii=False),
+                    json.dumps(payload.evidence_requirements, ensure_ascii=False),
+                    json.dumps(payload.guardrails, ensure_ascii=False),
+                    json.dumps(payload.common_false_positives, ensure_ascii=False),
+                    json.dumps(payload.source_case_ids, ensure_ascii=False),
+                    payload.success_count,
+                    payload.failure_count,
+                    payload.last_eval_passed,
+                    payload.reviewed_by,
+                    payload.reviewed_at,
+                    payload.review_note,
+                    payload.created_at,
+                    payload.updated_at,
+                    payload.retired_at,
+                ),
+            )
+        saved = self.get_playbook(payload.playbook_id)
+        if saved is None:
+            raise RuntimeError("diagnosis playbook upsert failed")
+        return saved
+
+    def get_playbook(self, playbook_id: str) -> Optional[DiagnosisPlaybook]:
+        with postgres_connection(self.dsn) as conn:
+            row = conn.execute(
+                f"""
+                select {_PLAYBOOK_COLUMNS}
+                from diagnosis_playbook
+                where playbook_id = %s
+                """,
+                (playbook_id,),
+            ).fetchone()
+        return self._row_to_playbook(row)
+
+    def list_playbooks(
+        self,
+        *,
+        status: str | None = None,
+        human_verified: bool | None = None,
+        service_type: str | None = None,
+        failure_mode: str | None = None,
+        environment: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+    ) -> list[DiagnosisPlaybook]:
+        conditions = ["1 = 1"]
+        params: list[Any] = []
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+        if human_verified is not None:
+            conditions.append("human_verified = %s")
+            params.append(human_verified)
+        if service_type:
+            conditions.append("service_type = %s")
+            params.append(service_type)
+        if failure_mode:
+            conditions.append("failure_modes_json ? %s")
+            params.append(failure_mode)
+        if environment:
+            conditions.append("environments_json ? %s")
+            params.append(environment)
+        if keyword:
+            conditions.append("(title ilike %s or diagnostic_goal ilike %s or signal_patterns_json::text ilike %s or trigger_conditions_json::text ilike %s)")
+            like_value = f"%{keyword}%"
+            params.extend([like_value, like_value, like_value, like_value])
+        params.append(limit)
+        query = f"""
+            select {_PLAYBOOK_COLUMNS}
+            from diagnosis_playbook
+            where {' and '.join(conditions)}
+            order by status asc, updated_at desc, playbook_id desc
+            limit %s
+        """
+        with postgres_connection(self.dsn) as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [playbook for row in rows if (playbook := self._row_to_playbook(row)) is not None]
+
+    def recall_playbooks(
+        self,
+        *,
+        service_type: str | None = None,
+        failure_mode: str | None = None,
+        environment: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+    ) -> list[DiagnosisPlaybook]:
+        return self.list_playbooks(
+            status="verified",
+            human_verified=True,
+            service_type=service_type,
+            failure_mode=failure_mode,
+            environment=environment,
+            keyword=keyword,
+            limit=limit,
+        )
+
     @staticmethod
     def _entry_to_dict(entry: AgentEvent) -> dict[str, Any]:
         data = entry.model_dump()
@@ -483,4 +710,39 @@ class PostgresProcessMemoryStoreV2:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
             closed_at=str(row["closed_at"]) if row["closed_at"] is not None else None,
+        )
+
+
+    @staticmethod
+    def _row_to_playbook(row: dict[str, Any] | None) -> Optional[DiagnosisPlaybook]:
+        if row is None:
+            return None
+        return DiagnosisPlaybook(
+            playbook_id=row["playbook_id"],
+            version=int(row["version"] or 1),
+            title=row["title"],
+            status=row["status"] or "pending_review",
+            human_verified=bool(row["human_verified"]),
+            service_type=row["service_type"],
+            failure_modes=_loads_json(row["failure_modes_json"], []),
+            environments=_loads_json(row["environments_json"], []),
+            trigger_conditions=_loads_json(row["trigger_conditions_json"], []),
+            signal_patterns=_loads_json(row["signal_patterns_json"], []),
+            negative_conditions=_loads_json(row["negative_conditions_json"], []),
+            required_entities=_loads_json(row["required_entities_json"], []),
+            diagnostic_goal=row["diagnostic_goal"],
+            diagnostic_steps=_loads_json(row["diagnostic_steps_json"], []),
+            evidence_requirements=_loads_json(row["evidence_requirements_json"], []),
+            guardrails=_loads_json(row["guardrails_json"], []),
+            common_false_positives=_loads_json(row["common_false_positives_json"], []),
+            source_case_ids=_loads_json(row["source_case_ids_json"], []),
+            success_count=int(row["success_count"] or 0),
+            failure_count=int(row["failure_count"] or 0),
+            last_eval_passed=row["last_eval_passed"],
+            reviewed_by=row["reviewed_by"],
+            reviewed_at=str(row["reviewed_at"]) if row["reviewed_at"] is not None else None,
+            review_note=row["review_note"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            retired_at=str(row["retired_at"]) if row["retired_at"] is not None else None,
         )

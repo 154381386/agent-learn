@@ -17,7 +17,7 @@ from it_ticket_agent.execution.models import ExecutionPlan, ExecutionStep
 from it_ticket_agent.execution.pg_store import PostgresExecutionStoreV2
 from it_ticket_agent.interrupts.models import InterruptRequest
 from it_ticket_agent.interrupts.pg_store import PostgresInterruptStoreV2
-from it_ticket_agent.memory.models import IncidentCase, ProcessMemoryEntry
+from it_ticket_agent.memory.models import DiagnosisPlaybook, IncidentCase, ProcessMemoryEntry
 from it_ticket_agent.memory.pg_store import PostgresProcessMemoryStoreV2
 from it_ticket_agent.orchestration.ranker_weights import RankerWeightsManager
 from it_ticket_agent.session.models import ConversationSession, ConversationTurn
@@ -161,6 +161,19 @@ class PostgresStorageSmokeTest(unittest.TestCase):
             )
         )
         self.assertEqual(memory_store.get_case_by_session_id(session.session_id).case_id, case.case_id)
+
+        playbook = memory_store.upsert_playbook(
+            DiagnosisPlaybook(
+                playbook_id="pg-playbook-1",
+                title="pg playbook",
+                status="verified",
+                human_verified=True,
+                service_type="k8s_service",
+                failure_modes=["dependency_timeout"],
+                diagnostic_steps=[{"tool_name": "check_service_health", "purpose": "smoke"}],
+            )
+        )
+        self.assertEqual(memory_store.get_playbook(playbook.playbook_id).playbook_id, playbook.playbook_id)
 
         bad_case = bad_case_store.create_candidate(
             BadCaseCandidate(

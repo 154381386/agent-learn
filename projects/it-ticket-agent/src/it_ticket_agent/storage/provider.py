@@ -7,7 +7,7 @@ from ..bad_case_store import BadCaseCandidateStore
 from ..checkpoint_store import CheckpointStore
 from ..execution_store import ExecutionStore
 from ..interrupt_store import InterruptStore
-from ..memory_store import IncidentCaseStore, ProcessMemoryStore
+from ..memory_store import DiagnosisPlaybookStore, IncidentCaseStore, ProcessMemoryStore
 from ..session_store import SessionStore
 from ..settings import Settings
 from ..system_event_store import SystemEventStore
@@ -30,6 +30,7 @@ class StoreBundle:
     process_memory_store: ProcessMemoryStore
     execution_store: ExecutionStore
     incident_case_store: IncidentCaseStore
+    playbook_store: DiagnosisPlaybookStore
     bad_case_candidate_store: BadCaseCandidateStore
     system_event_store: SystemEventStore | PostgresSystemEventStore
 
@@ -53,6 +54,7 @@ class StoreProvider:
                 process_memory_store=ProcessMemoryStore(db_path, backend=memory_backend),
                 execution_store=ExecutionStore(db_path, backend=PostgresExecutionStoreV2(self.settings.postgres_dsn)),
                 incident_case_store=IncidentCaseStore(db_path, backend=memory_backend),
+                playbook_store=DiagnosisPlaybookStore(db_path, backend=memory_backend),
                 bad_case_candidate_store=BadCaseCandidateStore(
                     db_path,
                     backend=PostgresBadCaseCandidateStoreV2(self.settings.postgres_dsn),
@@ -67,6 +69,7 @@ class StoreProvider:
             process_memory_store=ProcessMemoryStore(db_path),
             execution_store=ExecutionStore(db_path),
             incident_case_store=IncidentCaseStore(db_path),
+            playbook_store=DiagnosisPlaybookStore(db_path),
             bad_case_candidate_store=BadCaseCandidateStore(db_path),
             system_event_store=SystemEventStore(db_path),
         )

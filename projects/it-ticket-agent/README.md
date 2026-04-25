@@ -21,17 +21,59 @@
 - 处理 HITL 审批与执行动作
 - 汇总最终回复
 
+
+## 会话 Working Memory
+
+当前会话内新增一层 `working_memory`，存放在 `conversation_session.session_memory_json.working_memory`，不新增独立表。
+
+它的职责是给 supervisor 提供“当前正在处理什么”的短期工作态，而不是替代完整聊天记录或长期案例库。
+
+- `conversation_turn`：完整保存用户和 assistant 可见对话，适合回放
+- `session_memory.working_memory`：保存当前任务焦点、短摘要、已确认事实、待澄清问题、关键证据、候选/已排除假设、已采取动作、用户纠错、来源引用和决策状态
+- `agent_event`：保存 Agent 内部路由、澄清、审批、执行、反馈和 run summary
+- `incident_case`：保存工单结束后的结构化案例摘要，默认 `pending_review`，人工确认后才进入历史案例召回
+- `diagnosis_playbook`：保存从多个人工确认案例沉淀出的诊断方法卡，默认 `pending_review`，人工审核后才进入在线召回
+
+`ContextAssembler` 组装上下文时优先放入 `working_memory`，再放当前 incident state、旧 session memory、agent event 摘要和 verified 历史案例。这样多轮诊断时，人工确认事实、用户纠错、已排除方向和现场摘要会优先于历史案例，避免后续 ReAct 被旧摘要或相似案例带偏。
+
+P1 后 `working_memory` 不再只有结构化槽位，还包含 `narrative_summary / source_refs / source_type / confidence / ruled_out_hypotheses`：摘要承接时序和因果链，来源引用支持回查，可信度字段区分用户确认、工具观测、系统状态和模型推断，已排除假设用于避免重复排查。
+
+当 `working_memory` 的近似 token、摘要长度或结构化条目数超过阈值时，会触发结构化压缩：先按来源优先级、置信度、refs 和新近度保留用户确认、用户纠错、工具观测等高价值信号，再重建短摘要并写入 `compaction` 元数据。ReAct prompt 如果仍然超预算，会再使用 prompt-only 的压缩视图；LLM 可用时，supervisor 会尝试一次 JSON schema 约束的 LLM-assisted compaction，但会用确定性压缩结果兜底，避免 LLM 漏掉受保护事实。
+
+## 诊断 Playbook
+
+当前新增一层 `diagnosis_playbook`，用于沉淀可复用的“诊断方法”，不等同于历史案例。
+
+- `incident_case`：具体事故事实，回答“过去某个工单发生了什么”
+- `diagnosis_playbook`：可复用诊断策略，回答“这类问题应该按什么证据顺序排查”
+
+运行时策略：
+
+- `context_collector` 会先召回 `verified + human_verified` 的 Playbook，并把压缩后的执行卡放进 `context_snapshot.diagnosis_playbooks`
+- 执行卡只包含标题、命中原因、推荐工具顺序、证据要求和 guardrails，完整结构仍保存在 PG 表里
+- ReAct supervisor 会优先按 Playbook 的 `recommended_steps` 暴露和排序只读工具，但仍必须用 live tool 证据下结论
+- 如果首轮命中 Playbook 且用户没有明确要求查历史案例，自动 case 预召回会延后，`case_recall.prefetch_reason=deferred_by_playbook`
+- 人工确认案例达到同类聚合条件后，只会生成 `pending_review` Playbook candidate；不会由 LLM 自动发布为 verified
+
+可用 API：
+
+- `GET /api/v1/playbooks`：查看 Playbook / 待审候选
+- `POST /api/v1/playbooks`：创建或更新 Playbook
+- `POST /api/v1/playbooks/{playbook_id}/review`：人工审核，通过后才可在线召回
+
 ## 历史案例召回
 
 当前项目里的历史案例召回不是“把工单全文当普通文档再搜一遍”，而是单独的 `case-memory recall`。
 
 - `direct_answer` 默认不走历史案例召回，只走知识 RAG
-- 诊断路径里，`context_collector` 会先做一轮自动案例预召回
-- 但这轮预召回现在只在上下文足够具体时才触发：
+- 诊断路径里，`context_collector` 会先召回 verified Playbook，再判断是否需要自动案例预召回
+- 如果命中 Playbook 且没有显式历史查询意图，自动案例预召回会延后到拿到 live evidence 之后
+- 如果没有命中 Playbook，这轮预召回只在上下文足够具体时触发：
   - `service` 已明确
   - 当前问题能推断出明确 `failure_mode`
   - 或消息里已经出现较具体的症状关键词
 - 如果用户输入还很泛，比如“服务出问题了，帮我看看”，当前会跳过自动预召回，并在 `context_snapshot.case_recall` 里记录原因
+- 如果用户显式问“类似历史案例 / 之前有没有 / 复发”，即使命中 Playbook，也允许首轮查 case
 - supervisor 后续可以显式暴露 `search_similar_incidents`，让模型在拿到更多 live evidence 后再主动查历史案例
 - case-memory 外部服务失败时不会打穿诊断主链：
   - 自动预召回会降级为空 `similar_cases`，并记录 `prefetch_status / prefetch_error_type / case_memory_reason`

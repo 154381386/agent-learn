@@ -24,12 +24,19 @@ from ..knowledge import KnowledgeService
 from ..mcp import MCPConnectionManager
 from ..rag_client import RAGServiceClient
 from ..system_event_store import SystemEventStore
-from ..memory_store import IncidentCaseStore, ProcessMemoryStore
+from ..memory_store import DiagnosisPlaybookStore, IncidentCaseStore, ProcessMemoryStore
+from ..memory.working_memory import (
+    WORKING_MEMORY_UNSET,
+    build_initial_working_memory,
+    merge_working_memory,
+)
 from ..observability import configure_observability
 from ..orchestration.retrieval_planner import RetrievalPlanner
 from ..case_memory_analysis import build_case_memory_reason_codes
 from ..case_retrieval import CaseRetriever, infer_failure_mode, infer_root_cause_taxonomy
 from ..case_vector_indexer import CaseVectorIndexer
+from ..playbook_extraction import build_playbook_candidate_from_cases
+from ..playbook_retrieval import PlaybookRetriever
 from ..schemas import (
     ApprovalDecisionRequest,
     ConversationCreateRequest,
@@ -66,6 +73,7 @@ class SupervisorOrchestrator:
         system_event_store: SystemEventStore | None = None,
         session_service: SessionService | None = None,
         incident_case_store: IncidentCaseStore | None = None,
+        playbook_store: DiagnosisPlaybookStore | None = None,
         bad_case_candidate_store: BadCaseCandidateStore | None = None,
     ) -> None:
         self.settings = settings
@@ -80,6 +88,7 @@ class SupervisorOrchestrator:
         self.process_memory_store = process_memory_store or ProcessMemoryStore(settings.approval_db_path)
         self.execution_store = execution_store or ExecutionStore(settings.approval_db_path)
         self.incident_case_store = incident_case_store or IncidentCaseStore(settings.approval_db_path)
+        self.playbook_store = playbook_store or DiagnosisPlaybookStore(settings.approval_db_path)
         self.bad_case_candidate_store = bad_case_candidate_store or BadCaseCandidateStore(settings.approval_db_path)
         self.system_event_store = system_event_store or SystemEventStore(settings.approval_db_path)
         self.observability = configure_observability(settings)
@@ -92,6 +101,7 @@ class SupervisorOrchestrator:
         self.retrieval_planner = RetrievalPlanner(settings)
         self.case_vector_indexer = CaseVectorIndexer(settings, self.incident_case_store, self.knowledge_client)
         self.case_retriever = CaseRetriever(self.knowledge_client, settings)
+        self.playbook_retriever = PlaybookRetriever(self.playbook_store)
         self.graph_nodes = OrchestratorGraphNodes(
             approval_store=self.approval_store,
             session_store=self.session_store,
@@ -103,6 +113,7 @@ class SupervisorOrchestrator:
             system_event_store=self.system_event_store,
             smart_router=self.smart_router,
             case_retriever=self.case_retriever,
+            playbook_retriever=self.playbook_retriever,
             knowledge_service=self.knowledge_service,
             retrieval_planner=self.retrieval_planner,
         )
@@ -192,6 +203,188 @@ class SupervisorOrchestrator:
         if session_id is None:
             return cases
         return [case for case in cases if str(case.get("session_id") or "") != str(session_id)]
+
+    @staticmethod
+    def _build_working_memory_updates_from_run(
+        *,
+        response: dict[str, Any],
+        incident_state: dict[str, Any],
+        final_status: str,
+        approval_request: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        diagnosis = response.get("diagnosis") if isinstance(response.get("diagnosis"), dict) else {}
+        updates: dict[str, Any] = {
+            "key_evidence": [],
+            "hypotheses": [],
+            "ruled_out_hypotheses": [],
+            "actions_taken": [],
+            "summary_fragments": [],
+            "decision_state": {
+                "final_status": final_status,
+                "response_status": response.get("status"),
+            },
+        }
+
+        def add_summary(fragment: Any) -> None:
+            value = " ".join(str(fragment or "").split())
+            if value and value not in updates["summary_fragments"]:
+                updates["summary_fragments"].append(value)
+
+        diagnosis_summary = str(diagnosis.get("summary") or diagnosis.get("root_cause") or "").strip()
+        if diagnosis_summary:
+            add_summary(f"诊断摘要：{diagnosis_summary}")
+
+        for index, evidence in enumerate(list(diagnosis.get("evidence") or [])[:5]):
+            if evidence:
+                updates["key_evidence"].append(
+                    {
+                        "evidence": str(evidence),
+                        "source": "diagnosis",
+                        "source_type": "runtime_derived",
+                        "refs": {"diagnosis_field": f"evidence[{index}]"},
+                    }
+                )
+        for index, finding in enumerate(list(diagnosis.get("findings") or [])[:5]):
+            if isinstance(finding, dict):
+                detail = str(finding.get("detail") or finding.get("title") or "").strip()
+                if detail:
+                    updates["key_evidence"].append(
+                        {
+                            "evidence": detail,
+                            "source": "finding",
+                            "source_type": "llm_inferred",
+                            "confidence": finding.get("confidence"),
+                            "refs": {"diagnosis_field": f"findings[{index}]"},
+                        }
+                    )
+        for verification in list(incident_state.get("verification_results") or [])[:5]:
+            if not isinstance(verification, dict):
+                continue
+            status = str(verification.get("status") or "")
+            hypothesis_id = str(verification.get("hypothesis_id") or "").strip()
+            root_cause = str(verification.get("root_cause") or "").strip()
+            confidence = verification.get("confidence")
+            evidence_strength = verification.get("evidence_strength")
+            for evidence in list(verification.get("evidence") or [])[:3]:
+                if evidence:
+                    updates["key_evidence"].append(
+                        {
+                            "evidence": str(evidence),
+                            "source": "verification",
+                            "source_type": "tool_observed",
+                            "status": status,
+                            "confidence": confidence,
+                            "evidence_strength": evidence_strength,
+                            "refs": {"hypothesis_id": hypothesis_id, "verification_status": status},
+                        }
+                    )
+            if status in {"failed", "rejected"} and (hypothesis_id or root_cause):
+                updates["ruled_out_hypotheses"].append(
+                    {
+                        "hypothesis_id": hypothesis_id,
+                        "root_cause": root_cause,
+                        "status": status,
+                        "reason": verification.get("summary") or ", ".join(list(verification.get("checks_failed") or [])[:3]),
+                        "source": "verification",
+                        "source_type": "tool_observed",
+                        "confidence": confidence,
+                        "evidence_strength": evidence_strength,
+                        "refs": {"hypothesis_id": hypothesis_id, "verification_status": status},
+                    }
+                )
+
+        ranked_result = incident_state.get("ranked_result") if isinstance(incident_state.get("ranked_result"), dict) else {}
+        primary = ranked_result.get("primary") if isinstance(ranked_result.get("primary"), dict) else {}
+        if primary:
+            root_cause = primary.get("root_cause")
+            confidence = primary.get("confidence")
+            updates["hypotheses"].append(
+                {
+                    "hypothesis_id": primary.get("hypothesis_id"),
+                    "root_cause": root_cause,
+                    "confidence": confidence,
+                    "evidence_strength": primary.get("evidence_strength"),
+                    "source": "ranker",
+                    "source_type": "ranker_selected",
+                    "refs": {"hypothesis_id": primary.get("hypothesis_id")},
+                }
+            )
+            updates["decision_state"]["selected_hypothesis_id"] = primary.get("hypothesis_id")
+            if root_cause:
+                add_summary(f"当前主假设：{root_cause}")
+        for rejected in list(ranked_result.get("rejected") or [])[:5]:
+            if isinstance(rejected, dict):
+                hypothesis_id = str(rejected.get("hypothesis_id") or "").strip()
+                root_cause = str(rejected.get("root_cause") or "").strip()
+                if hypothesis_id or root_cause:
+                    updates["ruled_out_hypotheses"].append(
+                        {
+                            "hypothesis_id": hypothesis_id,
+                            "root_cause": root_cause,
+                            "status": rejected.get("status") or "rejected",
+                            "reason": rejected.get("summary") or "ranker_rejected",
+                            "source": "ranker_rejected",
+                            "source_type": "ranker_selected",
+                            "confidence": rejected.get("confidence"),
+                            "evidence_strength": rejected.get("evidence_strength"),
+                            "refs": {"hypothesis_id": hypothesis_id},
+                        }
+                    )
+
+        if isinstance(approval_request, dict):
+            updates["actions_taken"].append(
+                {
+                    "action": approval_request.get("action"),
+                    "status": "awaiting_approval",
+                    "risk": approval_request.get("risk"),
+                    "reason": approval_request.get("reason"),
+                    "source": "approval_request",
+                    "source_type": "approval_state",
+                    "confidence": 1.0,
+                    "refs": {"approval_id": approval_request.get("approval_id")},
+                }
+            )
+        for action in list(incident_state.get("approved_actions") or [])[:5]:
+            if isinstance(action, dict):
+                updates["actions_taken"].append(
+                    {
+                        **action,
+                        "source": "approved_action",
+                        "source_type": "approval_state",
+                        "confidence": 1.0,
+                        "refs": {"approval_id": action.get("approval_id"), "proposal_id": action.get("proposal_id")},
+                    }
+                )
+        for result in list(incident_state.get("execution_results") or [])[:5]:
+            if isinstance(result, dict):
+                updates["actions_taken"].append(
+                    {
+                        "action": result.get("action"),
+                        "status": result.get("status") or result.get("result"),
+                        "summary": result.get("summary"),
+                        "source": "execution_result",
+                        "source_type": "approval_state",
+                        "confidence": 1.0,
+                    }
+                )
+        metadata = incident_state.get("metadata") if isinstance(incident_state.get("metadata"), dict) else {}
+        if metadata.get("working_memory_summary"):
+            summary = str(metadata.get("working_memory_summary"))
+            updates["key_evidence"].append(
+                {
+                    "evidence": summary,
+                    "source": "react_working_memory_summary",
+                    "source_type": "runtime_summary",
+                    "confidence": 0.8,
+                }
+            )
+            add_summary(f"工具观察摘要：{summary}")
+        confidence = response.get("diagnosis", {}).get("confidence") if isinstance(response.get("diagnosis"), dict) else None
+        if confidence is not None:
+            updates["decision_state"]["confidence"] = confidence
+        if final_status:
+            add_summary(f"当前状态：{final_status}")
+        return updates
 
     def _upsert_incident_case(
         self,
@@ -313,6 +506,33 @@ class SupervisorOrchestrator:
             }
         )
         return saved_case
+
+
+    def _maybe_extract_playbook_candidate_from_case(self, case: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not case or not bool(case.get("human_verified")):
+            return None
+        failure_mode = str(case.get("failure_mode") or "").strip()
+        if not failure_mode:
+            return None
+        signal_pattern = str(case.get("signal_pattern") or "").strip()
+        related_cases = self.incident_case_store.list_cases(
+            failure_mode=failure_mode,
+            case_status="verified",
+            human_verified=True,
+            limit=50,
+        )
+        if signal_pattern:
+            related_cases = [
+                item for item in related_cases
+                if str(item.get("signal_pattern") or "").strip() == signal_pattern
+            ]
+        candidate = build_playbook_candidate_from_cases(related_cases)
+        if candidate is None:
+            return None
+        existing = self.playbook_store.get(str(candidate["playbook_id"]))
+        if existing is not None and existing.get("status") == "verified" and existing.get("human_verified"):
+            return None
+        return self.playbook_store.upsert(candidate)
 
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:
@@ -631,6 +851,7 @@ class SupervisorOrchestrator:
         *,
         queue: list[dict[str, Any]],
         original_user_message: str | None = None,
+        current_user_message: str | None = None,
     ) -> dict[str, Any]:
         updated = self.session_service.update_session_state(
             str(session["session_id"]),
@@ -644,7 +865,9 @@ class SupervisorOrchestrator:
             session_memory=self._merge_session_memory(
                 session,
                 original_user_message=original_user_message,
+                current_user_message=current_user_message,
                 session_event_queue=queue[-20:],
+                reset_working_memory=original_user_message is not None,
             ),
         )
         return updated or session
@@ -655,6 +878,7 @@ class SupervisorOrchestrator:
         *,
         event: dict[str, Any],
         original_user_message: str | None = None,
+        current_user_message: str | None = None,
     ) -> dict[str, Any]:
         queue = self._session_event_queue(session)
         queue.append(dict(event))
@@ -662,6 +886,7 @@ class SupervisorOrchestrator:
             session,
             queue=queue,
             original_user_message=original_user_message,
+            current_user_message=current_user_message,
         )
 
     def _mark_session_events_consumed(
@@ -1133,12 +1358,15 @@ class SupervisorOrchestrator:
             interrupt=interrupt,
             incident_case=updated_case,
         )
+        playbook_candidate = None
         if not human_verified:
             self._maybe_create_bad_case_candidate_from_feedback(
                 session=session,
                 answer_payload=answer_payload,
                 incident_case=updated_case,
             )
+        elif updated_case is not None:
+            playbook_candidate = self._maybe_extract_playbook_candidate_from_case(updated_case)
         if human_verified and updated_case is not None and self.case_vector_indexer.enabled:
             try:
                 asyncio.get_running_loop().create_task(self.case_vector_indexer.index_case(updated_case))
@@ -1157,6 +1385,7 @@ class SupervisorOrchestrator:
                 "human_verified": human_verified,
                 "actual_root_cause_hypothesis": actual_root,
                 "hypothesis_accuracy": hypothesis_accuracy,
+                "playbook_candidate_id": str((playbook_candidate or {}).get("playbook_id") or ""),
             },
             refs={"interrupt_id": interrupt.get("interrupt_id")},
         )
@@ -1317,14 +1546,17 @@ class SupervisorOrchestrator:
         session: dict[str, Any],
         *,
         original_user_message: str | None = None,
+        current_user_message: str | None = None,
         current_intent: dict[str, Any] | None = None,
         key_entities: dict[str, Any] | None = None,
         clarification_answers: dict[str, Any] | None = None,
         current_intent_history: list[dict[str, Any]] | None = None,
-        pending_approval: dict[str, Any] | None = None,
+        pending_approval: dict[str, Any] | None | object = WORKING_MEMORY_UNSET,
         current_stage: str | None = None,
-        pending_interrupt: dict[str, Any] | None = None,
+        pending_interrupt: dict[str, Any] | None | object = WORKING_MEMORY_UNSET,
         session_event_queue: list[dict[str, Any]] | None = None,
+        working_memory_updates: dict[str, Any] | None = None,
+        reset_working_memory: bool = False,
     ) -> dict[str, Any]:
         memory = dict(session.get("session_memory") or {})
         if original_user_message is not None:
@@ -1341,12 +1573,28 @@ class SupervisorOrchestrator:
         memory["clarification_answers"] = clarification_payload
         if current_intent_history is not None:
             memory["current_intent_history"] = list(current_intent_history)
-        memory["pending_approval"] = pending_approval if pending_approval is not None else memory.get("pending_approval")
+        if pending_approval is not WORKING_MEMORY_UNSET:
+            memory["pending_approval"] = pending_approval
         if current_stage is not None:
             memory["current_stage"] = current_stage
-        memory["pending_interrupt"] = pending_interrupt if pending_interrupt is not None else memory.get("pending_interrupt")
+        if pending_interrupt is not WORKING_MEMORY_UNSET:
+            memory["pending_interrupt"] = pending_interrupt
         if session_event_queue is not None:
             memory["session_event_queue"] = [dict(item) for item in session_event_queue[-20:] if isinstance(item, dict)]
+        memory["working_memory"] = merge_working_memory(
+            memory.get("working_memory"),
+            reset=reset_working_memory,
+            original_user_message=original_user_message,
+            current_user_message=current_user_message,
+            current_intent=current_intent,
+            key_entities=key_entities,
+            clarification_answers=clarification_answers,
+            current_stage=current_stage,
+            pending_approval=pending_approval,
+            pending_interrupt=pending_interrupt,
+            session_event_queue=session_event_queue,
+            updates=working_memory_updates,
+        )
         return memory
 
     @staticmethod
@@ -1693,6 +1941,19 @@ class SupervisorOrchestrator:
                         "current_stage": "awaiting_clarification",
                         "pending_interrupt": None,
                         "session_event_queue": [],
+                        "working_memory": build_initial_working_memory(
+                            original_user_message=request.message,
+                            key_entities={
+                                "service": incident_state.service,
+                                "environment": incident_state.environment,
+                                "host_identifier": incident_state.host_identifier,
+                                "db_name": incident_state.db_name,
+                                "db_type": incident_state.db_type,
+                                "cluster": request.cluster,
+                                "namespace": request.namespace,
+                            },
+                            current_stage="awaiting_clarification",
+                        ),
                     },
                 )
             current_session = self.session_service.get_session(session_id)
@@ -1840,6 +2101,17 @@ class SupervisorOrchestrator:
                     "current_stage": "ingest",
                     "pending_interrupt": None,
                     "session_event_queue": [],
+                    "working_memory": build_initial_working_memory(
+                        original_user_message=request.message,
+                        key_entities={
+                            "service": request.service,
+                            "environment": request.environment,
+                            "host_identifier": request.host_identifier,
+                            "cluster": request.cluster,
+                            "namespace": request.namespace,
+                        },
+                        current_stage="ingest",
+                    ),
                 },
             )
             self._append_system_event(
@@ -1933,6 +2205,7 @@ class SupervisorOrchestrator:
             raise
         response = extract_react_graph_response(state)
         final_incident_state = state.get("incident_state") or incident_state
+        final_incident_state_dict = final_incident_state.model_dump()
         latest_approval_id = None
         approval_request = state.get("approval_request")
         if isinstance(approval_request, dict):
@@ -1946,7 +2219,7 @@ class SupervisorOrchestrator:
         }
         current_agent = self._resolve_current_agent(
             current_session,
-            incident_state=final_incident_state.model_dump(),
+            incident_state=final_incident_state_dict,
             current_intent=current_intent,
         )
         final_status = response.get("status") or "completed"
@@ -1965,9 +2238,15 @@ class SupervisorOrchestrator:
             clarification_interrupt=clarification_interrupt if isinstance(clarification_interrupt, dict) else None,
             feedback_interrupt=feedback_interrupt if isinstance(feedback_interrupt, dict) else None,
         )
+        working_memory_updates = self._build_working_memory_updates_from_run(
+            response=response,
+            incident_state=final_incident_state_dict,
+            final_status=final_status,
+            approval_request=approval_request if isinstance(approval_request, dict) else None,
+        )
         session = self.session_service.update_session_state(
             session_id,
-            incident_state=final_incident_state.model_dump(),
+            incident_state=final_incident_state_dict,
             status=final_status,
             current_stage=final_stage,
             latest_approval_id=latest_approval_id,
@@ -1975,6 +2254,7 @@ class SupervisorOrchestrator:
             session_memory=self._merge_session_memory(
                 current_session,
                 current_intent=current_intent,
+                current_user_message=request.message,
                 key_entities={
                     "service": final_incident_state.service,
                     "environment": getattr(final_incident_state, "environment", None),
@@ -2021,6 +2301,7 @@ class SupervisorOrchestrator:
                     if pending_interrupt_id
                     else None
                 ),
+                working_memory_updates=working_memory_updates,
             ),
         )
         if topic_shift is not None and session is not None:
@@ -2034,12 +2315,13 @@ class SupervisorOrchestrator:
             )
             session = self.session_service.update_session_state(
                 session_id,
-                incident_state=final_incident_state.model_dump(),
+                incident_state=final_incident_state_dict,
                 status=final_status,
                 current_stage=final_stage,
                 session_memory=self._merge_session_memory(
                     session,
                     current_intent=current_intent,
+                    current_user_message=request.message,
                     key_entities={
                         "service": final_incident_state.service,
                         "environment": getattr(final_incident_state, "environment", None),
@@ -2087,6 +2369,7 @@ class SupervisorOrchestrator:
                         if pending_interrupt_id
                         else None
                     ),
+                    working_memory_updates=working_memory_updates,
                 ),
             )
         checkpoint = None
@@ -2107,7 +2390,7 @@ class SupervisorOrchestrator:
                     if final_status == "awaiting_clarification"
                     else "complete"
                 ),
-                incident_state=final_incident_state.model_dump(),
+                incident_state=final_incident_state_dict,
                 metadata={
                     "source": "ticket_message",
                     "response_status": response.get("status"),
@@ -2263,9 +2546,11 @@ class SupervisorOrchestrator:
         session = self._queue_session_event(
             session,
             event=queued_event,
+            current_user_message=request.message,
             original_user_message=(
                 request.message
                 if str(message_event.get("event_type") or "") == "new_issue"
+                or bool((message_event.get("topic_shift") or {}).get("topic_shift_detected"))
                 else None
             ),
         )

@@ -2005,3 +2005,226 @@ uv run python -m unittest discover -s tests -q
 ### 下一步
 
 - 可以在 eval report 里持久化 `llm_provider / llm_wire_api`，方便后续对比不同 provider 的稳定性。
+
+
+## 2026-04-24 19:40 会话 Working Memory 落地
+
+### 问题
+
+- 原来的 `session_memory` 更像会话杂项容器，里面同时放原始问题、intent、澄清答案、pending 状态和事件队列。
+- `conversation_turn` 能完整回放对话，但不适合作为每轮 ReAct prompt 的主要记忆输入。
+- `agent_event` 记录内部过程，但它不是用户过程记忆，也不应该直接当作当前事实喂给模型。
+- 多轮补充、纠错、feedback reopen 后，当前确认事实和历史案例之间缺少显式优先级。
+
+### 原因
+
+- 完整历史和当前工作态没有分开：完整历史适合审计，当前工作态适合诊断。
+- 历史案例是经验先验，不是当前现场证据；如果 prompt 中没有更高优先级的当前工作记忆，相似案例容易带偏。
+- 参考 Codex 源码后，比较明确的一点是：上下文管理要区分 full history、compacted/current context、read-only long-term memory，并且记忆命中不等于当前事实。
+
+### 改动
+
+- 新增 `src/it_ticket_agent/memory/working_memory.py`，提供 `build_initial_working_memory / merge_working_memory / normalize_working_memory`。
+- 在 `conversation_session.session_memory_json` 内新增 `working_memory`，不新增表。
+- `working_memory` 结构化保存：
+  - `task_focus`
+  - `confirmed_facts`
+  - `constraints`
+  - `open_questions`
+  - `hypotheses`
+  - `key_evidence`
+  - `actions_taken`
+  - `user_corrections`
+  - `decision_state`
+- `orchestrator` 在会话创建、澄清回答、用户补充、topic shift、feedback reopen、诊断完成后合并更新 `working_memory`。
+- `ContextAssembler` 把 `working_memory` 放在 `memory_summary` 第一层，并补充 compact `current_incident_state`。
+- `ReactSupervisor` prompt 显式传入 compact 后的 `working_memory`，并声明当前会话确认事实、纠错和待决状态优先于历史案例。
+- topic shift 会重置当前 `working_memory.task_focus.original_user_message`，普通补充只更新 `current_user_message`，避免把旧问题和新补充混淆。
+
+### 影响
+
+- `conversation_turn`、`working_memory`、`agent_event`、`incident_case` 的边界更清楚：完整对话、当前工作态、内部事件、长期案例分别服务不同目标。
+- 多轮澄清后，`clarification.environment=prod` 等人工确认事实会进入 `confirmed_facts`。
+- feedback reopen 和用户纠错会进入 `user_corrections`，后续诊断不会只依赖旧结论。
+- `ContextAssembler` 的上下文优先级变成：当前工作记忆 -> 当前 incident state -> 会话遗留字段 -> Agent 事件摘要 -> verified 历史案例。
+
+### 测试
+
+- Targeted：`uv run python -m unittest tests.test_working_memory tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_clarification_resume_completes_without_feedback_when_no_actionable_guidance tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_feedback_resume_with_new_information_reopens_diagnosis tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_post_message_records_topic_shift_history -q`，8 tests OK。
+- Full：`uv run python -m unittest discover -s tests -q`，125 tests OK，skipped=1。
+
+### 下一步
+
+- 暂不做可观测和 case review UI。
+- 可以继续优化 `working_memory` 的自动压缩策略，例如按事实来源、证据强度和用户确认等级裁剪，而不是只按数量截断。
+- 如果后续要做用户长期偏好，建议单独新增 `user_profile_memory`，不要塞进当前会话 `working_memory`。
+
+### 面试问答
+
+- 问：`working_memory` 和 `conversation_turn` 有什么区别？
+  - 答：`conversation_turn` 是完整对话回放，主要服务审计和复现；`working_memory` 是当前会话的结构化工作态，主要服务下一轮诊断 prompt。
+- 问：为什么不把 `working_memory` 做成新表？
+  - 答：它是 session-scoped 的短期状态，生命周期跟 `conversation_session` 一致，当前放在 `session_memory_json` 更简单；长期可复用经验仍然由 `incident_case` 承载。
+- 问：它和历史案例召回的关系是什么？
+  - 答：`working_memory` 是当前现场和人工确认事实，优先级高于历史案例；历史案例只是经验先验，只有 verified case 才能被召回，而且不能覆盖 live evidence。
+
+
+## 2026-04-24 20:20 Working Memory P1 语义补全
+
+### 问题
+
+- 只有结构化槽位时，时序关系、因果链、弱信号和“为什么排除某个方向”容易丢。
+- 证据、事实和纠错缺少统一可信度标记，prompt 里不容易区分用户确认、工具观测、系统状态和模型推断。
+- 当前裁剪主要按数量截断，长会话里低价值摘要可能挤掉用户确认或工具观测。
+
+### 原因
+
+- 结构化字段适合稳定表达事实，但不适合承接所有语义细节。
+- 多轮 ReAct 的关键不只是“有什么证据”，还包括“什么方向已经排除、这个信息来自哪里、可信度多高”。
+- 如果没有来源引用，后续人工复核或重新总结时只能回扫完整历史，成本高。
+
+### 改动
+
+- `working_memory` 增加：
+  - `narrative_summary`：短摘要，保存时序、因果链、阶段性判断。
+  - `ruled_out_hypotheses`：记录已排除方向，避免重复排查。
+  - `source_refs`：回指 `event_id / interrupt_id / observation_id / hypothesis_id` 等来源。
+  - `source_type / confidence`：标记事实、证据、假设、动作、纠错的来源类型和置信度。
+- `orchestrator` 的诊断折叠逻辑会把 verification failed / ranker rejected 写入 `ruled_out_hypotheses`，把工具观察摘要写入 `narrative_summary`。
+- `ReactSupervisor` 的 prompt compact 路径保留 `narrative_summary / ruled_out_hypotheses / source_refs`。
+- `working_memory` 裁剪策略从单纯取最后 N 条，改成按来源优先级、置信度、证据强度、refs 和新近度综合保留。
+
+### 影响
+
+- 结构化字段不再独自承担所有上下文语义，减少“只归槽导致漏信息”的风险。
+- 用户确认、用户纠错、工具观测会比普通 LLM 推断更难被裁掉。
+- 已排除方向会显式进入上下文，减少 ReAct 重复查同一根因方向。
+- 后续转人工、case review 或二次摘要可以通过 `source_refs` 回查来源。
+
+### 测试
+
+- Targeted：`uv run python -m unittest tests.test_working_memory tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_clarification_resume_completes_without_feedback_when_no_actionable_guidance tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_feedback_resume_with_new_information_reopens_diagnosis tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_post_message_records_topic_shift_history -q`，10 tests OK。
+- Full：`uv run python -m unittest discover -s tests -q`，127 tests OK，skipped=1。
+
+### 下一步
+
+- 后续可把 `source_refs` 和 tool observation ledger 的稳定 observation id 对齐。
+- 如果长会话继续膨胀，再做 LLM-assisted compaction，把旧证据压成带 refs 的摘要。
+
+
+## 2026-04-25 Working Memory 结构化压缩
+
+### 问题
+
+- P1 已经有结构化字段和优先级裁剪，但还没有明确的压缩生命周期。
+- 长会话里 `narrative_summary`、证据和来源引用继续增长时，prompt 层仍可能反复做临时裁剪。
+- 如果直接学习 Codex 的整段 history summary，容易丢掉用户确认、工具观测和已排除方向的可追溯结构。
+
+### 原因
+
+- Codex 压缩的是通用对话历史；IT 诊断场景需要保留事实来源、置信度和排除项。
+- 当前系统已经把完整对话、工作记忆、agent event 和历史案例分开，压缩应该只作用于模型可见工作态，不应该删除原始对话或内部事件。
+- LLM 摘要有语义压缩优势，但必须有确定性兜底，避免漏掉受保护事实。
+
+### 改动
+
+- `working_memory` 新增 `compaction` 元数据，记录触发原因、压缩策略、输入/输出近似 token、保留/丢弃条目数、受保护来源类型和输入签名。
+- 新增阈值触发：近似 token 超限、摘要过长、结构化条目过多时，自动把 `working_memory` 压成结构化工作态。
+- 新增确定性压缩：优先保留 `user_confirmed / user_correction / tool_observed`，同时按来源优先级、置信度、证据强度、refs 和新近度选择条目。
+- 新增 LLM-assisted compaction：ReAct supervisor 在 LLM 可用且工作记忆超预算时，先要求模型输出 JSON schema；解析失败或 LLM 不可用时回退确定性压缩。
+- prompt 超预算路径改为复用结构化压缩视图，而不是简单取最后 N 条。
+
+### 影响
+
+- 长会话上下文从“每次临时截断”升级为“有触发、有产物、有元数据”的压缩机制。
+- 用户确认事实、用户纠错、工具观测和已排除假设更稳定地进入后续诊断。
+- 原始 `conversation_turn` / `agent_event` 仍完整保留，压缩只影响模型可见的当前工作态。
+- LLM 摘要可以补足结构化槽位的叙事表达，但不会单点决定最终保留内容。
+
+### 测试
+
+- Targeted：`UV_CACHE_DIR=/tmp/agent-learn-uv-cache PYTHONPYCACHEPREFIX=/tmp/agent-learn-pycache uv run python -m unittest tests.test_working_memory tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_clarification_resume_completes_without_feedback_when_no_actionable_guidance tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_feedback_resume_with_new_information_reopens_diagnosis tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_post_message_records_topic_shift_history -q`，12 tests OK。
+- Full：`LLM_PROVIDER=none LANGFUSE_PUBLIC_KEY= LANGFUSE_SECRET_KEY= UV_CACHE_DIR=/tmp/agent-learn-uv-cache PYTHONPYCACHEPREFIX=/tmp/agent-learn-pycache uv run python -m unittest discover -s tests -q`，129 tests OK，skipped=1。
+- 直接跑默认全量时，当前沙箱禁网导致 live LLM/httpx ConnectError，不是代码断言失败。
+
+### 下一步
+
+- 可以把压缩阈值外置到 settings，方便不同模型上下文窗口下调参。
+- 后续如需更强审计，可把 `compaction.input_signature` 和压缩前后摘要写入 agent event。
+
+
+## 2026-04-25 PG 表验证与 schema 兼容迁移修复
+
+### 问题
+
+- 用真实 PG backend 跑 demo 会话时，`PostgresProcessMemoryStoreV2` 初始化失败。
+- 失败点是 `incident_case` 旧表缺少 `case_status`，但初始化逻辑先创建依赖 `case_status` 的索引，再执行兼容 `alter table`。
+
+### 原因
+
+- SQLite 版本已经有旧表补列逻辑，PG 版本也有补列逻辑，但执行顺序不对。
+- 对已有 PG 环境来说，`create table if not exists` 不会补历史列；必须先补列，再创建引用新列的索引。
+
+### 改动
+
+- 调整 `src/it_ticket_agent/memory/pg_store.py` 的初始化顺序：先读取 `incident_case` 现有列并补齐 `case_status / human_verified / review_* / hypothesis_*` 等字段，再创建 `idx_incident_case_status_updated_at` 等索引。
+- 用真实 PG backend 创建 `DEMO-MEM-*` 会话，确认 `conversation_session / conversation_turn / agent_event / system_event / incident_case / execution_checkpoint / bad_case_candidate` 等表能正常写入。
+
+### 影响
+
+- 已部署过旧 schema 的 PG 环境可以自动兼容新案例字段。
+- `incident_case` 的 `pending_review -> verified` 生命周期字段可以在旧库上正常工作。
+- 真实 demo 能直接展示当前 working memory、完整对话、内部事件和案例摘要分别落在哪些表。
+
+### 测试
+
+- Live eval：`uv run python scripts/run_agent_eval.py --dataset ./data/evals/session_flow_live_cases.json --output /tmp/session-flow-live-eval-report.json`，4/4 cases PASS，8/8 steps PASS，gate PASS。
+- LLM compaction demo：真实 `gpt-5.5` 调用，`llm_used=true`，`key_evidence` 从 21 条压到 8 条，`source_refs` 从 23 条压到 10 条。
+- PG demo：真实 PG backend 写入 `DEMO-MEM-20260425052150`，会话完成，`conversation_turn=4`、`agent_event=4`、`system_event=9`、`incident_case=1`。
+- Targeted：`uv run python -m unittest tests.test_working_memory tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_clarification_resume_completes_without_feedback_when_no_actionable_guidance tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_feedback_resume_with_new_information_reopens_diagnosis tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_post_message_records_topic_shift_history -q`，12 tests OK。
+
+### 下一步
+
+- 可以补一个轻量 PG migration smoke test，专门覆盖“旧 incident_case 表缺列时启动 StoreProvider”。
+- 可以把 demo 查询脚本沉淀成 `scripts/inspect_runtime_storage.py`，方便之后展示表内容。
+
+
+## 2026-04-25 Diagnosis Playbook 程序性记忆落地
+
+### 问题
+
+- 只有历史案例召回时，首轮容易把具体旧事故过早放进上下文，影响现场诊断顺序。
+- 结构化 case 适合保存“过去发生了什么”，但不适合作为“这类问题应该怎么排查”的稳定方法卡。
+- 直接让 LLM 从单个工单总结并进入长期记忆，容易把未经复核的方法污染到线上诊断链路。
+
+### 原因
+
+- 历史案例是事实记忆，Playbook 是程序性记忆，两者的召回时机和可信边界不同。
+- Tool-First ReAct 更需要的是首轮工具顺序和证据要求，而不是首轮就引用某个具体旧案例结论。
+- 纯自动沉淀缺少人工审核，无法保证方法卡的可复用性和安全 guardrails。
+
+### 改动
+
+- 新增 `diagnosis_playbook` 模型、PG/SQLite 存储、`DiagnosisPlaybookStore` facade 和 FastAPI 管理接口。
+- 新增 `PlaybookRetriever`，只召回 `verified + human_verified` Playbook，输出压缩执行卡到 `ContextSnapshot.diagnosis_playbooks`。
+- `context_collector` 改为先召回 Playbook；命中 Playbook 且没有强历史查询意图时，首轮 case 召回标记为 `deferred_by_playbook`。
+- ReAct prompt、shared context、候选工具排序和 rule-based hypothesis 都接入 Playbook 推荐步骤，但明确要求不能把 Playbook 当根因事实。
+- 人工确认 case 后，系统可从 3 个以上同类 verified case 聚合生成 `pending_review` Playbook candidate；不会自动发布为 verified。
+
+### 影响
+
+- 首轮上下文从“相似历史事故优先”调整为“验证过的诊断方法优先”。
+- 相似 case 仍保留，但默认更偏向 evidence-driven 的后验召回，减少旧案例带偏。
+- Playbook 有完整审核状态、来源案例、证据要求和 guardrails，适合长期运行后逐步积累程序性记忆。
+- 当前实现不引入向量依赖，先用确定性 hybrid scoring，便于测试和回放。
+
+### 测试
+
+- Targeted：`uv run python -m unittest tests/test_playbook_memory.py tests/test_runtime_smoke.py`，34 tests OK。
+- Eval：`uv run python -m unittest tests/test_agent_eval.py`，39 tests OK。
+- Full：`uv run python -m unittest discover -s tests -q`，132 tests OK，skipped=1。
+
+### 下一步
+
+- 可以补一个轻量 Playbook review UI，把 `pending_review` candidate 的审核流程做成值班人可操作入口。
+- 后续可把 Playbook recall scoring 的命中特征写入 eval report，用于观察哪些方法卡长期有效。

@@ -15,6 +15,9 @@ from .schemas import (
     ConversationDetailResponse,
     ConversationMessageRequest,
     ConversationMutationResponse,
+    DiagnosisPlaybookResponse,
+    DiagnosisPlaybookReviewRequest,
+    DiagnosisPlaybookUpsertRequest,
     ConversationResumeRequest,
     ExecutionPlanResponse,
     ExecutionRecoveryResponse,
@@ -47,6 +50,7 @@ async def lifespan(app: FastAPI):
     process_memory_store = stores.process_memory_store
     execution_store = stores.execution_store
     incident_case_store = stores.incident_case_store
+    playbook_store = stores.playbook_store
     bad_case_candidate_store = stores.bad_case_candidate_store
     system_event_store = stores.system_event_store
     app.state.supervisor_orchestrator = SupervisorOrchestrator(
@@ -59,6 +63,7 @@ async def lifespan(app: FastAPI):
         execution_store=execution_store,
         session_service=session_service,
         incident_case_store=incident_case_store,
+        playbook_store=playbook_store,
         bad_case_candidate_store=bad_case_candidate_store,
         system_event_store=system_event_store,
     )
@@ -70,6 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.process_memory_store = process_memory_store
     app.state.execution_store = execution_store
     app.state.incident_case_store = incident_case_store
+    app.state.playbook_store = playbook_store
     app.state.bad_case_candidate_store = bad_case_candidate_store
     app.state.system_event_store = system_event_store
     app.state.observability = observability
@@ -283,6 +289,62 @@ async def get_interrupt(interrupt_id: str, http_request: Request):
     if interrupt is None:
         raise HTTPException(status_code=404, detail="interrupt not found")
     return InterruptResponse(**interrupt)
+
+
+@app.get("/api/v1/playbooks", response_model=list[DiagnosisPlaybookResponse])
+async def list_playbooks(
+    http_request: Request,
+    status: str | None = None,
+    human_verified: bool | None = None,
+    service_type: str | None = None,
+    failure_mode: str | None = None,
+    environment: str | None = None,
+    keyword: str | None = None,
+    limit: int = 20,
+):
+    playbook_store = http_request.app.state.playbook_store
+    playbooks = playbook_store.list_playbooks(
+        status=status,
+        human_verified=human_verified,
+        service_type=service_type,
+        failure_mode=failure_mode,
+        environment=environment,
+        keyword=keyword,
+        limit=limit,
+    )
+    return [DiagnosisPlaybookResponse(**playbook) for playbook in playbooks]
+
+
+@app.post("/api/v1/playbooks", response_model=DiagnosisPlaybookResponse)
+async def upsert_playbook(payload: DiagnosisPlaybookUpsertRequest, http_request: Request):
+    playbook_store = http_request.app.state.playbook_store
+    data = payload.model_dump(exclude_none=True)
+    playbook = playbook_store.upsert(data)
+    return DiagnosisPlaybookResponse(**playbook)
+
+
+@app.get("/api/v1/playbooks/{playbook_id}", response_model=DiagnosisPlaybookResponse)
+async def get_playbook(playbook_id: str, http_request: Request):
+    playbook_store = http_request.app.state.playbook_store
+    playbook = playbook_store.get(playbook_id)
+    if playbook is None:
+        raise HTTPException(status_code=404, detail="playbook not found")
+    return DiagnosisPlaybookResponse(**playbook)
+
+
+@app.post("/api/v1/playbooks/{playbook_id}/review", response_model=DiagnosisPlaybookResponse)
+async def review_playbook(playbook_id: str, payload: DiagnosisPlaybookReviewRequest, http_request: Request):
+    playbook_store = http_request.app.state.playbook_store
+    playbook = playbook_store.review(
+        playbook_id,
+        human_verified=payload.human_verified,
+        status=payload.status,
+        reviewed_by=payload.reviewed_by,
+        review_note=payload.review_note,
+    )
+    if playbook is None:
+        raise HTTPException(status_code=404, detail="playbook not found")
+    return DiagnosisPlaybookResponse(**playbook)
 
 
 @app.get("/api/v1/cases", response_model=list[IncidentCaseResponse])

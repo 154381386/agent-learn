@@ -262,6 +262,71 @@ class IncidentCaseResponse(BaseModel):
     closed_at: Optional[str] = None
 
 
+class DiagnosisPlaybookResponse(BaseModel):
+    playbook_id: str
+    version: int = 1
+    title: str = ""
+    status: str = "pending_review"
+    human_verified: bool = False
+    service_type: str = ""
+    failure_modes: List[str] = Field(default_factory=list)
+    environments: List[str] = Field(default_factory=list)
+    trigger_conditions: List[str] = Field(default_factory=list)
+    signal_patterns: List[str] = Field(default_factory=list)
+    negative_conditions: List[str] = Field(default_factory=list)
+    required_entities: List[str] = Field(default_factory=list)
+    diagnostic_goal: str = ""
+    diagnostic_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence_requirements: List[str] = Field(default_factory=list)
+    guardrails: List[str] = Field(default_factory=list)
+    common_false_positives: List[str] = Field(default_factory=list)
+    source_case_ids: List[str] = Field(default_factory=list)
+    success_count: int = 0
+    failure_count: int = 0
+    last_eval_passed: Optional[bool] = None
+    reviewed_by: str = ""
+    reviewed_at: Optional[str] = None
+    review_note: str = ""
+    created_at: str
+    updated_at: str
+    retired_at: Optional[str] = None
+
+
+class DiagnosisPlaybookUpsertRequest(BaseModel):
+    playbook_id: Optional[str] = None
+    version: int = 1
+    title: str = ""
+    status: str = "pending_review"
+    human_verified: bool = False
+    service_type: str = ""
+    failure_modes: List[str] = Field(default_factory=list)
+    environments: List[str] = Field(default_factory=list)
+    trigger_conditions: List[str] = Field(default_factory=list)
+    signal_patterns: List[str] = Field(default_factory=list)
+    negative_conditions: List[str] = Field(default_factory=list)
+    required_entities: List[str] = Field(default_factory=list)
+    diagnostic_goal: str = ""
+    diagnostic_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence_requirements: List[str] = Field(default_factory=list)
+    guardrails: List[str] = Field(default_factory=list)
+    common_false_positives: List[str] = Field(default_factory=list)
+    source_case_ids: List[str] = Field(default_factory=list)
+    success_count: int = 0
+    failure_count: int = 0
+    last_eval_passed: Optional[bool] = None
+    reviewed_by: str = ""
+    reviewed_at: Optional[str] = None
+    review_note: str = ""
+    retired_at: Optional[str] = None
+
+
+class DiagnosisPlaybookReviewRequest(BaseModel):
+    human_verified: bool
+    status: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    review_note: Optional[str] = None
+
+
 class RAGSearchRequest(BaseModel):
     query: str
     service: Optional[str] = None

@@ -11,6 +11,11 @@ from ..graph.nodes import OrchestratorGraphNodes
 from ..orchestration.ranker import Ranker
 from ..graph.react_state import ReactTicketGraphState
 from ..llm_client import OpenAICompatToolLLM
+from ..memory.working_memory import (
+    compact_working_memory,
+    compact_working_memory_with_llm,
+    working_memory_compaction_trigger,
+)
 from ..runtime.contracts import TaskEnvelope
 from ..settings import Settings
 from ..state.models import EvidenceItem, Hypothesis, RAGContextBundle, SimilarIncidentCase, VerificationResult, VerificationStep
@@ -135,6 +140,8 @@ class ReactSupervisor:
         if not self.llm.enabled:
             next_state.setdefault("transition_notes", []).append("llm disabled, using rule-based react fallback")
             return await self._run_rule_based_loop(next_state)
+
+        await self._maybe_compact_execution_working_memory(next_state)
 
         incident_state = next_state["incident_state"]
         context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
@@ -400,11 +407,17 @@ class ReactSupervisor:
         recent_observations = self._recent_observations_for_prompt(observations)
         candidate_tool_names = list(state.get("candidate_tool_names") or self.tools.keys())
         recent_session_events = self._recent_session_events_for_prompt(state)
+        execution_context = state.get("execution_context")
+        memory_summary = dict(getattr(execution_context, "memory_summary", {}) or {}) if execution_context is not None else {}
+        working_memory = dict(memory_summary.get("working_memory") or {})
         payload = {
             "request": request.model_dump(),
+            "working_memory": working_memory,
             "rag_context": context_snapshot.rag_context.model_dump() if context_snapshot and context_snapshot.rag_context is not None else {},
             "similar_cases": [item.model_dump() for item in list(context_snapshot.similar_cases or [])[:3]] if context_snapshot else [],
             "case_recall": dict(getattr(context_snapshot, "case_recall", {}) or {}) if context_snapshot else {},
+            "diagnosis_playbooks": [item.model_dump() for item in list(getattr(context_snapshot, "diagnosis_playbooks", []) or [])[:2]] if context_snapshot else [],
+            "playbook_recall": dict(getattr(context_snapshot, "playbook_recall", {}) or {}) if context_snapshot else {},
             "recent_session_events": recent_session_events,
             "pinned_findings": pinned_findings,
             "working_memory_summary": working_memory_summary,
@@ -415,11 +428,13 @@ class ReactSupervisor:
         if len(content) > self.max_context_tokens:
             payload["recent_observations"] = recent_observations[-2:]
             payload["working_memory_summary"] = working_memory_summary[: max(500, self.max_context_tokens // 2)]
+            payload["working_memory"] = self._compact_working_memory_for_prompt(working_memory)
             payload["pinned_findings"] = pinned_findings[:6]
             content = json.dumps(payload, ensure_ascii=False)
         if len(content) > self.max_context_tokens:
             payload["recent_observations"] = recent_observations[-1:]
             payload["working_memory_summary"] = working_memory_summary[: max(300, self.max_context_tokens // 3)]
+            payload["working_memory"] = self._compact_working_memory_for_prompt(working_memory, tighter=True)
             payload["pinned_findings"] = pinned_findings[:4]
             content = json.dumps(payload, ensure_ascii=False)
         return [
@@ -432,8 +447,12 @@ class ReactSupervisor:
                     "如果已有 2-3 个高价值异常证据指向同一问题域，立即停止继续调 tool。"
                     "如果多个只读检查互不依赖，可以一次返回多个 tool calls，但总是优先最关键的 2-3 个。"
                     "当 rag_context 为空、命中很少，或需要查已知故障/发布模式时，可先调用 search_knowledge_base 一次补充背景，再决定 live 检查。"
+                    "working_memory 是当前会话的人工确认事实、纠错、摘要、来源引用和待决状态，优先于历史案例。"
+                    "diagnosis_playbooks 是人工验证后的诊断方法卡，只能指导证据顺序，不能当成根因事实。"
+                    "优先按 diagnosis_playbooks 的 recommended_steps 做最少只读检查，并满足 evidence_requirements 后再下结论。"
                     "similar_cases 只是一层历史背景提示，不等于现场证据。"
                     "只有在 service/环境已明确，且你已经拿到更具体的 symptom、failure mode 或根因方向时，才调用 search_similar_incidents。"
+                    "如果 case_recall 显示 deferred_by_playbook，先执行 Playbook 推荐的 1-2 个关键只读检查，再决定是否查历史案例。"
                     "如果 case_recall 显示自动预召回被跳过，先做 1-2 个关键只读检查，再决定是否查历史案例。"
                     "如果知识搜索已经命中已知模式，且至少一个 live tool 证实了对应异常，优先直接给出阶段性结论，不要继续跨域扩查。"
                     "避免对同一个 query 重复搜索知识库。"
@@ -444,6 +463,49 @@ class ReactSupervisor:
             },
             {"role": "user", "content": content},
         ]
+
+    async def _maybe_compact_execution_working_memory(self, state: dict[str, Any]) -> None:
+        execution_context = state.get("execution_context")
+        if execution_context is None:
+            return
+        memory_summary = dict(getattr(execution_context, "memory_summary", {}) or {})
+        working_memory = memory_summary.get("working_memory")
+        if not isinstance(working_memory, dict):
+            return
+        trigger = working_memory_compaction_trigger(working_memory)
+        if not trigger:
+            return
+        compacted = await compact_working_memory_with_llm(working_memory, self.llm, trigger=trigger)
+        memory_summary["working_memory"] = compacted
+        execution_context.memory_summary = memory_summary
+        state["execution_context"] = execution_context
+        state["working_memory_compaction"] = dict(compacted.get("compaction") or {})
+        state.setdefault("transition_notes", []).append(f"working memory compacted: {trigger}")
+
+    @staticmethod
+    def _compact_working_memory_for_prompt(working_memory: dict[str, Any], *, tighter: bool = False) -> dict[str, Any]:
+        compacted = compact_working_memory(
+            working_memory,
+            trigger="prompt_context_budget_tighter" if tighter else "prompt_context_budget",
+            source="prompt_budget",
+        )
+        limit = 3 if tighter else 6
+        summary_limit = 500 if tighter else 900
+        return {
+            "task_focus": dict(compacted.get("task_focus") or {}),
+            "narrative_summary": str(compacted.get("narrative_summary") or "")[-summary_limit:],
+            "confirmed_facts": list(compacted.get("confirmed_facts") or [])[:limit],
+            "constraints": list(compacted.get("constraints") or [])[:limit],
+            "open_questions": list(compacted.get("open_questions") or [])[:limit],
+            "hypotheses": list(compacted.get("hypotheses") or [])[:limit],
+            "ruled_out_hypotheses": list(compacted.get("ruled_out_hypotheses") or [])[:limit],
+            "key_evidence": list(compacted.get("key_evidence") or [])[:limit],
+            "actions_taken": list(compacted.get("actions_taken") or [])[:limit],
+            "user_corrections": list(compacted.get("user_corrections") or [])[:limit],
+            "source_refs": list(compacted.get("source_refs") or [])[:limit],
+            "decision_state": dict(compacted.get("decision_state") or {}),
+            "compaction": dict(compacted.get("compaction") or {}),
+        }
 
     @staticmethod
     def _recent_session_events_for_prompt(state: ReactTicketGraphState) -> list[dict[str, Any]]:
@@ -936,6 +998,12 @@ class ReactSupervisor:
         context_snapshot=None,
     ) -> list[str]:
         candidate_tool_names: list[str] = []
+        for tool_name in self._playbook_recommended_tool_names(
+            context_snapshot=context_snapshot,
+            observations=observations,
+        ):
+            if tool_name not in candidate_tool_names:
+                candidate_tool_names.append(tool_name)
         if self._should_include_knowledge_tool(
             context_snapshot=context_snapshot,
             observations=observations,
@@ -978,6 +1046,27 @@ class ReactSupervisor:
 
         normalized = [name for name in candidate_tool_names if name in self.tools]
         return normalized[:10] if normalized else list(self.tools.keys())
+
+
+    def _playbook_recommended_tool_names(self, *, context_snapshot, observations: list[dict[str, Any]]) -> list[str]:
+        if context_snapshot is None:
+            return []
+        observed_tool_names = {
+            str(item.get("tool_name") or "")
+            for item in observations
+            if str(item.get("tool_name") or "")
+        }
+        tool_names: list[str] = []
+        for playbook in list(getattr(context_snapshot, "diagnosis_playbooks", []) or [])[:2]:
+            for step in list(getattr(playbook, "recommended_steps", []) or [])[:5]:
+                if not isinstance(step, dict):
+                    continue
+                tool_name = str(step.get("tool_name") or step.get("tool") or "").strip()
+                if tool_name and tool_name in self.tools and tool_name not in observed_tool_names and tool_name not in tool_names:
+                    tool_names.append(tool_name)
+                if len(tool_names) >= 4:
+                    return tool_names
+        return tool_names
 
     def _should_include_knowledge_tool(
         self,
@@ -1363,6 +1452,15 @@ class ReactSupervisor:
         case_recall = dict(getattr(context_snapshot, "case_recall", {}) or {}) if context_snapshot is not None else {}
         if case_recall:
             shared["case_recall"] = case_recall
+        diagnosis_playbooks = list(getattr(context_snapshot, "diagnosis_playbooks", []) or []) if context_snapshot is not None else []
+        if diagnosis_playbooks:
+            shared["diagnosis_playbooks"] = [
+                item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                for item in diagnosis_playbooks[:2]
+            ]
+        playbook_recall = dict(getattr(context_snapshot, "playbook_recall", {}) or {}) if context_snapshot is not None else {}
+        if playbook_recall:
+            shared["playbook_recall"] = playbook_recall
         return shared
 
     def _build_rule_based_hypotheses(self, *, request, context_snapshot) -> list[Hypothesis]:
@@ -1374,6 +1472,38 @@ class ReactSupervisor:
         matched_domains = list(getattr(context_snapshot, "matched_tool_domains", []) or [])
         message_lower = message.lower()
         hypotheses: list[Hypothesis] = []
+        for playbook in list(getattr(context_snapshot, "diagnosis_playbooks", []) or [])[:2]:
+            verification_steps: list[VerificationStep] = []
+            for step in list(getattr(playbook, "recommended_steps", []) or [])[:5]:
+                if not isinstance(step, dict):
+                    continue
+                tool_name = str(step.get("tool_name") or step.get("tool") or "").strip()
+                if not tool_name:
+                    continue
+                params = dict(step.get("params") or {}) if isinstance(step.get("params"), dict) else {}
+                params.setdefault("service", service)
+                if namespace:
+                    params.setdefault("namespace", namespace)
+                verification_steps.append(
+                    VerificationStep(
+                        tool_name=tool_name,
+                        params=params,
+                        purpose=str(step.get("purpose") or "按 Playbook 推荐顺序采集证据"),
+                    )
+                )
+            if verification_steps:
+                playbook_id = str(getattr(playbook, "playbook_id", "") or "playbook")
+                title = str(getattr(playbook, "title", "") or playbook_id)
+                hypotheses.append(
+                    Hypothesis(
+                        hypothesis_id=f"H-PB-{playbook_id[:24]}",
+                        root_cause=f"按已验证 Playbook《{title}》指导的故障模式进行证据验证",
+                        confidence_prior=max(0.62, min(0.86, float(getattr(playbook, "recall_score", 0.0) or 0.0))),
+                        verification_plan=verification_steps,
+                        expected_evidence="; ".join(list(getattr(playbook, "evidence_requirements", []) or [])[:4]) or "需要实时工具证据满足 Playbook 的证据要求。",
+                        metadata={"source": "diagnosis_playbook", "playbook_id": playbook_id, "recall_reason": str(getattr(playbook, "recall_reason", "") or "")},
+                    )
+                )
         explicit_deploy_signal = any(token in message_lower for token in ("deploy", "release", "发布", "变更", "pipeline"))
         explicit_db_signal = any(token in message_lower for token in ("数据库", "db", "慢查询", "连接池", "deadlock"))
         explicit_network_signal = any(token in message_lower for token in ("502", "timeout", "超时", "ingress", "gateway", "依赖"))

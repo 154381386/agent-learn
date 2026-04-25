@@ -273,6 +273,10 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(session)
         self.assertEqual(session["status"], "completed")
         self.assertIsNone(session["pending_interrupt_id"])
+        working_memory = dict((session.get("session_memory") or {}).get("working_memory") or {})
+        facts = {item["key"]: item["value"] for item in list(working_memory.get("confirmed_facts") or [])}
+        self.assertEqual(facts["clarification.environment"], "prod")
+        self.assertEqual(working_memory.get("open_questions"), [])
 
     async def test_missing_host_identifier_triggers_clarification(self) -> None:
         result = await self.orchestrator.start_conversation(
@@ -531,11 +535,15 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         session = self.session_store.get(session_id)
         assert session is not None
         self.assertEqual(session["pending_interrupt_id"], resumed["pending_interrupt"]["interrupt_id"])
-        event_queue = list((session.get("session_memory") or {}).get("session_event_queue") or [])
+        session_memory = dict(session.get("session_memory") or {})
+        event_queue = list(session_memory.get("session_event_queue") or [])
         self.assertTrue(event_queue)
         self.assertEqual(event_queue[-1]["source"], "feedback")
         self.assertEqual(event_queue[-1]["event_type"], "correction")
         self.assertIsNotNone(event_queue[-1]["consumed_at"])
+        working_memory = dict(session_memory.get("working_memory") or {})
+        corrections = list(working_memory.get("user_corrections") or [])
+        self.assertTrue(any("数据库连接池耗尽" in str(item.get("message") or "") for item in corrections))
         case = self.incident_case_store.get_by_session_id(session_id)
         assert case is not None
         self.assertFalse(case["human_verified"])
@@ -747,11 +755,15 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         history = list((session.get("session_memory") or {}).get("current_intent_history") or [])
         self.assertTrue(history)
         self.assertTrue(history[-1]["topic_shift_detected"])
-        event_queue = list((session.get("session_memory") or {}).get("session_event_queue") or [])
+        session_memory = dict(session.get("session_memory") or {})
+        event_queue = list(session_memory.get("session_event_queue") or [])
         self.assertTrue(event_queue)
         self.assertEqual(event_queue[-1]["source"], "user_message")
         self.assertEqual(event_queue[-1]["event_type"], "correction")
         self.assertIsNotNone(event_queue[-1]["consumed_at"])
+        working_memory = dict(session_memory.get("working_memory") or {})
+        self.assertEqual(working_memory["task_focus"]["original_user_message"], "现在看起来更像数据库连接池问题，还有慢查询")
+        self.assertTrue(any("数据库连接池问题" in str(item.get("message") or "") for item in working_memory.get("user_corrections") or []))
         self.assertEqual(updated["diagnosis"]["message_event"]["event_type"], "correction")
         snapshot = updated["diagnosis"]["context_snapshot"]
         self.assertIn("db", snapshot["matched_tool_domains"])

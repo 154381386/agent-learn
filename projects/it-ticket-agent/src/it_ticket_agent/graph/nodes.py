@@ -21,6 +21,7 @@ from ..memory_store import IncidentCaseStore, ProcessMemoryStore
 from ..mcp import MCPClient, MCPConnectionManager
 from ..observability import get_observability
 from ..orchestration import RetrievalPlanner
+from ..playbook_retrieval import PlaybookRetriever
 from ..knowledge import KnowledgeService
 from ..runtime.contracts import SmartRouterDecision
 from ..runtime.smart_router import SmartRouter
@@ -77,6 +78,7 @@ class OrchestratorGraphNodes:
         system_event_store: SystemEventStore | None = None,
         smart_router: SmartRouter | None = None,
         case_retriever: CaseRetriever | None = None,
+        playbook_retriever: PlaybookRetriever | None = None,
         knowledge_service: KnowledgeService | None = None,
         retrieval_planner: RetrievalPlanner | None = None,
     ) -> None:
@@ -89,6 +91,7 @@ class OrchestratorGraphNodes:
         self.approval_coordinator = approval_coordinator or ApprovalCoordinator()
         self.smart_router_impl = smart_router
         self.case_retriever = case_retriever
+        self.playbook_retriever = playbook_retriever
         self.knowledge_service = knowledge_service
         self.retrieval_planner = retrieval_planner
         self.checkpoint_store = CheckpointStore(getattr(session_store, 'db_path', '')) if getattr(session_store, 'db_path', '') else None
@@ -235,12 +238,27 @@ class OrchestratorGraphNodes:
             input={"ticket_id": request.ticket_id, "service": request.service, "message": request.message},
             metadata={"node": "context_collector"},
         ) as span:
+            service = str(request.service or incident_state.service or "")
+            cluster = str(request.cluster or incident_state.cluster or "")
+            namespace = str(request.namespace or incident_state.namespace or "")
+            message = str(request.message or "")
+            session_id = str(state.get("session_id") or "")
+            playbook_lookup = await self._load_diagnosis_playbooks(
+                service=service,
+                cluster=cluster,
+                namespace=namespace,
+                environment=str(getattr(request, "environment", "") or incident_state.environment or ""),
+                message=message,
+            )
+            diagnosis_playbooks = list(playbook_lookup.get("diagnosis_playbooks") or [])
+            playbook_recall = dict(playbook_lookup.get("playbook_recall") or {})
             case_recall_lookup = await self._load_similar_cases(
-                service=str(request.service or incident_state.service or ""),
-                cluster=str(request.cluster or incident_state.cluster or ""),
-                namespace=str(request.namespace or incident_state.namespace or ""),
-                message=str(request.message or ""),
-                session_id=str(state.get("session_id") or ""),
+                service=service,
+                cluster=cluster,
+                namespace=namespace,
+                message=message,
+                session_id=session_id,
+                diagnosis_playbooks=diagnosis_playbooks,
             )
             similar_cases = list(case_recall_lookup.get("similar_cases") or [])
             case_recall = dict(case_recall_lookup.get("case_recall") or {})
@@ -254,7 +272,8 @@ class OrchestratorGraphNodes:
                 incident_state=incident_state,
                 similar_cases=similar_cases,
                 matched_categories=matched_categories,
-                session_id=str(state.get("session_id") or ""),
+                session_id=session_id,
+                defer_case_lookup=bool(case_recall.get("deferred_by_playbook")),
             )
             if retrieval_expansion["added_rag_context"] is not None:
                 incident_state.rag_context = retrieval_expansion["added_rag_context"]
@@ -265,6 +284,8 @@ class OrchestratorGraphNodes:
                 rag_context=self._normalize_rag_context(incident_state.rag_context),
                 similar_cases=similar_cases,
                 case_recall=case_recall,
+                diagnosis_playbooks=diagnosis_playbooks,
+                playbook_recall=playbook_recall,
                 live_signals={},
                 context_quality=self._score_context_quality(
                     request=request,
@@ -290,6 +311,8 @@ class OrchestratorGraphNodes:
                     "matched_tool_domains": matched_categories,
                     "available_tool_names": [],
                     "similar_case_count": len(similar_cases),
+                    "playbook_count": len(diagnosis_playbooks),
+                    "playbook_ids": [item.playbook_id for item in diagnosis_playbooks],
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "case_prefetch_enabled": bool(case_recall.get("auto_prefetch_enabled")),
                     "case_prefetch_reason": str(case_recall.get("prefetch_reason") or ""),
@@ -309,6 +332,8 @@ class OrchestratorGraphNodes:
                     "matched_tool_domains": matched_categories,
                     "available_tool_names": [],
                     "similar_case_count": len(similar_cases),
+                    "playbook_count": len(diagnosis_playbooks),
+                    "playbook_ids": [item.playbook_id for item in diagnosis_playbooks],
                     "case_recall_sources": [item.recall_source for item in similar_cases],
                     "case_prefetch_enabled": bool(case_recall.get("auto_prefetch_enabled")),
                     "case_prefetch_reason": str(case_recall.get("prefetch_reason") or ""),
@@ -324,6 +349,7 @@ class OrchestratorGraphNodes:
                     "matched_tool_domains": matched_categories,
                     "available_tool_count": len(available_tools),
                     "similar_case_count": len(similar_cases),
+                    "playbook_count": len(diagnosis_playbooks),
                     "retrieval_subquery_count": len(snapshot.retrieval_expansion.subqueries),
                 }
             )
@@ -500,6 +526,60 @@ class OrchestratorGraphNodes:
             return RAGContextBundle.model_validate(rag_context)
         return RAGContextBundle()
 
+
+    async def _load_diagnosis_playbooks(
+        self,
+        *,
+        service: str,
+        cluster: str,
+        namespace: str,
+        environment: str,
+        message: str,
+    ) -> dict[str, Any]:
+        if self.playbook_retriever is None:
+            return {
+                "diagnosis_playbooks": [],
+                "playbook_recall": {
+                    "enabled": False,
+                    "status": "skipped",
+                    "reason": "missing_playbook_retriever",
+                    "hit_count": 0,
+                },
+            }
+        try:
+            playbooks = await self.playbook_retriever.recall(
+                service=service,
+                cluster=cluster,
+                namespace=namespace,
+                environment=environment,
+                message=message,
+                limit=2,
+            )
+            recall_metadata = dict(getattr(self.playbook_retriever, "last_recall_metadata", {}) or {})
+        except Exception as exc:
+            playbooks = []
+            recall_metadata = {
+                "status": "error",
+                "reason": "playbook_recall_failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "hit_count": 0,
+            }
+        return {
+            "diagnosis_playbooks": playbooks,
+            "playbook_recall": {
+                "enabled": True,
+                "status": str(recall_metadata.get("status") or "completed"),
+                "reason": str(recall_metadata.get("reason") or ""),
+                "hit_count": len(playbooks),
+                "playbook_ids": [item.playbook_id for item in playbooks],
+                "failure_mode": str(recall_metadata.get("failure_mode") or ""),
+                "service_type": str(recall_metadata.get("service_type") or ""),
+                "error_type": str(recall_metadata.get("error_type") or ""),
+                "error": str(recall_metadata.get("error") or ""),
+            },
+        }
+
     async def _load_similar_cases(
         self,
         *,
@@ -508,6 +588,7 @@ class OrchestratorGraphNodes:
         namespace: str,
         message: str,
         session_id: str,
+        diagnosis_playbooks: list[Any] | None = None,
     ) -> dict[str, Any]:
         if not service or self.case_retriever is None:
             return {
@@ -525,8 +606,10 @@ class OrchestratorGraphNodes:
             service=service,
             cluster=cluster,
             namespace=namespace,
+            diagnosis_playbooks=list(diagnosis_playbooks or []),
         )
         if not should_prefetch:
+            playbook_ids = [str(getattr(item, "playbook_id", "") or "") for item in list(diagnosis_playbooks or [])]
             return {
                 "similar_cases": [],
                 "case_recall": {
@@ -535,6 +618,8 @@ class OrchestratorGraphNodes:
                     "prefetch_status": "skipped",
                     "prefetched_case_count": 0,
                     "case_memory_reason": prefetch_reason,
+                    "deferred_by_playbook": prefetch_reason == "deferred_by_playbook",
+                    "deferred_by_playbook_ids": [item for item in playbook_ids if item],
                 },
             }
         try:
@@ -575,12 +660,18 @@ class OrchestratorGraphNodes:
         service: str,
         cluster: str,
         namespace: str,
+        diagnosis_playbooks: list[Any] | None = None,
     ) -> tuple[bool, str]:
         if not str(service or "").strip():
             return False, "missing_service"
         normalized_message = str(message or "").strip()
         if not normalized_message:
             return False, "empty_message"
+        has_playbook = bool(diagnosis_playbooks)
+        if has_playbook and not OrchestratorGraphNodes._has_strong_initial_case_trigger(normalized_message):
+            return False, "deferred_by_playbook"
+        if has_playbook:
+            return True, "explicit_history_case_request"
         inferred_failure_mode = infer_failure_mode(normalized_message)
         if inferred_failure_mode:
             return True, f"failure_mode:{inferred_failure_mode}"
@@ -632,6 +723,28 @@ class OrchestratorGraphNodes:
             return False, "query_too_generic"
         return False, "insufficient_symptom_precision"
 
+
+    @staticmethod
+    def _has_strong_initial_case_trigger(message: str) -> bool:
+        normalized = str(message or "").lower()
+        strong_keywords = (
+            "历史案例",
+            "历史工单",
+            "类似案例",
+            "相似案例",
+            "之前有没有",
+            "上次",
+            "再次出现",
+            "又出现",
+            "复发",
+            "复现",
+            "reopen",
+            "same incident",
+            "similar case",
+            "known issue",
+        )
+        return any(keyword in normalized for keyword in strong_keywords)
+
     async def _expand_context_retrieval(
         self,
         *,
@@ -640,6 +753,7 @@ class OrchestratorGraphNodes:
         similar_cases: list[SimilarIncidentCase],
         matched_categories: list[str],
         session_id: str,
+        defer_case_lookup: bool = False,
     ) -> dict[str, Any]:
         from ..state.models import RetrievalExpansion
 
@@ -684,7 +798,11 @@ class OrchestratorGraphNodes:
                 merged_rag, delta = self._merge_rag_bundles(merged_rag, extra_bundle)
                 added_rag_hits += delta
                 subquery_added_rag_hits += delta
-            if subquery.target in {"cases", "both"} and self.case_retriever is not None:
+            if defer_case_lookup and subquery.target in {"cases", "both"}:
+                missing = f"case memory search deferred by verified playbook for query: {subquery.query}"
+                if missing not in expansion.missing_evidence:
+                    expansion.missing_evidence.append(missing)
+            elif subquery.target in {"cases", "both"} and self.case_retriever is not None:
                 try:
                     extra_cases = await self.case_retriever.recall(
                         service=service,

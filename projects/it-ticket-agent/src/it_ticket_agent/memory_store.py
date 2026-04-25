@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from .memory import IncidentCase, ProcessMemoryEntry, ProcessMemoryStoreV2
+from .memory import DiagnosisPlaybook, IncidentCase, ProcessMemoryEntry, ProcessMemoryStoreV2
 from .session.models import utc_now
 
 
@@ -108,3 +108,86 @@ class IncidentCaseStore:
                 limit=limit,
             )
         ]
+
+
+class DiagnosisPlaybookStore:
+    def __init__(self, db_path: str, *, backend: ProcessMemoryStoreV2 | None = None) -> None:
+        self.db_path = db_path
+        self.v2_store = backend or ProcessMemoryStoreV2(db_path)
+
+    def upsert(self, playbook: DiagnosisPlaybook | dict[str, Any]) -> dict[str, Any]:
+        record = playbook if isinstance(playbook, DiagnosisPlaybook) else DiagnosisPlaybook.model_validate(playbook)
+        saved = self.v2_store.upsert_playbook(record)
+        return saved.model_dump()
+
+    def get(self, playbook_id: str) -> Optional[dict[str, Any]]:
+        record = self.v2_store.get_playbook(playbook_id)
+        return None if record is None else record.model_dump()
+
+    def list_playbooks(
+        self,
+        *,
+        status: str | None = None,
+        human_verified: bool | None = None,
+        service_type: str | None = None,
+        failure_mode: str | None = None,
+        environment: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        return [
+            record.model_dump()
+            for record in self.v2_store.list_playbooks(
+                status=status,
+                human_verified=human_verified,
+                service_type=service_type,
+                failure_mode=failure_mode,
+                environment=environment,
+                keyword=keyword,
+                limit=limit,
+            )
+        ]
+
+    def recall_playbooks(
+        self,
+        *,
+        service_type: str | None = None,
+        failure_mode: str | None = None,
+        environment: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        return [
+            record.model_dump()
+            for record in self.v2_store.recall_playbooks(
+                service_type=service_type,
+                failure_mode=failure_mode,
+                environment=environment,
+                keyword=keyword,
+                limit=limit,
+            )
+        ]
+
+    def review(
+        self,
+        playbook_id: str,
+        *,
+        human_verified: bool,
+        reviewed_by: str | None = None,
+        review_note: str | None = None,
+        status: str | None = None,
+    ) -> Optional[dict[str, Any]]:
+        record = self.v2_store.get_playbook(playbook_id)
+        if record is None:
+            return None
+        updated = record.model_copy(
+            update={
+                "human_verified": human_verified,
+                "status": status or ("verified" if human_verified else "rejected"),
+                "reviewed_by": str(reviewed_by or record.reviewed_by or ""),
+                "reviewed_at": utc_now(),
+                "review_note": str(review_note or record.review_note or ""),
+            }
+        )
+        saved = self.v2_store.upsert_playbook(updated)
+        return saved.model_dump()

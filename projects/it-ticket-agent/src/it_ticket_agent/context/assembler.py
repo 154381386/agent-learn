@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from ..memory.working_memory import normalize_working_memory
 from .models import (
     EvidenceBundle,
     ExecutionBudget,
@@ -50,21 +51,48 @@ class ContextAssembler:
             open_questions=list(snapshot.get("open_questions") or []),
         )
         session_memory = dict(session.get("session_memory") or {})
+        working_memory_payload = session_memory.get("working_memory")
+        working_memory = normalize_working_memory(
+            working_memory_payload if isinstance(working_memory_payload, dict) else None
+        )
         process_summary = dict(process_memory_summary or {})
         case_summary = list(incident_case_summary or [])
         fallback_summary = {
             "clarification_answers": dict(snapshot.get("metadata", {}).get("clarification_answers") or {}),
         }
-        memory_summary = dict(fallback_summary)
-        if session_memory:
-            memory_summary["session_memory"] = session_memory
+        compact_incident_state = {
+            "status": snapshot.get("status"),
+            "service": snapshot.get("service"),
+            "environment": snapshot.get("environment"),
+            "host_identifier": snapshot.get("host_identifier"),
+            "db_name": snapshot.get("db_name"),
+            "db_type": snapshot.get("db_type"),
+            "cluster": snapshot.get("cluster"),
+            "namespace": snapshot.get("namespace"),
+            "routing": dict(snapshot.get("routing") or {}),
+            "open_questions": list(snapshot.get("open_questions") or []),
+        }
+        memory_summary: dict[str, Any] = {
+            "working_memory": working_memory,
+            "current_incident_state": compact_incident_state,
+        }
+        session_memory_payload = {key: value for key, value in session_memory.items() if key != "working_memory"}
+        if session_memory_payload:
+            memory_summary["session_memory"] = session_memory_payload
+        elif fallback_summary["clarification_answers"]:
+            memory_summary.update(fallback_summary)
         if process_summary:
             memory_summary["agent_events"] = process_summary
             memory_summary["process_memory"] = process_summary
+        context_snapshot_payload = dict(snapshot.get("context_snapshot") or snapshot.get("metadata", {}).get("context_snapshot") or {})
+        diagnosis_playbooks = list(context_snapshot_payload.get("diagnosis_playbooks") or [])
+        playbook_recall = dict(context_snapshot_payload.get("playbook_recall") or {})
+        if diagnosis_playbooks:
+            memory_summary["diagnosis_playbooks"] = diagnosis_playbooks[:2]
+        if playbook_recall:
+            memory_summary["playbook_recall"] = playbook_recall
         if case_summary:
             memory_summary["incident_cases"] = case_summary
-        if not session_memory and not process_summary:
-            memory_summary.update(fallback_summary)
         return ExecutionContext(
             request_context=RequestContext(
                 ticket_id=str(request.ticket_id),
