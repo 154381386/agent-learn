@@ -117,7 +117,9 @@
         "first_any_tools": [
           "check_recent_deployments",
           "check_pipeline_status",
-          "get_change_records"
+          "get_deployment_status",
+          "get_change_records",
+          "check_canary_status"
         ],
         "first_any_tools_min_matches": 2,
         "first_any_tools_window": 2,
@@ -375,7 +377,9 @@
         "first_any_tools": [
           "check_recent_deployments",
           "check_pipeline_status",
-          "get_change_records"
+          "get_deployment_status",
+          "get_change_records",
+          "check_canary_status"
         ],
         "first_any_tools_min_matches": 2,
         "first_any_tools_window": 2,
@@ -500,7 +504,9 @@
         "first_any_tools": [
           "check_recent_deployments",
           "check_pipeline_status",
-          "get_change_records"
+          "get_deployment_status",
+          "get_change_records",
+          "check_canary_status"
         ],
         "first_any_tools_min_matches": 2,
         "first_any_tools_window": 2,

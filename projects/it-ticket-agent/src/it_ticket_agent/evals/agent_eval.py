@@ -34,7 +34,6 @@ class ToolProfileRef(BaseModel):
 class AgentEvalSetup(BaseModel):
     tool_profile: ToolProfileRef | None = None
     mock_tool_responses: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    world_state: dict[str, Any] = Field(default_factory=dict)
     mock_rag_context: dict[str, Any] = Field(default_factory=dict)
     mock_rag_context_by_query: dict[str, dict[str, Any]] = Field(default_factory=dict)
     mock_similar_cases: list[dict[str, Any]] = Field(default_factory=list)
@@ -876,15 +875,8 @@ class AgentEvalRunner:
             **dict(request.mock_tool_responses or {}),
             **dict(case.setup.mock_tool_responses or {}),
         }
-        merged_world_state = _deep_merge_dicts(
-            dict(request.mock_world_state or {}),
-            dict(case.setup.world_state or {}),
-        )
         return request.model_copy(
-            update={
-                "mock_tool_responses": merged_mock_tool_responses,
-                "mock_world_state": merged_world_state,
-            }
+            update={"mock_tool_responses": merged_mock_tool_responses}
         )
 
     def _build_orchestrator(self, db_path: str) -> SupervisorOrchestrator:

@@ -2859,3 +2859,51 @@ uv run python -m unittest discover -s tests -q
 
 **下一步**
 - 后续可以继续清理 `mock_world_state / world_simulator` 兼容路径，但需要先确认是否还有外部样本依赖。
+
+## 2026-04-26 Mock World State 兼容路径清理
+
+**问题**
+- `mock_world_state / world_simulator` 已经不再是官方 eval 和前端 Mock 世界的数据源，但代码里仍保留投影器、schema 字段和兼容测试。
+- 这会让 mock 体系继续存在两种表达：一套是完整 `mock_case_profiles.json`，另一套是按 signals 投影工具结果的旧 world state。
+
+**原因**
+- 早期 `world_state` 用于解决“多工具返回需要共享同一事故状态”的问题。
+- 后来 `mock_case_profiles.json` 已经覆盖完整工具空间，并成为前端沙盒、官方 eval 和真实 LLM mock-world 测试的统一来源。
+
+**改动**
+- 删除 `src/it_ticket_agent/testing/world_simulator.py`。
+- 从工具 mock resolver 中移除 `mock_world_state` fallback，当前顺序收敛为 `mock_tool_responses -> mock_case`。
+- 从请求 schema、runtime shared context、React supervisor、eval harness 和 bad-case skeleton 导出中移除 `mock_world_state / world_state` 字段。
+- 将相关测试迁移到 `tool_profile` 或 `mock_tool_responses`，继续验证 DB profile、inline override 和 mock world 主链路。
+- README 和最新架构文档更新为：`mock_case_profiles.json` 是唯一内置 mock world 主数据源。
+
+**影响**
+- Mock 体系只剩一条主线：前端/API 用 `mock_tool_responses`，环境变量/eval 用 `mock_case_profiles.json`。
+- 新增场景不再需要维护旧 signals 投影器，减少双写和结构漂移。
+- 旧请求里的 `mock_world_state` 会被 schema 忽略，不再驱动工具结果；需要复现场景时应转换为 case profile 或直接传 `mock_tool_responses`。
+
+**下一步**
+- 后续如果继续清理，可以评估 `mock_scenario / mock_scenarios` schema 兼容字段是否还有外部调用依赖。
+
+## 2026-04-26 首轮无证据直接结论保护
+
+**问题**
+- 真实 LLM mock-world eval 中，模型偶发在首轮没有 tool call 的情况下直接输出诊断结论。
+- 这会让 `react_tool_first` 退化成“看上下文直接猜”，即使 gate 可能通过，也无法证明工具选择和现场证据链真实生效。
+
+**原因**
+- 原先 supervisor 对“无 tool_calls”的模型响应直接进入 final response。
+- Prompt 里虽然要求不要编造观测结果，但无法完全约束模型在首轮直接回答。
+
+**改动**
+- `ReactSupervisor` 增加首轮 live evidence guardrail：当还没有任何 live observation 且模型没有返回有效 tool call 时，从候选工具中排除 RAG/历史召回工具，强制执行最多 3 个只读现场工具。
+- 补充回归测试，验证 fake LLM 首轮直接回答时，runtime 仍会先调用网络现场工具。
+- `world_cases.json` / `tool_mock_cases.json` 中 CICD 首批工具断言改为接受等价的发布状态、变更记录、流水线和 canary 工具组合，避免把合理工具选择误判为失败。
+
+**影响**
+- 诊断主链更符合 Tool-First 边界：没有现场证据时不能直接输出根因。
+- 真实 LLM 评估更稳定，减少模型一次性直答导致的假阴性或假阳性。
+- 历史案例、Playbook 和 RAG 仍可指导工具顺序，但不能替代 live tool observation。
+
+**下一步**
+- 后续可把“首轮最小探测工具数”和“排除哪些非现场工具”抽成配置，方便不同垂直 Agent 调整。

@@ -552,7 +552,7 @@ class FakeToolCallingLLM:
         return json.loads(content)
 
 
-class FakeWorldStateLLM:
+class FakeDbProfileLLM:
     def __init__(self) -> None:
         self.enabled = True
         self.calls = 0
@@ -567,14 +567,14 @@ class FakeWorldStateLLM:
                         "id": "call-db-pool",
                         "function": {
                             "name": "inspect_connection_pool",
-                            "arguments": json.dumps({"service": "payment-service"}, ensure_ascii=False),
+                            "arguments": json.dumps({"service": "order-service"}, ensure_ascii=False),
                         },
                     },
                     {
                         "id": "call-db-slow",
                         "function": {
                             "name": "inspect_slow_queries",
-                            "arguments": json.dumps({"service": "payment-service"}, ensure_ascii=False),
+                            "arguments": json.dumps({"service": "order-service"}, ensure_ascii=False),
                         },
                     },
                 ],
@@ -584,6 +584,28 @@ class FakeWorldStateLLM:
                 {
                     "final_answer": "当前更接近数据库连接池饱和。",
                     "confidence": 0.91,
+                },
+                ensure_ascii=False,
+            )
+        }
+
+    @staticmethod
+    def extract_json(content: str):
+        return json.loads(content)
+
+
+class FakeNoToolAnswerLLM:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.calls = 0
+
+    async def chat(self, messages, tools=None):
+        self.calls += 1
+        return {
+            "content": json.dumps(
+                {
+                    "final_answer": "我先直接判断为网络链路问题。",
+                    "confidence": 0.9,
                 },
                 ensure_ascii=False,
             )
@@ -780,33 +802,72 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("inspect_vpc_connectivity", report.results[0].observation.tool_names)
         self.assertIn("inspect_upstream_dependency", report.results[0].observation.tool_names)
 
-    async def test_runner_uses_world_state_with_fake_llm(self) -> None:
+    async def test_runner_forces_initial_probe_when_llm_answers_without_tools(self) -> None:
         dataset = AgentEvalDataset(
             cases=[
                 AgentEvalCase(
-                    case_id="world-db",
-                    description="fake llm world eval",
+                    case_id="forced-initial-probe",
+                    description="tool-first runtime should collect live evidence before accepting a direct model answer",
                     request=ConversationCreateRequest(
-                        user_id="eval-world-db",
-                        message="payment-service 数据库连接池看起来有问题",
-                        service="payment-service",
+                        user_id="eval-forced-probe",
+                        message="order-service 为什么一直 timeout，gateway 偶尔 502",
+                        service="order-service",
                         environment="prod",
                     ),
-                    setup={
-                        "world_state": {
-                            "service": "payment-service",
-                            "signals": {
-                                "db": {
-                                    "pool_state": "saturated",
-                                    "active_connections": 118,
-                                    "max_connections": 120,
-                                    "slow_query_count": 12,
-                                    "max_latency_ms": 4200,
-                                    "db_health": "degraded",
-                                }
-                            },
-                        }
+                    setup={"tool_profile": {"case_id": "case2", "service": "order-service"}},
+                    expect={
+                        "status": "completed",
+                        "route": "react_tool_first",
+                        "required_any_tools": [
+                            "inspect_ingress_route",
+                            "inspect_vpc_connectivity",
+                            "inspect_upstream_dependency",
+                        ],
+                        "required_any_tools_min_matches": 2,
+                        "min_tool_calls_used": 2,
+                        "max_tool_calls_used": 3,
                     },
+                )
+            ]
+        )
+        runner = AgentEvalRunner(
+            Settings(
+                llm_base_url="",
+                llm_api_key="",
+                llm_model="",
+                rag_enabled=False,
+            ),
+            profiles_path=MOCK_PROFILES_PATH,
+            require_llm_enabled=True,
+            configure_orchestrator=lambda orchestrator: setattr(
+                orchestrator.react_supervisor,
+                "llm",
+                FakeNoToolAnswerLLM(),
+            ),
+        )
+
+        report = await runner.run_dataset(dataset)
+
+        self.assertEqual(report.total_cases, 1)
+        self.assertEqual(report.passed_cases, 1)
+        self.assertEqual(report.failed_cases, 0)
+        self.assertEqual(report.errored_cases, 0)
+        self.assertTrue(report.results[0].observation is not None)
+        self.assertGreaterEqual(report.results[0].observation.tool_calls_used, 2)
+
+    async def test_runner_uses_db_case_profile_with_fake_llm(self) -> None:
+        dataset = AgentEvalDataset(
+            cases=[
+                AgentEvalCase(
+                    case_id="profile-db",
+                    description="fake llm case-profile eval",
+                    request=ConversationCreateRequest(
+                        user_id="eval-profile-db",
+                        message="order-service 数据库连接池看起来有问题",
+                        service="order-service",
+                        environment="prod",
+                    ),
+                    setup={"tool_profile": {"case_id": "case4_db_pool_saturation", "service": "order-service"}},
                     expect={
                         "status": "completed",
                         "route": "react_tool_first",
@@ -814,7 +875,7 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
                             "inspect_connection_pool",
                             "inspect_slow_queries",
                         ],
-                        "evidence_contains": ["pool_state=saturated", "slow_query_count=12"],
+                        "evidence_contains": ["数据库连接池状态为 saturated", "慢查询数量为 24"],
                         "min_tool_calls_used": 2,
                         "max_tool_calls_used": 2,
                     },
@@ -833,7 +894,7 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
             configure_orchestrator=lambda orchestrator: setattr(
                 orchestrator.react_supervisor,
                 "llm",
-                FakeWorldStateLLM(),
+                FakeDbProfileLLM(),
             ),
         )
 
@@ -2000,7 +2061,7 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.total_steps, 3)
         self.assertEqual(report.passed_steps, 3)
 
-    async def test_inline_mock_response_overrides_world_state(self) -> None:
+    async def test_inline_mock_response_overrides_case_profile(self) -> None:
         tool = InspectConnectionPoolTool()
         result = await tool.run(
             TaskEnvelope(
@@ -2008,22 +2069,13 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 ticket_id="ticket-1",
                 goal="test",
                 shared_context={
-                    "service": "payment-service",
-                    "mock_world_state": {
-                        "service": "payment-service",
-                        "signals": {
-                            "db": {
-                                "pool_state": "saturated",
-                                "active_connections": 118,
-                                "max_connections": 120,
-                            }
-                        },
-                    },
+                    "service": "order-service",
+                    "mock_case": "case4_db_pool_saturation",
                     "mock_tool_responses": {
                         "inspect_connection_pool": {
                             "summary": "forced override",
                             "payload": {
-                                "service": "payment-service",
+                                "service": "order-service",
                                 "pool_state": "healthy",
                                 "active_connections": 12,
                                 "max_connections": 120,
@@ -2047,19 +2099,17 @@ class SessionFlowDatasetLoadTest(unittest.TestCase):
         self.assertEqual(len(dataset.cases), 15)
         self.assertTrue(all(case.setup.tool_profile is not None for case in dataset.cases))
         self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
-        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
         self.assertIn(
             "case8_canary_release_regression",
             {case.setup.tool_profile.case_id for case in dataset.cases if case.setup.tool_profile},
         )
 
-    def test_world_eval_dataset_uses_mock_case_profiles_not_world_state(self) -> None:
+    def test_world_eval_dataset_uses_mock_case_profiles(self) -> None:
         dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "world_cases.json")
 
         self.assertEqual(len(dataset.cases), 7)
         self.assertTrue(all(case.setup.tool_profile is not None for case in dataset.cases))
         self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
-        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
         self.assertIn(
             "case6_cpu_thread_saturation",
             {case.setup.tool_profile.case_id for case in dataset.cases if case.setup.tool_profile},
@@ -2072,7 +2122,6 @@ class SessionFlowDatasetLoadTest(unittest.TestCase):
         self.assertTrue(diagnostic_cases)
         self.assertTrue(all(case.setup.tool_profile is not None for case in diagnostic_cases))
         self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
-        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
 
     def test_live_session_flow_eval_uses_world_profiles_without_inline_overrides(self) -> None:
         dataset = load_session_flow_eval_dataset(PROJECT_ROOT / "data" / "evals" / "session_flow_live_cases.json")
@@ -2080,7 +2129,6 @@ class SessionFlowDatasetLoadTest(unittest.TestCase):
         self.assertEqual(len(dataset.cases), 4)
         self.assertTrue(all(case.setup.tool_profile is not None for case in dataset.cases))
         self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
-        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
 
     def test_load_rag_eval_dataset_from_file(self) -> None:
         dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "rag_cases.json")

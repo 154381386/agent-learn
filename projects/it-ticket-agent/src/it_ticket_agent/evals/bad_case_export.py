@@ -215,8 +215,6 @@ def _build_mock_boundary_suggestions(
     notes = [
         f"优先围绕 {', '.join(focus_tools[:3]) or '关键工具'} 固定 mock，先保证主搜索路径可复现。",
     ]
-    if request_payload.get("mock_world_state"):
-        notes.append("当前线上样本已经带 world_state，若工具间信号需要保持一致，可优先导成 world_state 驱动样本。")
     if target_dataset == "rag":
         notes.append("补齐初始 RAG 命中、query rewrite 子查询，以及每个子查询的新增命中边界。")
     if case_memory_attribution:
@@ -233,7 +231,7 @@ def _build_mock_boundary_suggestions(
             if target_dataset == "session_flow"
             else "mock_tool_responses"
         ),
-        "secondary_boundary": "mock_world_state" if request_payload.get("mock_world_state") else "tool_profile / case profile",
+        "secondary_boundary": "tool_profile / case profile",
         "focus_tools": focus_tools[:5],
         "retrieval_queries": retrieval_queries[:5],
         "case_memory": case_memory_attribution,

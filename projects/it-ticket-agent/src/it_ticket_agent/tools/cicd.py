@@ -10,7 +10,7 @@ from ..rag_client import RAGServiceClient
 from ..runtime.contracts import TaskEnvelope
 from ..case_retrieval import infer_failure_mode, infer_root_cause_taxonomy
 from ..service_names import canonical_service_name, infer_service_name
-from .mock_helpers import mock_tool_result, resolve_world_state_mock
+from .mock_helpers import mock_tool_result
 from .contracts import ReadOnlyTool, ToolExecutionResult
 
 
@@ -117,9 +117,6 @@ def _resolve_mock_result(task: TaskEnvelope, tool_name: str, arguments: dict | N
         payload = shared.get(tool_name) if isinstance(shared, dict) else None
 
     if not isinstance(payload, dict):
-        world_state_mock = resolve_world_state_mock(task, tool_name, arguments)
-        if world_state_mock is not None:
-            return world_state_mock
         return _resolve_case_mock(task, tool_name, arguments)
 
     return mock_tool_result(tool_name, payload)

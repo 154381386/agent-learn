@@ -276,6 +276,47 @@ class ReactSupervisor:
             next_state.setdefault("transition_notes", []).append(f"react iteration {iteration} completed")
 
             if not isinstance(tool_calls, list) or not tool_calls:
+                forced_tool_names, forced_results = await self._run_initial_evidence_probe_if_needed(
+                    request=request,
+                    candidate_tool_names=candidate_tool_names,
+                    observations=observations,
+                    tool_cache=tool_cache,
+                    context_snapshot=next_state.get("context_snapshot") or incident_state.context_snapshot,
+                    incident_state=incident_state,
+                    activity_context=activity_context,
+                )
+                if forced_results:
+                    tool_calls_used, observations, pinned_findings, working_memory_summary, evidence_evaluation = self._apply_observation_results(
+                        next_state=next_state,
+                        incident_state=incident_state,
+                        observations=observations,
+                        results=forced_results,
+                        tool_cache=tool_cache,
+                        tool_calls_used=tool_calls_used,
+                    )
+                    next_state.setdefault("transition_notes", []).append(
+                        f"react supervisor forced initial evidence probe: {','.join(forced_tool_names)}"
+                    )
+                    if self._should_stop_after_observations(
+                        observations=observations,
+                        evidence_evaluation=evidence_evaluation,
+                        candidate_tool_names=candidate_tool_names,
+                    ):
+                        next_state.setdefault("transition_notes", []).append("react supervisor stopped after forced initial probe")
+                        next_state["stop_reason"] = "forced_initial_probe_sufficient"
+                        return self._build_final_response(
+                            next_state=next_state,
+                            request=request,
+                            context_snapshot=context_snapshot,
+                            observations=observations,
+                            content=self._build_early_stop_answer(observations),
+                            incident_state=incident_state,
+                        )
+                    if tool_calls_used >= self.max_tool_calls:
+                        next_state.setdefault("transition_notes", []).append("tool budget reached during forced initial probe")
+                        next_state["stop_reason"] = "tool_budget_reached"
+                        break
+                    continue
                 return self._build_final_response(
                     next_state=next_state,
                     request=request,
@@ -306,6 +347,32 @@ class ReactSupervisor:
                     f"react supervisor rejected non-candidate tools: {','.join(rejected_calls)}"
                 )
             if not valid_calls:
+                forced_tool_names, forced_results = await self._run_initial_evidence_probe_if_needed(
+                    request=request,
+                    candidate_tool_names=candidate_tool_names,
+                    observations=observations,
+                    tool_cache=tool_cache,
+                    context_snapshot=next_state.get("context_snapshot") or incident_state.context_snapshot,
+                    incident_state=incident_state,
+                    activity_context=activity_context,
+                )
+                if forced_results:
+                    tool_calls_used, observations, pinned_findings, working_memory_summary, evidence_evaluation = self._apply_observation_results(
+                        next_state=next_state,
+                        incident_state=incident_state,
+                        observations=observations,
+                        results=forced_results,
+                        tool_cache=tool_cache,
+                        tool_calls_used=tool_calls_used,
+                    )
+                    next_state.setdefault("transition_notes", []).append(
+                        f"react supervisor forced initial evidence probe after invalid calls: {','.join(forced_tool_names)}"
+                    )
+                    if tool_calls_used >= self.max_tool_calls:
+                        next_state.setdefault("transition_notes", []).append("tool budget reached during forced initial probe")
+                        next_state["stop_reason"] = "tool_budget_reached"
+                        break
+                    continue
                 return self._build_final_response(
                     next_state=next_state,
                     request=request,
@@ -1413,6 +1480,53 @@ class ReactSupervisor:
         }
         return merged
 
+    async def _run_initial_evidence_probe_if_needed(
+        self,
+        *,
+        request,
+        candidate_tool_names: list[str],
+        observations: list[dict[str, Any]],
+        tool_cache: dict[str, Any],
+        context_snapshot,
+        incident_state,
+        activity_context: dict[str, Any],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        if self._live_observation_count(observations) > 0:
+            return [], []
+        probe_tool_names = self._initial_evidence_probe_tool_names(candidate_tool_names)
+        if not probe_tool_names:
+            return [], []
+        results = await asyncio.gather(
+            *[
+                self._run_named_tool(
+                    request=request,
+                    tool_name=tool_name,
+                    arguments={"service": request.service} if request.service else {},
+                    tool_cache=tool_cache,
+                    extra_shared_context=self._build_tool_shared_context(
+                        context_snapshot=context_snapshot,
+                        incident_state=incident_state,
+                    ),
+                    activity_context=activity_context,
+                )
+                for tool_name in probe_tool_names
+            ]
+        )
+        return probe_tool_names, list(results)
+
+    def _initial_evidence_probe_tool_names(self, candidate_tool_names: list[str]) -> list[str]:
+        excluded_tools = {"search_knowledge_base", "search_similar_incidents"}
+        probe_limit = max(1, min(self.max_parallel_branches, 3))
+        probe_tool_names: list[str] = []
+        for tool_name in candidate_tool_names:
+            if tool_name in excluded_tools or tool_name not in self.tools:
+                continue
+            if tool_name not in probe_tool_names:
+                probe_tool_names.append(tool_name)
+            if len(probe_tool_names) >= probe_limit:
+                break
+        return probe_tool_names
+
     def _should_run_expansion_probe(
         self,
         *,
@@ -1759,6 +1873,22 @@ class ReactSupervisor:
             return True
         if payload.get("oom_detected") is True:
             return True
+        desired_replicas = payload.get("desired_replicas")
+        ready_replicas = payload.get("ready_replicas")
+        if desired_replicas is not None and ready_replicas is not None and int(ready_replicas or 0) < int(desired_replicas or 0):
+            return True
+        for pod in list(payload.get("pods") or []):
+            if not isinstance(pod, dict):
+                continue
+            pod_status = str(pod.get("status") or "").lower()
+            last_reason = str(pod.get("last_reason") or "").lower()
+            if pod_status not in {"", "running", "succeeded"} or last_reason not in {"", "none"}:
+                return True
+        heap_usage = float(payload.get("heap_usage_ratio") or dict(payload.get("heap") or {}).get("usage_ratio") or 0.0)
+        if heap_usage >= 0.85:
+            return True
+        if str(payload.get("gc_pressure") or "").lower() in {"high", "critical", "degraded"}:
+            return True
         if payload.get("has_recent_deploy") is True:
             return True
         if int(payload.get("change_count") or 0) > 0:
@@ -1882,7 +2012,6 @@ class ReactSupervisor:
                 "mock_scenario": str(request.mock_scenario or ""),
                 "mock_scenarios": dict(request.mock_scenarios or {}),
                 "mock_tool_responses": dict(request.mock_tool_responses or {}),
-                "mock_world_state": dict(request.mock_world_state or {}),
                 **dict(extra_shared_context or {}),
             },
             allowed_actions=["run_tool"],

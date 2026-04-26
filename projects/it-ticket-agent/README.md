@@ -17,6 +17,7 @@
 - 调用 RAG 服务做知识检索与历史案例召回
 - 分流到 `direct_answer` 或 `react_tool_first`
 - 在 `supervisor_loop` 中直接基于 tool schema 做 ReAct 推理
+- 当 LLM 首轮直接给结论但还没有任何 live tool 证据时，强制执行一组最小只读现场探测，再允许输出诊断
 - 在无 LLM 时使用 rule-based fallback 保证最小诊断链路可运行
 - 处理 HITL 审批与执行动作
 - 汇总最终回复
@@ -147,15 +148,13 @@ P1 后 `working_memory` 不再只有结构化槽位，还包含 `narrative_summa
 当前仓库里已经有 `31` 个默认注册 Tool，足够覆盖 CICD、K8s、日志、监控、网络、数据库、SDE、以及知识/历史案例检索的常见排障面。
 
 - `mock_tool_responses`: 对具体 tool 覆盖结构化返回；前端 `/api/v1/mock-worlds` 也是把 `mock_case_profiles.json` 展开成这个字段
-- `mock_world_state`: 旧共享事故世界投影，保留给兼容测试，不再作为官方 eval 主数据源
 - `mock_case`: 通过 `IT_TICKET_AGENT_CASE / IT_TICKET_AGENT_CASES` 选择 `mock_case_profiles.json` 中的完整世界
 - `mock_scenario / mock_scenarios`: 仅保留请求 schema 兼容，不再有内置分域 profile 数据源；新样本不要继续使用
 
 当前 mock 优先级为：
 
 1. `mock_response` / `mock_tool_responses`
-2. `mock_world_state`
-3. `mock_case`
+2. `mock_case`
 
 示例：让服务端默认进入 `case1` OOM 世界
 
@@ -528,7 +527,7 @@ make eval-regression
   更强调单域收敛、跨域扩展、强证据早停等搜索策略回归
 - world dataset:
   更强调完整 mock world 下的事故结构覆盖；工具返回不再散落在 eval case 内，而是全部来自 `mock_case_profiles.json`
-- legacy `mock_world_state` 投影器仍保留给底层兼容测试，但不再作为官方诊断 eval 的主数据来源
+- 旧 `mock_world_state / world_simulator` 投影器已下线，避免形成第二套 mock 维护口径
 
 `run_agent_eval.py` 会自动识别 dataset 类型：
 

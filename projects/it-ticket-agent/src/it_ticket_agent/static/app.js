@@ -1990,7 +1990,6 @@ function buildBadCaseEvalSkeleton(candidate) {
     severity: candidate.severity,
     setup: {
       request_payload: candidate.request_payload || {},
-      mock_world_state: candidate.request_payload?.mock_world_state || {},
     },
     expected: {
       should_not_repeat_reason_codes: candidate.reason_codes || [],
