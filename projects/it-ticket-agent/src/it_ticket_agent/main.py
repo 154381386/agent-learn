@@ -68,7 +68,7 @@ def _normalize_mock_tool_response(value: dict) -> dict:
 
 def _describe_mock_world(case_id: str, service: str, tool_payloads: dict[str, dict]) -> str:
     domain_tools = {
-        "发布/变更": {"check_recent_deployments", "check_pipeline_status", "get_deployment_status", "get_change_records", "get_rollback_history"},
+        "发布/变更": {"check_recent_deployments", "check_pipeline_status", "check_canary_status", "get_deployment_status", "get_change_records", "get_rollback_history"},
         "K8s": {"check_pod_status", "inspect_pod_logs", "inspect_pod_events", "inspect_jvm_memory", "inspect_cpu_saturation", "inspect_thread_pool_status"},
         "网络": {"inspect_dns_resolution", "inspect_ingress_route", "inspect_vpc_connectivity", "inspect_load_balancer_status", "inspect_upstream_dependency", "inspect_egress_policy"},
         "数据库": {"inspect_db_instance_health", "inspect_connection_pool", "inspect_slow_queries", "inspect_replication_status", "inspect_deadlock_signals"},
@@ -93,6 +93,8 @@ def _load_mock_worlds() -> list[MockWorldResponse]:
         services = case_payload.get("services")
         if not isinstance(services, dict):
             continue
+        title = str(case_payload.get("title") or "").strip()
+        case_description = str(case_payload.get("description") or "").strip()
         for service, tool_payloads in sorted(services.items()):
             if not isinstance(tool_payloads, dict):
                 continue
@@ -103,8 +105,8 @@ def _load_mock_worlds() -> list[MockWorldResponse]:
                     world_id=world_id,
                     case_id=str(case_id),
                     service=str(service),
-                    label=f"{case_id} / {service}",
-                    description=_describe_mock_world(str(case_id), str(service), normalized_tools),
+                    label=f"{title} / {service}" if title else f"{case_id} / {service}",
+                    description=case_description or _describe_mock_world(str(case_id), str(service), normalized_tools),
                     tool_count=len(normalized_tools),
                     tool_names=sorted(normalized_tools.keys()),
                     mock_tool_responses=normalized_tools,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import unittest
@@ -25,6 +26,12 @@ from it_ticket_agent.session.models import ConversationSession
 from it_ticket_agent.system_event_store import SystemEventStore
 from it_ticket_agent.state.incident_state import IncidentState
 from it_ticket_agent.state.models import Hypothesis, RAGContextBundle, RetrievalExpansion, RetrievalSubquery, SimilarIncidentCase, VerificationStep
+
+
+def _mock_world_tool_responses(case_id: str, service: str = "order-service") -> dict:
+    profiles_path = Path(__file__).resolve().parents[1] / "data" / "mock_case_profiles.json"
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    return profiles[case_id]["services"][service]
 
 
 class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
@@ -211,7 +218,6 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
                 service="order-service",
                 cluster="prod-shanghai-1",
                 namespace="default",
-                mock_scenario="oom",
             )
         )
 
@@ -318,7 +324,7 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
     async def test_tool_activity_events_record_frontend_progress_signal(self) -> None:
         self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
             return_value=RAGContextBundle(
-                query="checkout-service Pod 频繁重启",
+                query="order-service Pod 频繁重启",
                 query_type="search",
                 should_respond_directly=False,
                 citations=[],
@@ -328,12 +334,12 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u-tool-progress",
-                message="checkout-service 生产环境 Pod 频繁重启，集群 prod-shanghai-1，命名空间 default",
-                service="checkout-service",
+                message="order-service 生产环境 Pod 频繁重启，集群 prod-shanghai-1，命名空间 default",
+                service="order-service",
                 environment="prod",
                 cluster="prod-shanghai-1",
                 namespace="default",
-                mock_scenario="oom",
+                mock_tool_responses=_mock_world_tool_responses("case1"),
             )
         )
 

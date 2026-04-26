@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "RAG-oriented eval cases. These cases keep the main orchestration path real, mock retrieval outputs at the knowledge boundary, and verify direct_answer routing, diagnosis fallback, and the priority of live evidence over retrieved knowledge.",
+  "description": "RAG-oriented eval cases. Retrieval outputs are mocked at the RAG boundary, while all non-RAG tool evidence comes from full mock world profiles.",
   "gate": {
     "min_pass_rate": 1.0,
     "max_avg_tool_calls_used": 4.5,
@@ -130,7 +130,7 @@
         "required_any_tools_min_matches": 2,
         "evidence_contains": [
           "timeout_ratio=0.31",
-          "2 unhealthy backends"
+          "connectivity_status=blocked"
         ],
         "min_tool_calls_used": 2,
         "max_tool_calls_used": 4,
@@ -143,50 +143,13 @@
       "description": "诊断场景可以带背景知识进入上下文，但最终结论仍应由实时工具证据决定。",
       "request": {
         "user_id": "rag-db-background",
-        "message": "payment-service 数据库连接池打满了，接口很慢",
-        "service": "payment-service",
+        "message": "order-service 数据库连接池打满了，接口很慢",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
-        "mock_tool_responses": {
-          "inspect_connection_pool": {
-            "summary": "连接池已经接近打满。",
-            "payload": {
-              "service": "payment-service",
-              "pool_state": "saturated",
-              "active_connections": 118,
-              "max_connections": 120
-            },
-            "evidence": [
-              "pool_state=saturated",
-              "active_connections=118/120"
-            ]
-          },
-          "inspect_slow_queries": {
-            "summary": "最近 5 分钟慢查询明显升高。",
-            "payload": {
-              "service": "payment-service",
-              "slow_query_count": 24,
-              "max_latency_ms": 4300
-            },
-            "evidence": [
-              "slow_query_count=24",
-              "max_latency_ms=4300"
-            ]
-          },
-          "inspect_db_instance_health": {
-            "summary": "数据库实例健康退化。",
-            "payload": {
-              "service": "payment-service",
-              "db_health": "degraded"
-            },
-            "evidence": [
-              "db_health=degraded"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "payment-service 数据库连接池打满了，接口很慢",
+          "query": "order-service 数据库连接池打满了，接口很慢",
           "query_type": "search",
           "should_respond_directly": false,
           "hits": [
@@ -221,7 +184,7 @@
         "mock_retrieval_expansion": {
           "subqueries": [
             {
-              "query": "payment-service db pool saturation slow query runbook",
+              "query": "order-service db pool saturation slow query runbook",
               "target": "knowledge",
               "reason": "补充数据库退化的排查知识背景",
               "failure_mode": "db_pool_saturation",
@@ -230,8 +193,8 @@
           ]
         },
         "mock_rag_context_by_query": {
-          "payment-service db pool saturation slow query runbook": {
-            "query": "payment-service db pool saturation slow query runbook",
+          "order-service db pool saturation slow query runbook": {
+            "query": "order-service db pool saturation slow query runbook",
             "query_type": "search",
             "hits": [
               {
@@ -262,6 +225,10 @@
               "ready": true
             }
           }
+        },
+        "tool_profile": {
+          "case_id": "case4_db_pool_saturation",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -290,76 +257,13 @@
       "description": "即使知识命中把问题描述成数据库问题，若 live evidence 指向网络阻塞，最终仍应服从实时证据。",
       "request": {
         "user_id": "rag-conflict-live-evidence",
-        "message": "payment-service 查询很慢，看起来像数据库有问题",
-        "service": "payment-service",
+        "message": "order-service 查询很慢，看起来像数据库有问题",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
-        "mock_tool_responses": {
-          "inspect_slow_queries": {
-            "summary": "最近 5 分钟慢查询无明显异常。",
-            "payload": {
-              "service": "payment-service",
-              "slow_query_count": 0,
-              "max_latency_ms": 40
-            },
-            "evidence": []
-          },
-          "inspect_connection_pool": {
-            "summary": "连接池使用率正常。",
-            "payload": {
-              "service": "payment-service",
-              "pool_state": "healthy",
-              "active_connections": 18,
-              "max_connections": 120
-            },
-            "evidence": []
-          },
-          "inspect_db_instance_health": {
-            "summary": "数据库实例健康。",
-            "payload": {
-              "service": "payment-service",
-              "db_health": "healthy"
-            },
-            "evidence": []
-          },
-          "inspect_upstream_dependency": {
-            "summary": "上游依赖存在明显退化。",
-            "payload": {
-              "service": "payment-service",
-              "dependency_status": "degraded",
-              "timeout_ratio": 0.24
-            },
-            "evidence": [
-              "dependency_status=degraded",
-              "timeout_ratio=0.24"
-            ]
-          },
-          "inspect_vpc_connectivity": {
-            "summary": "VPC 链路存在阻塞。",
-            "payload": {
-              "service": "payment-service",
-              "connectivity_status": "blocked"
-            },
-            "evidence": [
-              "connectivity_status=blocked"
-            ]
-          },
-          "inspect_load_balancer_status": {
-            "summary": "负载均衡后端存在异常实例。",
-            "payload": {
-              "service": "payment-service",
-              "lb_status": "degraded",
-              "unhealthy_backend_count": 2
-            },
-            "evidence": [
-              "lb_status=degraded",
-              "2 unhealthy backends"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "payment-service 查询很慢，看起来像数据库有问题",
+          "query": "order-service 查询很慢，看起来像数据库有问题",
           "query_type": "search",
           "should_respond_directly": false,
           "hits": [
@@ -390,6 +294,10 @@
           "index_info": {
             "ready": true
           }
+        },
+        "tool_profile": {
+          "case_id": "case2",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -423,45 +331,14 @@
       "description": "当扩展检索改写到更聚焦的 query 时，应能新增知识命中与历史案例命中，而不是始终复用初始 recall 结果。",
       "request": {
         "user_id": "rag-case-recall-expansion",
-        "message": "checkout-service 发布后偶发 502",
-        "service": "checkout-service",
+        "message": "order-service 发布后偶发 502",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
         "llm_mode": "disabled",
-        "mock_tool_responses": {
-          "check_recent_deployments": {
-            "summary": "最近 15 分钟有发布。",
-            "payload": {
-              "service": "checkout-service",
-              "has_recent_deploy": true
-            },
-            "evidence": [
-              "has_recent_deploy=true"
-            ]
-          },
-          "check_pipeline_status": {
-            "summary": "流水线存在失败记录。",
-            "payload": {
-              "service": "checkout-service",
-              "pipeline_status": "failed"
-            },
-            "evidence": [
-              "pipeline_status=failed"
-            ]
-          },
-          "get_change_records": {
-            "summary": "最近变更集中在网关配置。",
-            "payload": {
-              "service": "checkout-service"
-            },
-            "evidence": [
-              "gateway_config_changed=true"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "checkout-service 发布后偶发 502",
+          "query": "order-service 发布后偶发 502",
           "query_type": "search",
           "should_respond_directly": false,
           "hits": [
@@ -496,7 +373,7 @@
         "mock_retrieval_expansion": {
           "subqueries": [
             {
-              "query": "checkout-service release regression 502 rollback",
+              "query": "order-service release regression 502 rollback",
               "target": "both",
               "reason": "补充发布回归知识和历史案例",
               "failure_mode": "deploy_regression",
@@ -505,8 +382,8 @@
           ]
         },
         "mock_rag_context_by_query": {
-          "checkout-service release regression 502 rollback": {
-            "query": "checkout-service release regression 502 rollback",
+          "order-service release regression 502 rollback": {
+            "query": "order-service release regression 502 rollback",
             "query_type": "search",
             "hits": [
               {
@@ -536,10 +413,10 @@
           }
         },
         "mock_similar_cases_by_query": {
-          "checkout-service release regression 502 rollback": [
+          "order-service release regression 502 rollback": [
             {
               "case_id": "case-release-502",
-              "service": "checkout-service",
+              "service": "order-service",
               "failure_mode": "deploy_regression",
               "root_cause_taxonomy": "release_regression",
               "summary": "历史上曾因发布后网关配置错误导致 502。",
@@ -549,6 +426,10 @@
               "recall_score": 0.92
             }
           ]
+        },
+        "tool_profile": {
+          "case_id": "case3",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -566,55 +447,47 @@
       "description": "当初始 RAG 稀疏且用户显式要求先看已知模式时，诊断链路应主动调用 search_knowledge_base，再结合 live signal 判断。",
       "request": {
         "user_id": "rag-knowledge-tool",
-        "message": "checkout-service 发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
-        "service": "checkout-service",
+        "message": "order-service 灰度发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
-        "mock_tool_responses": {
-          "search_knowledge_base": {
-            "summary": "已检索到发布回归知识。",
-            "payload": {
-              "hits": [
-                {
-                  "chunk_id": "rag-hit-8",
-                  "title": "发布回归处置手册",
-                  "section": "发布后 502",
-                  "path": "runbooks/release-502.md",
-                  "category": "runbook",
-                  "score": 0.91,
-                  "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。"
-                }
-              ],
-              "citations": [
-                "发布回归处置手册 / 发布后 502 / runbooks/release-502.md"
-              ]
-            },
-            "evidence": [
-              "知识库命中：发布回归处置手册 / 发布后 502"
-            ]
-          },
-          "check_recent_deployments": {
-            "summary": "最近 15 分钟存在发布。",
-            "payload": {
-              "service": "checkout-service",
-              "has_recent_deploy": true
-            },
-            "evidence": [
-              "has_recent_deploy=true"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "checkout-service 发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+          "query": "order-service 灰度发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
           "query_type": "search",
           "should_respond_directly": false,
-          "hits": [],
-          "context": [],
-          "citations": [],
+          "hits": [
+            {
+              "chunk_id": "rag-hit-8",
+              "title": "发布回归处置手册",
+              "section": "发布后 502",
+              "path": "runbooks/release-502.md",
+              "category": "runbook",
+              "score": 0.91,
+              "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。"
+            }
+          ],
+          "context": [
+            {
+              "chunk_id": "rag-hit-8",
+              "title": "发布回归处置手册",
+              "section": "发布后 502",
+              "path": "runbooks/release-502.md",
+              "category": "runbook",
+              "score": 0.91,
+              "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。"
+            }
+          ],
+          "citations": [
+            "发布回归处置手册 / 发布后 502 / runbooks/release-502.md"
+          ],
           "index_info": {
             "ready": true
           }
+        },
+        "tool_profile": {
+          "case_id": "case8_canary_release_regression",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -631,7 +504,7 @@
         ],
         "evidence_contains": [
           "知识库命中：发布回归处置手册",
-          "has_recent_deploy=true"
+          "latest_revision=order-service:2026.04.26.1120-c4a9f11"
         ],
         "min_sources_count": 1,
         "min_tool_calls_used": 2,
@@ -705,37 +578,15 @@
       "description": "query rewrite 评估应证明规则式 planner 真的生成更聚焦的 network/db 子查询，并通过改写后的 query 拉到新增知识与历史案例。",
       "request": {
         "user_id": "rag-query-rewrite",
-        "message": "payment-service 数据库连接池看起来有问题，而且接口一直 timeout",
-        "service": "payment-service",
+        "message": "order-service 数据库连接池看起来有问题，而且接口一直 timeout",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
         "llm_mode": "disabled",
         "retrieval_planner_llm_mode": "disabled",
-        "mock_tool_responses": {
-          "inspect_connection_pool": {
-            "summary": "连接池接近打满。",
-            "payload": {
-              "service": "payment-service",
-              "pool_state": "saturated"
-            },
-            "evidence": [
-              "pool_state=saturated"
-            ]
-          },
-          "inspect_slow_queries": {
-            "summary": "慢查询显著升高。",
-            "payload": {
-              "service": "payment-service",
-              "slow_query_count": 17
-            },
-            "evidence": [
-              "slow_query_count=17"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "payment-service 数据库连接池看起来有问题，而且接口一直 timeout",
+          "query": "order-service 数据库连接池看起来有问题，而且接口一直 timeout",
           "query_type": "search",
           "should_respond_directly": false,
           "hits": [
@@ -768,8 +619,8 @@
           }
         },
         "mock_rag_context_by_query": {
-          "payment-service upstream dependency timeout ingress gateway jitter": {
-            "query": "payment-service upstream dependency timeout ingress gateway jitter",
+          "order-service upstream dependency timeout ingress gateway jitter": {
+            "query": "order-service upstream dependency timeout ingress gateway jitter",
             "query_type": "search",
             "hits": [],
             "context": [],
@@ -778,8 +629,8 @@
               "ready": true
             }
           },
-          "payment-service db pool saturation slow query timeout": {
-            "query": "payment-service db pool saturation slow query timeout",
+          "order-service db pool saturation slow query timeout": {
+            "query": "order-service db pool saturation slow query timeout",
             "query_type": "search",
             "hits": [
               {
@@ -812,11 +663,11 @@
           }
         },
         "mock_similar_cases_by_query": {
-          "payment-service upstream dependency timeout ingress gateway jitter": [],
-          "payment-service db pool saturation slow query timeout": [
+          "order-service upstream dependency timeout ingress gateway jitter": [],
+          "order-service db pool saturation slow query timeout": [
             {
               "case_id": "case-db-timeout-1",
-              "service": "payment-service",
+              "service": "order-service",
               "failure_mode": "db_pool_saturation",
               "root_cause_taxonomy": "database_degradation",
               "summary": "历史上曾因连接池饱和叠加慢查询导致 timeout。",
@@ -826,6 +677,10 @@
               "recall_score": 0.95
             }
           ]
+        },
+        "tool_profile": {
+          "case_id": "case4_db_pool_saturation",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -833,8 +688,8 @@
         "route": "react_tool_first",
         "min_retrieval_subquery_count": 2,
         "retrieval_query_contains": [
-          "payment-service upstream dependency timeout ingress gateway jitter",
-          "payment-service db pool saturation slow query timeout"
+          "order-service upstream dependency timeout ingress gateway jitter",
+          "order-service db pool saturation slow query timeout"
         ],
         "missing_evidence_contains": [
           "上游依赖",
@@ -851,46 +706,15 @@
       "description": "当 rewrite 只命中重复的泛化知识、没有新增 case hit 时，系统应识别这次 rewrite 无收益，并继续保留知识缺口。",
       "request": {
         "user_id": "rag-query-rewrite-no-gain",
-        "message": "inventory-service 发布后偶发 502",
-        "service": "inventory-service",
+        "message": "order-service 发布后偶发 502",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
         "llm_mode": "disabled",
         "retrieval_planner_llm_mode": "disabled",
-        "mock_tool_responses": {
-          "check_recent_deployments": {
-            "summary": "最近 15 分钟有发布。",
-            "payload": {
-              "service": "inventory-service",
-              "has_recent_deploy": true
-            },
-            "evidence": [
-              "has_recent_deploy=true"
-            ]
-          },
-          "check_pipeline_status": {
-            "summary": "流水线无明显失败。",
-            "payload": {
-              "service": "inventory-service",
-              "pipeline_status": "passed"
-            },
-            "evidence": [
-              "pipeline_status=passed"
-            ]
-          },
-          "get_change_records": {
-            "summary": "最近只有常规配置同步。",
-            "payload": {
-              "service": "inventory-service"
-            },
-            "evidence": [
-              "config_sync_changed=true"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "inventory-service 发布后偶发 502",
+          "query": "order-service 发布后偶发 502",
           "query_type": "search",
           "should_respond_directly": false,
           "hits": [
@@ -923,8 +747,8 @@
           }
         },
         "mock_rag_context_by_query": {
-          "inventory-service release regression deploy rollback 5xx": {
-            "query": "inventory-service release regression deploy rollback 5xx",
+          "order-service release regression deploy rollback 5xx": {
+            "query": "order-service release regression deploy rollback 5xx",
             "query_type": "search",
             "hits": [
               {
@@ -957,7 +781,11 @@
           }
         },
         "mock_similar_cases_by_query": {
-          "inventory-service release regression deploy rollback 5xx": []
+          "order-service release regression deploy rollback 5xx": []
+        },
+        "tool_profile": {
+          "case_id": "case3",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -966,7 +794,7 @@
         "min_retrieval_subquery_count": 1,
         "max_retrieval_subquery_count": 1,
         "retrieval_query_contains": [
-          "inventory-service release regression deploy rollback 5xx"
+          "order-service release regression deploy rollback 5xx"
         ],
         "missing_evidence_contains": [
           "近期发布回归",
@@ -984,37 +812,15 @@
       "description": "当多个 rewrite 里只有部分 query 真正带来新增知识与案例时，评估应保留这种部分有效的收益质量信号。",
       "request": {
         "user_id": "rag-query-rewrite-partial-gain",
-        "message": "payment-service db 连接池告警，而且接口一直 timeout",
-        "service": "payment-service",
+        "message": "order-service db 连接池告警，而且接口一直 timeout",
+        "service": "order-service",
         "environment": "prod"
       },
       "setup": {
         "llm_mode": "disabled",
         "retrieval_planner_llm_mode": "disabled",
-        "mock_tool_responses": {
-          "inspect_connection_pool": {
-            "summary": "连接池接近打满。",
-            "payload": {
-              "service": "payment-service",
-              "pool_state": "saturated"
-            },
-            "evidence": [
-              "pool_state=saturated"
-            ]
-          },
-          "inspect_slow_queries": {
-            "summary": "慢查询显著升高。",
-            "payload": {
-              "service": "payment-service",
-              "slow_query_count": 19
-            },
-            "evidence": [
-              "slow_query_count=19"
-            ]
-          }
-        },
         "mock_rag_context": {
-          "query": "payment-service db 连接池告警，而且接口一直 timeout",
+          "query": "order-service db 连接池告警，而且接口一直 timeout",
           "query_type": "search",
           "should_respond_directly": false,
           "hits": [
@@ -1047,8 +853,8 @@
           }
         },
         "mock_rag_context_by_query": {
-          "payment-service upstream dependency timeout ingress gateway jitter": {
-            "query": "payment-service upstream dependency timeout ingress gateway jitter",
+          "order-service upstream dependency timeout ingress gateway jitter": {
+            "query": "order-service upstream dependency timeout ingress gateway jitter",
             "query_type": "search",
             "hits": [
               {
@@ -1079,8 +885,8 @@
               "ready": true
             }
           },
-          "payment-service db pool saturation slow query timeout": {
-            "query": "payment-service db pool saturation slow query timeout",
+          "order-service db pool saturation slow query timeout": {
+            "query": "order-service db pool saturation slow query timeout",
             "query_type": "search",
             "hits": [
               {
@@ -1113,11 +919,11 @@
           }
         },
         "mock_similar_cases_by_query": {
-          "payment-service upstream dependency timeout ingress gateway jitter": [],
-          "payment-service db pool saturation slow query timeout": [
+          "order-service upstream dependency timeout ingress gateway jitter": [],
+          "order-service db pool saturation slow query timeout": [
             {
               "case_id": "case-db-timeout-partial-gain",
-              "service": "payment-service",
+              "service": "order-service",
               "failure_mode": "db_pool_saturation",
               "root_cause_taxonomy": "database_degradation",
               "summary": "历史上曾因连接池饱和叠加慢查询导致 timeout。",
@@ -1127,6 +933,10 @@
               "recall_score": 0.93
             }
           ]
+        },
+        "tool_profile": {
+          "case_id": "case4_db_pool_saturation",
+          "service": "order-service"
         }
       },
       "expect": {
@@ -1135,8 +945,8 @@
         "min_retrieval_subquery_count": 2,
         "max_retrieval_subquery_count": 2,
         "retrieval_query_contains": [
-          "payment-service upstream dependency timeout ingress gateway jitter",
-          "payment-service db pool saturation slow query timeout"
+          "order-service upstream dependency timeout ingress gateway jitter",
+          "order-service db pool saturation slow query timeout"
         ],
         "missing_evidence_contains": [
           "上游依赖",
@@ -1148,14 +958,14 @@
         "max_added_case_hits": 1,
         "retrieval_query_metrics": [
           {
-            "query_contains": "payment-service upstream dependency timeout ingress gateway jitter",
+            "query_contains": "order-service upstream dependency timeout ingress gateway jitter",
             "added_rag_hits": 0,
             "added_case_hits": 0,
             "root_cause_taxonomy": "network_path_instability",
             "matches_primary_root_cause_taxonomy": false
           },
           {
-            "query_contains": "payment-service db pool saturation slow query timeout",
+            "query_contains": "order-service db pool saturation slow query timeout",
             "added_rag_hits": 1,
             "added_case_hits": 1,
             "root_cause_taxonomy": "database_degradation",

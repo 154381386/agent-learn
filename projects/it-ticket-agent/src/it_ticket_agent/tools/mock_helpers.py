@@ -11,12 +11,6 @@ from ..testing.world_simulator import project_world_state_tool_result
 from .contracts import ToolExecutionResult
 
 
-SCENARIO_ALIASES = {
-    "healthy": "health",
-    "normal": "health",
-    "ok": "health",
-}
-
 DEFAULT_CASE_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "mock_case_profiles.json"
 
 
@@ -56,17 +50,6 @@ def canonical_name(value: str, aliases: dict[str, str] | None = None) -> str:
     return normalized
 
 
-def load_mock_profiles(default_path: Path, env_var: str) -> dict[str, Any]:
-    raw_path = os.getenv(env_var, "").strip()
-    path = Path(raw_path) if raw_path else default_path
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
 
 def load_case_profiles() -> dict[str, Any]:
     raw_path = os.getenv("IT_TICKET_AGENT_CASE_PROFILES_PATH", "").strip()
@@ -99,12 +82,6 @@ def mock_tool_result(tool_name: str, raw: dict[str, Any]) -> ToolExecutionResult
         payload=structured_mock_payload(raw),
         risk=str(raw.get("risk") or "low"),
     )
-
-def normalize_scenario_name(value: str | None) -> str:
-    normalized = str(value or "").strip().lower()
-    if not normalized:
-        return ""
-    return SCENARIO_ALIASES.get(normalized, normalized)
 
 
 def resolve_case_name(
@@ -174,51 +151,6 @@ def resolve_case_mock(
     return mock_tool_result(tool_name, payload)
 
 
-def _load_env_mock_scenarios() -> dict[str, str]:
-    raw = os.getenv("IT_TICKET_AGENT_MOCK_SCENARIOS", "").strip()
-    if not raw:
-        return {}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        canonical_name(str(service)): normalize_scenario_name(str(scenario))
-        for service, scenario in payload.items()
-        if str(service).strip() and str(scenario).strip()
-    }
-
-
-def resolve_mock_scenario(
-    task: TaskEnvelope,
-    target_name: str,
-    arguments: dict[str, Any] | None = None,
-) -> str | None:
-    arguments = arguments or {}
-    inline = normalize_scenario_name(arguments.get("mock_scenario"))
-    if inline:
-        return inline
-
-    shared = task.shared_context if isinstance(task.shared_context, dict) else {}
-    scenario_map = shared.get("mock_scenarios")
-    if isinstance(scenario_map, dict):
-        scenario = scenario_map.get(target_name)
-        if scenario:
-            return normalize_scenario_name(str(scenario))
-
-    shared_global = normalize_scenario_name(shared.get("mock_scenario"))
-    if shared_global:
-        return shared_global
-
-    env_map = _load_env_mock_scenarios()
-    if target_name in env_map:
-        return env_map[target_name]
-
-    env_global = normalize_scenario_name(os.getenv("IT_TICKET_AGENT_MOCK_SCENARIO"))
-    return env_global or None
-
 
 def resolve_inline_or_shared_mock(
     task: TaskEnvelope,
@@ -269,11 +201,9 @@ def resolve_world_state_mock(
     )
 
 
-def resolve_profile_mock(
+def resolve_mock_result(
     task: TaskEnvelope,
     tool_name: str,
-    default_profiles_path: Path,
-    env_var: str,
     arguments: dict[str, Any] | None = None,
     *,
     aliases: dict[str, str] | None = None,
@@ -293,7 +223,7 @@ def resolve_profile_mock(
     )
     if world_state_mock is not None:
         return world_state_mock
-    case_mock = resolve_case_mock(
+    return resolve_case_mock(
         task,
         tool_name,
         arguments,
@@ -301,22 +231,3 @@ def resolve_profile_mock(
         target_key=target_key,
         default_target=default_target,
     )
-    if case_mock is not None:
-        return case_mock
-
-    ctx = build_context(task, arguments, target_key=target_key, default_target=default_target)
-    target_name = canonical_name(ctx["service"], aliases)
-    if not target_name:
-        return None
-
-    scenario = resolve_mock_scenario(task, target_name, arguments)
-    if not scenario:
-        return None
-
-    profiles = load_mock_profiles(default_profiles_path, env_var)
-    profile = profiles.get(target_name, {}).get(normalize_scenario_name(scenario), {})
-    payload = profile.get(tool_name)
-    if not isinstance(payload, dict):
-        return None
-
-    return mock_tool_result(tool_name, payload)

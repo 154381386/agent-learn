@@ -14,16 +14,6 @@ from .mock_helpers import mock_tool_result, resolve_world_state_mock
 from .contracts import ReadOnlyTool, ToolExecutionResult
 
 
-SCENARIO_ALIASES = {
-    "healthy": "health",
-    "normal": "health",
-    "ok": "health",
-}
-
-
-MOCK_SERVICE_PROFILES: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
-
-DEFAULT_MOCK_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "mock_tool_profiles.json"
 DEFAULT_CASE_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "mock_case_profiles.json"
 
 
@@ -46,43 +36,6 @@ def _canonical_service_name(service: str) -> str:
     return canonical_service_name(service)
 
 
-def _load_env_mock_scenarios() -> dict[str, str]:
-    raw = os.getenv("IT_TICKET_AGENT_MOCK_SCENARIOS", "").strip()
-    if not raw:
-        return {}
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        _canonical_service_name(str(service)): _normalize_scenario(str(scenario))
-        for service, scenario in payload.items()
-        if str(service).strip() and str(scenario).strip()
-    }
-
-
-def _normalize_scenario(value: str | None) -> str:
-    normalized = str(value or "").strip().lower()
-    if not normalized:
-        return normalized
-    return SCENARIO_ALIASES.get(normalized, normalized)
-
-
-def _load_mock_service_profiles() -> dict[str, dict[str, dict[str, dict[str, Any]]]]:
-    raw_path = os.getenv("IT_TICKET_AGENT_MOCK_PROFILES_PATH", "").strip()
-    profile_path = Path(raw_path) if raw_path else DEFAULT_MOCK_PROFILES_PATH
-    if not profile_path.exists():
-        return {}
-    try:
-        payload = json.loads(profile_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return payload
-
 
 def _load_case_profiles() -> dict[str, Any]:
     raw_path = os.getenv("IT_TICKET_AGENT_CASE_PROFILES_PATH", "").strip()
@@ -95,31 +48,6 @@ def _load_case_profiles() -> dict[str, Any]:
         return {}
     return payload if isinstance(payload, dict) else {}
 
-
-def _resolve_mock_scenario(task: TaskEnvelope, service: str, arguments: dict | None = None) -> str | None:
-    arguments = arguments or {}
-    service_name = _canonical_service_name(service)
-    inline = _normalize_scenario(arguments.get("mock_scenario"))
-    if inline:
-        return inline
-
-    shared_context = task.shared_context if isinstance(task.shared_context, dict) else {}
-    shared_service_map = shared_context.get("mock_scenarios")
-    if isinstance(shared_service_map, dict):
-        scenario = shared_service_map.get(service_name) or shared_service_map.get(service)
-        if scenario:
-            return _normalize_scenario(str(scenario))
-
-    shared_global = _normalize_scenario(shared_context.get("mock_scenario"))
-    if shared_global:
-        return shared_global
-
-    env_service_map = _load_env_mock_scenarios()
-    if service_name in env_service_map:
-        return env_service_map[service_name]
-
-    env_global = _normalize_scenario(os.getenv("IT_TICKET_AGENT_MOCK_SCENARIO"))
-    return env_global or None
 
 
 def _resolve_case_name(task: TaskEnvelope, service: str, arguments: dict | None = None) -> str | None:
@@ -173,23 +101,6 @@ def _resolve_case_mock(task: TaskEnvelope, tool_name: str, arguments: dict | Non
     return mock_tool_result(tool_name, payload)
 
 
-def _resolve_profile_mock(task: TaskEnvelope, tool_name: str, arguments: dict | None = None) -> ToolExecutionResult | None:
-    ctx = _context(task, arguments)
-    service_name = _canonical_service_name(ctx["service"])
-    if not service_name:
-        return None
-    scenario = _resolve_mock_scenario(task, service_name, arguments)
-    if not scenario:
-        return None
-    service_profiles = _load_mock_service_profiles().get(service_name, {})
-    profile = service_profiles.get(_normalize_scenario(scenario))
-    if not isinstance(profile, dict):
-        return None
-    payload = profile.get(tool_name)
-    if not isinstance(payload, dict):
-        return None
-    return mock_tool_result(tool_name, payload)
-
 
 def _match_any(message: str, keywords: list[str]) -> bool:
     normalized = message.lower()
@@ -209,10 +120,7 @@ def _resolve_mock_result(task: TaskEnvelope, tool_name: str, arguments: dict | N
         world_state_mock = resolve_world_state_mock(task, tool_name, arguments)
         if world_state_mock is not None:
             return world_state_mock
-        case_mock = _resolve_case_mock(task, tool_name, arguments)
-        if case_mock is not None:
-            return case_mock
-        return _resolve_profile_mock(task, tool_name, arguments)
+        return _resolve_case_mock(task, tool_name, arguments)
 
     return mock_tool_result(tool_name, payload)
 
@@ -550,7 +458,6 @@ class CheckServiceHealthTool(ReadOnlyTool):
         message = ctx["message"]
         service = ctx["service"]
         cluster = ctx["cluster"]
-        scenario = _resolve_mock_scenario(task, service, arguments)
         health_status = "healthy"
         replica_status = "all_ready"
         error_rate = 0.2
@@ -558,23 +465,14 @@ class CheckServiceHealthTool(ReadOnlyTool):
         impacted_endpoints: list[str] = []
         evidence = [f"{service} 当前使用 mock 健康检查路径"]
 
-        if scenario == "oom":
-            health_status = "unhealthy"
-            replica_status = "insufficient_replicas"
-            error_rate = 8.7
-            p99_ms = 2900
-            impacted_endpoints = ["/api/orders", "/health/ready"]
-            evidence.append("mock_scenario=oom，服务健康受内存抖动影响")
-        elif scenario == "health":
-            evidence.append("mock_scenario=health，服务健康保持稳定")
-        elif _match_any(message, ["重启", "5xx", "500", "超时", "timeout", "失败", "不可用"]):
+        if _match_any(message, ["重启", "oom", "内存", "heap", "5xx", "500", "超时", "timeout", "失败", "不可用"]):
             health_status = "degraded"
             replica_status = "partial_ready"
             error_rate = 4.8
             p99_ms = 1600
             impacted_endpoints = ["/api/orders", "/health/ready"]
             evidence.append("消息中包含故障症状，推断服务健康已降级")
-        if scenario not in {"oom", "health"} and _match_any(message, ["完全不可用", "全部失败", "severe", "崩了"]):
+        if _match_any(message, ["完全不可用", "全部失败", "severe", "崩了"]):
             health_status = "unhealthy"
             replica_status = "insufficient_replicas"
             error_rate = 18.5
@@ -625,23 +523,14 @@ class CheckRecentAlertsTool(ReadOnlyTool):
         message = ctx["message"]
         service = ctx["service"]
         window_minutes = int(arguments.get("window_minutes", 30) or 30)
-        scenario = _resolve_mock_scenario(task, service, arguments)
         alerts: list[dict[str, Any]] = []
 
-        if scenario == "oom":
+        if _match_any(message, ["oom", "内存", "heap"]):
             alerts.extend(
                 [
                     {"name": f"{service} pod oom killed", "severity": "critical", "status": "firing"},
                     {"name": f"{service} memory working set high", "severity": "high", "status": "firing"},
                 ]
-            )
-        elif scenario == "health":
-            alerts.append(
-                {
-                    "name": f"{service} baseline availability",
-                    "severity": "info",
-                    "status": "stable",
-                }
             )
         elif _match_any(message, ["告警", "报警", "error rate", "错误率", "超时", "latency", "延迟"]):
             alerts.append(
@@ -949,12 +838,11 @@ class CheckPodStatusTool(ReadOnlyTool):
         message = ctx["message"]
         service = ctx["service"]
         namespace = ctx["namespace"]
-        scenario = _resolve_mock_scenario(task, service, arguments)
         pods = [
             {"name": f"{service}-pod-1", "status": "Running", "ready": True, "restarts": 0},
             {"name": f"{service}-pod-2", "status": "Running", "ready": True, "restarts": 0},
         ]
-        if scenario == "oom":
+        if _match_any(message, ["oom", "内存", "heap"]):
             pods[1] = {
                 "name": f"{service}-pod-2",
                 "status": "OOMKilled",
@@ -962,7 +850,7 @@ class CheckPodStatusTool(ReadOnlyTool):
                 "restarts": 6,
                 "last_reason": "OOMKilled",
             }
-        elif scenario != "health" and _match_any(message, ["pod", "探针", "重启", "crashloop", "故障", "失败"]):
+        elif _match_any(message, ["pod", "探针", "重启", "crashloop", "故障", "失败"]):
             pods[1] = {"name": f"{service}-pod-2", "status": "CrashLoopBackOff", "ready": False, "restarts": 4}
 
         ready_replicas = len([pod for pod in pods if pod["ready"]])
@@ -1004,7 +892,6 @@ class InspectPodLogsTool(ReadOnlyTool):
         ctx = _context(task, arguments)
         service = ctx["service"]
         namespace = ctx["namespace"]
-        scenario = _resolve_mock_scenario(task, service, arguments)
         message = ctx["message"]
 
         error_pattern = "none"
@@ -1013,21 +900,14 @@ class InspectPodLogsTool(ReadOnlyTool):
             f"{service} log: request completed",
             f"{service} log: latency within baseline",
         ]
-        if scenario == "oom":
+        if _match_any(message, ["oom", "内存", "heap", "rss"]):
             error_pattern = "oom_killed"
             oom_detected = True
             log_snippets = [
                 "java.lang.OutOfMemoryError: Java heap space",
                 "container terminated with exit code 137",
             ]
-        elif scenario != "health" and _match_any(message, ["oom", "内存", "heap", "rss"]):
-            error_pattern = "oom_killed"
-            oom_detected = True
-            log_snippets = [
-                "memory working set keeps growing",
-                "OOMKilled event observed in runtime log",
-            ]
-        elif scenario != "health" and _match_any(message, ["error", "错误", "异常", "日志"]):
+        elif _match_any(message, ["error", "错误", "异常", "日志"]):
             error_pattern = "application_error"
             log_snippets = [
                 "NullPointerException in checkout flow",
@@ -1070,18 +950,17 @@ class InspectPodEventsTool(ReadOnlyTool):
         ctx = _context(task, arguments)
         service = ctx["service"]
         namespace = ctx["namespace"]
-        scenario = _resolve_mock_scenario(task, service, arguments)
         message = ctx["message"]
 
         last_termination_reason = "none"
         events = [{"type": "Normal", "reason": "Pulled", "message": "Container image already present"}]
-        if scenario == "oom":
+        if _match_any(message, ["oom", "内存", "heap"]):
             last_termination_reason = "OOMKilled"
             events = [
                 {"type": "Warning", "reason": "OOMKilled", "message": "Container killed due to memory limit"},
                 {"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container"},
             ]
-        elif scenario != "health" and _match_any(message, ["oom", "内存", "重启", "crashloop"]):
+        elif _match_any(message, ["重启", "crashloop"]):
             last_termination_reason = "CrashLoopBackOff"
             events = [
                 {"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container"},
@@ -1115,13 +994,12 @@ class InspectJvmMemoryTool(ReadOnlyTool):
             return mocked
         ctx = _context(task, arguments)
         service = ctx["service"]
-        scenario = _resolve_mock_scenario(task, service, arguments)
         heap_usage = 0.42
         gc_pressure = "normal"
-        if scenario == "oom":
+        if _match_any(ctx["message"], ["oom", "内存", "heap"]):
             heap_usage = 0.97
             gc_pressure = "critical"
-        elif scenario != "health" and _match_any(ctx["message"], ["oom", "内存", "heap", "gc"]):
+        elif _match_any(ctx["message"], ["gc"]):
             heap_usage = 0.88
             gc_pressure = "high"
         return ToolExecutionResult(

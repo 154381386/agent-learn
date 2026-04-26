@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from pathlib import Path
@@ -20,6 +21,12 @@ from it_ticket_agent.schemas import ConversationCreateRequest
 from it_ticket_agent.settings import Settings
 from it_ticket_agent.system_event_store import SystemEventStore
 from it_ticket_agent.tools import __all__ as exported_tools
+
+
+def _mock_world_tool_responses(case_id: str, service: str = "order-service") -> dict:
+    profiles_path = Path(__file__).resolve().parents[1] / "data" / "mock_case_profiles.json"
+    profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+    return profiles[case_id]["services"][service]
 
 
 class RuleBasedReactRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
@@ -60,14 +67,14 @@ class RuleBasedReactRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    async def test_mock_scenario_oom_reaches_runtime_tools(self) -> None:
+    async def test_mock_world_oom_reaches_runtime_tools(self) -> None:
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u-oom",
-                message="checkout-service pod OOMKilled，帮我排查",
-                service="checkout-service",
+                message="order-service pod OOMKilled，帮我排查",
+                service="order-service",
                 environment="prod",
-                mock_scenario="oom",
+                mock_tool_responses=_mock_world_tool_responses("case1"),
             )
         )
 
@@ -83,10 +90,10 @@ class RuleBasedReactRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         result = await self.orchestrator.start_conversation(
             ConversationCreateRequest(
                 user_id="u-oom-timeout",
-                message="checkout-service pod OOMKilled，日志 Java heap space，接口 timeout 和 5xx 升高，帮我排查",
-                service="checkout-service",
+                message="order-service pod OOMKilled，日志 Java heap space，接口 timeout 和 5xx 升高，帮我排查",
+                service="order-service",
                 environment="prod",
-                mock_scenario="oom",
+                mock_tool_responses=_mock_world_tool_responses("case1"),
             )
         )
 

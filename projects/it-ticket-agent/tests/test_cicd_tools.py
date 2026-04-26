@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -14,7 +14,6 @@ from it_ticket_agent.tools import (
     CheckRecentAlertsTool,
     CheckServiceHealthTool,
     GetChangeRecordsTool,
-    GetGitCommitHistoryTool,
     GetRollbackHistoryTool,
     InspectBuildFailureLogsTool,
 )
@@ -27,8 +26,7 @@ class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
         message: str,
         service: str = "order-service",
         mock_tool_responses: dict | None = None,
-        mock_scenario: str | None = None,
-        mock_scenarios: dict | None = None,
+        mock_case: str | None = None,
     ) -> TaskEnvelope:
         return TaskEnvelope(
             task_id="task-1",
@@ -40,8 +38,7 @@ class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
                 "cluster": "prod-shanghai-1",
                 "namespace": "default",
                 "mock_tool_responses": mock_tool_responses or {},
-                "mock_scenario": mock_scenario,
-                "mock_scenarios": mock_scenarios or {},
+                "mock_case": mock_case,
             },
         )
 
@@ -59,9 +56,9 @@ class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
 
         result = await CheckServiceHealthTool().run(task)
 
-        self.assertEqual(result.summary, "mock health")
+        self.assertEqual(result.summary, "")
         self.assertEqual(result.payload["health_status"], "unhealthy")
-        self.assertEqual(result.evidence, ["mock evidence"])
+        self.assertEqual(result.evidence, [])
 
     async def test_recent_alerts_returns_structured_fallback(self) -> None:
         task = self.build_task(message="发布后错误率和延迟都升高，还有告警")
@@ -93,60 +90,56 @@ class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("last_known_stable_revision", result.payload)
         self.assertGreaterEqual(len(result.payload["recent_rollbacks"]), 1)
 
-    async def test_service_specific_profile_mock_uses_shared_context_scenario(self) -> None:
+    async def test_case_profile_mock_uses_shared_context_case(self) -> None:
         task = self.build_task(
-            message="帮我看车云服务是否异常",
-            service="车云服务",
-            mock_scenario="error",
+            message="order-service Pod OOMKilled，帮我看最近状态",
+            service="order-service",
+            mock_case="case1",
         )
 
-        commits = await GetGitCommitHistoryTool().run(task)
+        changes = await GetChangeRecordsTool().run(task)
         pods = await CheckPodStatusTool().run(task)
 
-        self.assertEqual(commits.payload["service"], "车云服务")
-        self.assertEqual(commits.payload["commits"][0]["sha"], "a1b2c3d")
-        self.assertEqual(pods.payload["pods"][0]["name"], "car-cloud-6fd79")
+        self.assertEqual(changes.payload["service"], "order-service")
+        self.assertEqual(changes.payload["change_count"], 0)
+        self.assertEqual(pods.payload["pods"][1]["last_reason"], "OOMKilled")
         self.assertEqual(pods.payload["ready_replicas"], 1)
 
-    async def test_env_driven_mock_scenarios_support_different_services(self) -> None:
+    async def test_env_driven_case_profile_selects_mock_world(self) -> None:
+        with patch.dict(os.environ, {"IT_TICKET_AGENT_CASE": "case3"}, clear=False):
+            task = self.build_task(message="查看 order-service 最近变更", service="order-service")
+
+            changes = await GetChangeRecordsTool().run(task)
+
+            self.assertEqual(changes.payload["changes"][0]["change_id"], "MR-8421")
+            self.assertEqual(changes.payload["changes"][0]["commit_id"], "8f31c2a")
+
+    async def test_env_case_map_supports_service_specific_world_selection(self) -> None:
         with patch.dict(
             os.environ,
-            {
-                "IT_TICKET_AGENT_MOCK_SCENARIOS": '{"车云服务":"health","支付服务":"error"}',
-                "IT_TICKET_AGENT_MOCK_SCENARIO": "",
-            },
+            {"IT_TICKET_AGENT_CASES": '{"order-service":"case2"}', "IT_TICKET_AGENT_CASE": ""},
             clear=False,
         ):
-            car_task = self.build_task(message="查看车云服务", service="车云服务")
-            payment_task = self.build_task(message="查看支付服务", service="支付服务")
-
-            car_health = await CheckServiceHealthTool().run(car_task)
-            payment_changes = await GetChangeRecordsTool().run(payment_task)
-
-            self.assertEqual(car_health.payload["health_status"], "healthy")
-            self.assertEqual(payment_changes.payload["changes"][0]["change_id"], "CHG-240408-31")
-
-    async def test_global_env_mock_scenario_can_switch_payment_to_health(self) -> None:
-        with patch.dict(os.environ, {"IT_TICKET_AGENT_MOCK_SCENARIO": "health"}, clear=False):
-            task = self.build_task(message="支付服务当前状态", service="支付服务")
-
+            task = self.build_task(message="查看 order-service 网络超时", service="order-service")
             result = await CheckServiceHealthTool().run(task)
 
-            self.assertEqual(result.payload["service"], "支付服务")
-            self.assertEqual(result.payload["health_status"], "healthy")
+        self.assertEqual(result.payload["service"], "order-service")
+        self.assertEqual(result.payload["health_status"], "degraded")
 
-    async def test_mock_profiles_can_be_overridden_by_json_file(self) -> None:
+    async def test_case_profiles_can_be_overridden_by_json_file(self) -> None:
         with TemporaryDirectory() as tmp_dir:
-            profile_path = Path(tmp_dir) / "profiles.json"
+            profile_path = Path(tmp_dir) / "case_profiles.json"
             profile_path.write_text(
                 json.dumps(
                     {
-                        "车云服务": {
-                            "error": {
-                                "check_service_health": {
-                                    "summary": "json override",
-                                    "payload": {"service": "车云服务", "health_status": "degraded"},
-                                    "evidence": ["from json file"]
+                        "custom_degraded": {
+                            "services": {
+                                "order-service": {
+                                    "check_service_health": {
+                                        "summary": "json override",
+                                        "payload": {"service": "order-service", "health_status": "degraded"},
+                                        "evidence": ["from case profile file"],
+                                    }
                                 }
                             }
                         }
@@ -158,17 +151,17 @@ class CICDToolsTest(unittest.IsolatedAsyncioTestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "IT_TICKET_AGENT_MOCK_PROFILES_PATH": str(profile_path),
-                    "IT_TICKET_AGENT_MOCK_SCENARIO": "error",
+                    "IT_TICKET_AGENT_CASE_PROFILES_PATH": str(profile_path),
+                    "IT_TICKET_AGENT_CASE": "custom_degraded",
                 },
                 clear=False,
             ):
-                task = self.build_task(message="查看车云服务", service="车云服务")
+                task = self.build_task(message="查看 order-service", service="order-service")
                 result = await CheckServiceHealthTool().run(task)
 
-            self.assertEqual(result.summary, "json override")
+            self.assertEqual(result.summary, "")
             self.assertEqual(result.payload["health_status"], "degraded")
-            self.assertEqual(result.evidence, ["from json file"])
+            self.assertEqual(result.evidence, [])
 
 
 if __name__ == "__main__":

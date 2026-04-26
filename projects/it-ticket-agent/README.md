@@ -139,39 +139,39 @@ P1 后 `working_memory` 不再只有结构化槽位，还包含 `narrative_summa
 
 ## Tool Mock / 场景控制
 
-当前验证链路支持两种控制方式：
+当前验证链路支持两种主线控制方式：
 
-- 请求级控制：在会话请求里显式传 `mock_scenario` / `mock_scenarios` / `mock_tool_responses`
+- 请求级控制：前端 Mock 世界或测试用例显式传 `mock_tool_responses`
 - 环境变量级控制：用户继续使用普通问法，后台通过 `case` 统一切换整套故障现场
 
 当前仓库里已经有 `31` 个默认注册 Tool，足够覆盖 CICD、K8s、日志、监控、网络、数据库、SDE、以及知识/历史案例检索的常见排障面。
 
-- `mock_scenario`: 为当前服务设置全局场景，例如 `oom`、`health`、`normal`、`error`
-- `mock_scenarios`: 为不同服务分别指定场景
-- `mock_tool_responses`: 对某个具体 tool 直接覆盖返回值
-- `mock_world_state`: 用一份共享事故世界统一投影多域工具结果
+- `mock_tool_responses`: 对具体 tool 覆盖结构化返回；前端 `/api/v1/mock-worlds` 也是把 `mock_case_profiles.json` 展开成这个字段
+- `mock_world_state`: 旧共享事故世界投影，保留给兼容测试，不再作为官方 eval 主数据源
+- `mock_case`: 通过 `IT_TICKET_AGENT_CASE / IT_TICKET_AGENT_CASES` 选择 `mock_case_profiles.json` 中的完整世界
+- `mock_scenario / mock_scenarios`: 仅保留请求 schema 兼容，不再有内置分域 profile 数据源；新样本不要继续使用
 
 当前 mock 优先级为：
 
 1. `mock_response` / `mock_tool_responses`
 2. `mock_world_state`
 3. `mock_case`
-4. `mock_scenario` / profile
 
-示例：让 `checkout-service` 走 OOM 场景
+示例：让服务端默认进入 `case1` OOM 世界
 
 ```bash
+IT_TICKET_AGENT_CASE=case1 uv run uvicorn it_ticket_agent.main:app --reload
+
 curl -X POST http://localhost:8000/api/v1/conversations \
   -H 'Content-Type: application/json' \
   -d '{
     "user_id":"u1",
-    "message":"checkout-service pod OOMKilled，帮我排查",
-    "service":"checkout-service",
-    "mock_scenario":"oom"
+    "message":"order-service pod OOMKilled，帮我排查",
+    "service":"order-service"
   }'
 ```
 
-示例：强行覆盖某个 tool 的返回
+示例：强行覆盖某个 tool 的结构化返回
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/conversations \
@@ -182,13 +182,12 @@ curl -X POST http://localhost:8000/api/v1/conversations \
     "service":"checkout-service",
     "mock_tool_responses":{
       "inspect_pod_logs":{
-        "summary":"命中自定义日志 mock",
+        "status":"completed",
         "payload":{
           "error_pattern":"oom_killed",
           "oom_detected":true,
           "log_snippets":["java.lang.OutOfMemoryError: Java heap space"]
-        },
-        "evidence":["custom mock log"]
+        }
       }
     }
   }'
@@ -203,10 +202,16 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 - `IT_TICKET_AGENT_CASES='{"order-service":"case1","payment-service":"case2"}'`
 - `IT_TICKET_AGENT_CASE_PROFILES_PATH=/path/to/mock_case_profiles.json`
 
-当前内置了两个典型案例：
+当前内置了 8 个典型 Mock 世界：
 
-- `case1`: 日志与 Pod 事件表现为 `OOMKilled`，监控同步报错，网络排查基本正常
-- `case2`: 日志基本正常，网络链路和监控抖动明显，上游依赖与线程池也会同步波动
+- `case1`: K8s OOMKilled / Pod 重启
+- `case2`: 网络链路 / 上游依赖超时
+- `case3`: 发布/变更回归 / 超时参数变更
+- `case4_db_pool_saturation`: 数据库连接池饱和 / 慢查询
+- `case5_sde_quota_exhausted`: SDE 配额耗尽 / 资源开通失败
+- `case6_cpu_thread_saturation`: CPU 饱和 / 线程池排队
+- `case7_ingress_lb_vpc_block`: Ingress/LB/VPC 网络阻塞
+- `case8_canary_release_regression`: 灰度发布失败 / Canary 指标回退
 
 示例：用户只问普通问题，但后台用环境变量切到 `case1`
 
@@ -233,17 +238,28 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 - session-flow live dataset: [session_flow_live_cases.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/evals/session_flow_live_cases.json)
 - runner: [run_agent_eval.py](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/scripts/run_agent_eval.py)
 
-当前静态 tool dataset 已覆盖 `13` 个 case，主要分成三类：
+当前 `mock_case_profiles.json` 是评估和前端沙盒的统一 mock world 来源，已有 `8` 个完整世界，每个世界都覆盖 `29` 个非 RAG 只读工具：
 
-- 单域收敛：`network / k8s / cicd / db / sde`
+- `case1`：K8s OOMKilled / Pod 重启
+- `case2`：网络链路 / 上游依赖超时
+- `case3`：发布/变更回归 / 超时参数变更
+- `case4_db_pool_saturation`：数据库连接池饱和 / 慢查询
+- `case5_sde_quota_exhausted`：SDE 配额耗尽 / 资源开通失败
+- `case6_cpu_thread_saturation`：CPU 饱和 / 线程池排队
+- `case7_ingress_lb_vpc_block`：Ingress/LB/VPC 网络阻塞
+- `case8_canary_release_regression`：灰度发布失败 / Canary 指标回退
+
+当前 tool dataset 已覆盖 `15` 个 case，全部通过 `setup.tool_profile` 引用完整 mock world：
+
+- 单域收敛：`network / k8s / cicd / db / sde / cpu-thread / canary`
 - 跨域扩展：`network -> db`、`k8s -> cicd`、`db -> network`、`cicd -> k8s`
 - 强证据不扩域：验证已有足够异常证据时不会继续漂移到邻接域
 
-当前 world dataset 额外覆盖 `5` 个“共享事故世界” case：
+当前 world dataset 覆盖 `7` 个 mock world case，也统一使用 `setup.tool_profile`：
 
-- 工具结果不再逐个手写
-- 同一个 case 下的 `network / db / k8s / cicd / sde` 结果由同一份 `world_state` 投影生成
-- 更适合验证“真因 + 噪声 + 时间线”下的搜索路径是否合理
+- 不再维护一套独立 inline mock 或 eval-only `world_state` 数据
+- 每个 case 都能让 LLM 理论上调用任意非 RAG 只读工具，并得到同一事故世界里的结构化返回
+- 更适合验证“真因 + 噪声 + 时间线 + 可选工具空间”下的搜索路径是否合理
 
 当前 rag dataset 额外覆盖 `10` 个知识链路 case：
 
@@ -279,10 +295,10 @@ curl -X POST http://localhost:8000/api/v1/conversations \
 
 - 保持 `LLM` 开启
 - 默认关闭 `RAG`，避免把评估噪声混进来
-- 只在工具边界注入 `mock_tool_responses`
-- 支持 `tool_profile -> mock_tool_responses` 展开，复用 [mock_case_profiles.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/mock_case_profiles.json)
-- 支持 `world_state` 驱动的共享事故仿真
-- 支持 `mock_rag_context / mock_rag_context_by_query / mock_retrieval_expansion`
+- 只在工具边界注入 mock world，不 mock 整个 agent
+- 官方诊断类 eval 默认使用 `tool_profile -> mock_tool_responses` 展开，复用 [mock_case_profiles.json](/Users/lyb/workspace/agent-learn/projects/it-ticket-agent/data/mock_case_profiles.json)
+- RAG eval 只 mock 检索边界：`mock_rag_context / mock_rag_context_by_query / mock_retrieval_expansion`；非 RAG 工具仍来自 mock world
+- `session_flow_cases.json` 是状态机合约回归，允许 `llm_mode=disabled`，不作为工具推理质量评估
 - 支持按 case 配置 `llm_mode`；当前 session-flow 回归默认用 `disabled` 跑确定性状态机链路
 - live session-flow 只校验稳定的高层行为，例如 `message_event_type / incremental_tool_domains / pending_interrupt`，不把真实 LLM 的每一步推理顺序写死
 - 既看最终是否命中根因，也记录搜索过程指标
@@ -447,7 +463,7 @@ uv run python scripts/run_agent_eval.py --dataset ./data/evals/rag_cases.json
 uv run python scripts/run_agent_eval.py \
   --dataset ./data/evals/session_flow_cases.json \
   --allow-llm-disabled \
-  --output ./data/session-flow-eval-report.json
+  --output /tmp/it-ticket-agent-session-flow-eval-report.json
 ```
 
 运行真实 LLM 的 session-flow live dataset：
@@ -455,13 +471,15 @@ uv run python scripts/run_agent_eval.py \
 ```bash
 uv run python scripts/run_agent_eval.py \
   --dataset ./data/evals/session_flow_live_cases.json \
-  --output ./data/session-flow-live-eval-report.json
+  --output /tmp/it-ticket-agent-session-flow-live-eval-report.json
 ```
 
 把结果写成 JSON：
 
+评估报告是运行产物，建议输出到 `/tmp` 或 CI artifact，不提交到仓库。
+
 ```bash
-uv run python scripts/run_agent_eval.py --output ./data/eval-report.json
+uv run python scripts/run_agent_eval.py --output /tmp/it-ticket-agent-eval-report.json
 ```
 
 如果只跑子集 case，dataset 级别 gate 会自动跳过；如果要临时忽略 gate，可以显式加：
@@ -504,13 +522,13 @@ make eval-regression
 
 其中与 query planning 直接相关的 case 可以按 case 配置把 `retrieval_planner` 强制切到 rules mode，避免环境里的 planner LLM 波动把主回归污染掉。
 
-`world_state` case 的核心差异：
+`world_cases` 当前的核心差异：
 
-- 静态 mock dataset:
-  每个 tool 的返回是直接写死的
+- tool dataset:
+  更强调单域收敛、跨域扩展、强证据早停等搜索策略回归
 - world dataset:
-  每个 tool 的返回从同一个共享世界状态投影出来
-  更适合验证“主因在 DB，但网络有轻微噪声”这类真实事故结构
+  更强调完整 mock world 下的事故结构覆盖；工具返回不再散落在 eval case 内，而是全部来自 `mock_case_profiles.json`
+- legacy `mock_world_state` 投影器仍保留给底层兼容测试，但不再作为官方诊断 eval 的主数据来源
 
 `run_agent_eval.py` 会自动识别 dataset 类型：
 

@@ -272,7 +272,7 @@ class FrontendConsoleSmokeTest(unittest.TestCase):
             if name not in {"search_knowledge_base", "search_similar_incidents"}
         )
         order_worlds = [item for item in worlds if item["service"] == "order-service"]
-        self.assertGreaterEqual(len(order_worlds), 3)
+        self.assertGreaterEqual(len(order_worlds), 8)
         payload_key_shapes: dict[str, tuple[str, ...]] = {}
         for world in order_worlds:
             self.assertEqual(world["tool_names"], expected_tool_names)
@@ -312,7 +312,13 @@ class FrontendConsoleSmokeTest(unittest.TestCase):
         self.assertNotIn("summary", change_response)
         self.assertNotIn("evidence", change_response)
         self.assertIn("发布/变更", deploy_world["description"])
-
+        db_world = next((item for item in worlds if item["world_id"] == "case4_db_pool_saturation::order-service"), None)
+        self.assertIsNotNone(db_world)
+        self.assertEqual(db_world["mock_tool_responses"]["inspect_connection_pool"]["payload"]["pool_state"], "saturated")
+        canary_world = next((item for item in worlds if item["world_id"] == "case8_canary_release_regression::order-service"), None)
+        self.assertIsNotNone(canary_world)
+        self.assertIn("灰度发布失败", canary_world["label"])
+        self.assertEqual(canary_world["mock_tool_responses"]["check_canary_status"]["payload"]["canary_status"], "failed")
 
     def test_sessions_list_api_supports_frontend_session_management(self) -> None:
         first = self._create_session(

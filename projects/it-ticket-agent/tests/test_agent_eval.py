@@ -612,8 +612,8 @@ class FakeKnowledgeFirstLLM:
                             "name": "search_knowledge_base",
                             "arguments": json.dumps(
                                 {
-                                    "query": "checkout-service 发布后 502 已知回归模式",
-                                    "service": "checkout-service",
+                                    "query": "order-service 灰度发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+                                    "service": "order-service",
                                 },
                                 ensure_ascii=False,
                             ),
@@ -626,7 +626,7 @@ class FakeKnowledgeFirstLLM:
                         "id": "call-deploy",
                         "function": {
                             "name": "check_recent_deployments",
-                            "arguments": json.dumps({"service": "checkout-service"}, ensure_ascii=False),
+                            "arguments": json.dumps({"service": "order-service"}, ensure_ascii=False),
                         },
                     }
                 )
@@ -1568,43 +1568,39 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     description="fake llm should see and call search_knowledge_base before live checks",
                     request=ConversationCreateRequest(
                         user_id="eval-knowledge-tool",
-                        message="checkout-service 发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
-                        service="checkout-service",
+                        message="order-service 灰度发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+                        service="order-service",
                         environment="prod",
                     ),
                     setup={
-                        "mock_tool_responses": {
-                            "search_knowledge_base": {
-                                "summary": "已检索到发布回归知识。",
-                                "payload": {
-                                    "hits": [
-                                        {
-                                            "chunk_id": "tool-hit-1",
-                                            "title": "发布回归处置手册",
-                                            "section": "发布后 502",
-                                            "path": "runbooks/release-502.md",
-                                            "category": "runbook",
-                                            "score": 0.91,
-                                            "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。",
-                                        }
-                                    ],
-                                    "citations": ["发布回归处置手册 / 发布后 502 / runbooks/release-502.md"],
-                                },
-                                "evidence": ["知识库命中：发布回归处置手册 / 发布后 502"],
-                            },
-                            "check_recent_deployments": {
-                                "summary": "最近 15 分钟存在发布。",
-                                "payload": {"service": "checkout-service", "has_recent_deploy": True},
-                                "evidence": ["has_recent_deploy=true"],
-                            },
-                        },
+                        "tool_profile": {"case_id": "case8_canary_release_regression", "service": "order-service"},
                         "mock_rag_context": {
-                            "query": "checkout-service 发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
+                            "query": "order-service 灰度发布后一直 502，你先查下有没有相关手册或已知回归模式，再结合实时信号判断",
                             "query_type": "search",
                             "should_respond_directly": False,
-                            "hits": [],
-                            "context": [],
-                            "citations": [],
+                            "hits": [
+                                {
+                                    "chunk_id": "tool-hit-1",
+                                    "title": "发布回归处置手册",
+                                    "section": "发布后 502",
+                                    "path": "runbooks/release-502.md",
+                                    "category": "runbook",
+                                    "score": 0.91,
+                                    "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。",
+                                }
+                            ],
+                            "context": [
+                                {
+                                    "chunk_id": "tool-hit-1",
+                                    "title": "发布回归处置手册",
+                                    "section": "发布后 502",
+                                    "path": "runbooks/release-502.md",
+                                    "category": "runbook",
+                                    "score": 0.91,
+                                    "snippet": "发布后持续 502 时，应先核对最近发布与已知回归模式。",
+                                }
+                            ],
+                            "citations": ["发布回归处置手册 / 发布后 502 / runbooks/release-502.md"],
                             "index_info": {"ready": True},
                         },
                     },
@@ -1614,7 +1610,7 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         "required_tools": ["search_knowledge_base"],
                         "first_any_tools": ["search_knowledge_base"],
                         "required_any_tools": ["check_recent_deployments"],
-                        "evidence_contains": ["知识库命中：发布回归处置手册", "has_recent_deploy=true"],
+                        "evidence_contains": ["知识库命中：发布回归处置手册", "故障窗口附近存在发布"],
                         "min_sources_count": 1,
                         "min_tool_calls_used": 2,
                         "max_tool_calls_used": 2,
@@ -2045,6 +2041,47 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SessionFlowDatasetLoadTest(unittest.TestCase):
+    def test_tool_mock_eval_dataset_uses_full_mock_world_profiles(self) -> None:
+        dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "tool_mock_cases.json")
+
+        self.assertEqual(len(dataset.cases), 15)
+        self.assertTrue(all(case.setup.tool_profile is not None for case in dataset.cases))
+        self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
+        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
+        self.assertIn(
+            "case8_canary_release_regression",
+            {case.setup.tool_profile.case_id for case in dataset.cases if case.setup.tool_profile},
+        )
+
+    def test_world_eval_dataset_uses_mock_case_profiles_not_world_state(self) -> None:
+        dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "world_cases.json")
+
+        self.assertEqual(len(dataset.cases), 7)
+        self.assertTrue(all(case.setup.tool_profile is not None for case in dataset.cases))
+        self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
+        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
+        self.assertIn(
+            "case6_cpu_thread_saturation",
+            {case.setup.tool_profile.case_id for case in dataset.cases if case.setup.tool_profile},
+        )
+
+    def test_rag_eval_keeps_retrieval_mocks_but_uses_world_profiles_for_diagnosis(self) -> None:
+        dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "rag_cases.json")
+
+        diagnostic_cases = [case for case in dataset.cases if case.expect.route == "react_tool_first"]
+        self.assertTrue(diagnostic_cases)
+        self.assertTrue(all(case.setup.tool_profile is not None for case in diagnostic_cases))
+        self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
+        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
+
+    def test_live_session_flow_eval_uses_world_profiles_without_inline_overrides(self) -> None:
+        dataset = load_session_flow_eval_dataset(PROJECT_ROOT / "data" / "evals" / "session_flow_live_cases.json")
+
+        self.assertEqual(len(dataset.cases), 4)
+        self.assertTrue(all(case.setup.tool_profile is not None for case in dataset.cases))
+        self.assertTrue(all(not case.setup.mock_tool_responses for case in dataset.cases))
+        self.assertTrue(all(not case.setup.world_state for case in dataset.cases))
+
     def test_load_rag_eval_dataset_from_file(self) -> None:
         dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "rag_cases.json")
 

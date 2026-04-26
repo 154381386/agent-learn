@@ -2777,3 +2777,85 @@ uv run python -m unittest discover -s tests -q
 **下一步**
 - 可以继续把每个 tool 的 payload schema 抽成显式定义，用 schema 生成 mock skeleton 和前端 renderer。
 - 可以把“完整 world 覆盖率”加入 CI，防止新增 tool 后忘记补 mock world。
+
+
+## 2026-04-26 Eval 统一到 Mock World Profile
+
+**问题**
+- 官方 eval 数据集历史上混用了三种口径：`tool_profile`、局部 `mock_tool_responses`、以及 `world_state` 投影。
+- 这会导致评估样本和前端 Mock 世界不一致：线上演示看到的是完整世界，离线 eval 可能只测了几个手写 tool 返回。
+- 旧 mock world 只有 3 个场景，覆盖 OOM、网络、发布回归，不足以覆盖 DB、SDE、CPU/thread pool、canary 等常见值班事故。
+
+**原因**
+- 早期 eval 优先追求快速验证单条路径，直接在 case 内写局部 mock 最省事。
+- 后续前端沙盒和全工具 mock world 成熟后，eval 数据源没有同步收敛到同一份 `mock_case_profiles.json`。
+- `world_state` 投影器能表达共享事故状态，但和前端可选 world、真实化 payload、全工具覆盖之间存在两套维护成本。
+
+**改动**
+- 将 `tool_mock_cases.json` 全部迁到 `setup.tool_profile`，规模从 13 扩到 15，新增 CPU/thread pool 和 canary 场景。
+- 将 `world_cases.json` 从 eval-only `world_state` 改成 mock world profile，规模从 5 扩到 7。
+- 将 `rag_cases.json` 的非 RAG 工具证据迁到 `tool_profile`；RAG 命中、query rewrite、case recall 仍只在检索边界 mock。
+- 将 `session_flow_live_cases.json` 的 inline override 清掉，真实 LLM 多轮 eval 也直接引用完整 mock world。
+- `mock_case_profiles.json` 扩到 8 个完整世界：OOM、网络、发布回归、DB pool、SDE quota、CPU/thread pool、Ingress/LB/VPC、Canary regression。
+- ReAct runtime 补充 `check_canary_status` 候选域、CPU/thread 显式意图识别、quota/canary/cpu/lb 的异常识别和证据派生。
+- 增加回归测试，约束官方诊断类 eval 不再使用 inline `mock_tool_responses` 或 eval-only `world_state`。
+
+**影响**
+- 前端 Mock 世界、真实 LLM eval、RAG eval 的非检索工具证据都来自同一份世界数据，避免“演示一套、评估一套”。
+- LLM 在评估里可以调用任意非 RAG 只读工具，都会得到同一个事故世界内的结构化返回。
+- RAG eval 的边界更清楚：知识检索可以 mock，但实时工具证据必须由 mock world 决定。
+- 新增场景覆盖更接近值班主路径，尤其是“Pod 正常但 CPU/thread pool 饱和”和“Canary 指标失败需要回滚审批”的复杂场景。
+
+**下一步**
+- 后续新增 tool 时，把 `mock_case_profiles.json` 的全工具覆盖测试作为必过项。
+- 可以继续把 mock world 元数据暴露给前端筛选，例如按 `tags / expected_root_cause` 过滤场景。
+- 真实 LLM eval 需要在稳定 provider 下重新跑一轮完整 `eval-regression`，校准新增 case 的 gate 阈值。
+
+## 2026-04-26 Eval Report 产物清理
+
+**问题**
+- `data/eval-report.json`、`data/session-flow-eval-report.json`、`data/session-flow-live-eval-report.json`、`data/world-eval-report.json` 是评估运行产物，但被提交到了仓库。
+- 这些报告体积较大，内容会随每次 eval 变化，容易制造无意义 diff。
+
+**原因**
+- 早期为了方便查看离线评估结果，直接把 `--output` 指向 `data/` 根目录。
+- `data/` 下同时存在正式 eval dataset 和临时 report，边界不清。
+
+**改动**
+- 删除已入库的旧 eval report JSON。
+- `.gitignore` 增加 `projects/it-ticket-agent/data/*eval-report*.json`，防止报告再次进入 git。
+- README 示例改为输出到 `/tmp/it-ticket-agent-*.json`，把报告定位为本地/CI artifact。
+- 最新架构文档补充：eval report 是运行产物，不属于仓库主数据。
+
+**影响**
+- 仓库只保留 eval dataset、mock world、代码和文档，减少大文件与过期结果污染。
+- 后续跑 eval 仍可生成 JSON 报告，但默认不会进入 git diff。
+
+**下一步**
+- 如果需要长期留存评估趋势，应接 CI artifact 或独立评估看板，而不是把单次 report 提交到源码仓库。
+
+## 2026-04-26 Legacy Mock Profile 清理
+
+**问题**
+- 项目里同时存在两套 mock 数据源：新的 `mock_case_profiles.json` 完整 Mock 世界，以及旧的 `mock_*_profiles.json` 分域场景 profile。
+- 旧 `mock_scenario / profile` 只覆盖局部工具和少量服务，和前端 Mock 世界、官方 eval 的完整现场口径不一致。
+- `docs/assets` 下还有早期架构图和生成 prompt，没有文档引用，继续保留会增加仓库噪声。
+
+**原因**
+- 早期为了快速测试单个 tool，引入了按 service + scenario 组织的分域 profile。
+- 后来 Mock 世界已经演进成完整工具现场，但旧 profile fallback 和测试没有同步下线。
+
+**改动**
+- 删除无引用文档资产：`docs/assets/it-ticket-agent-current-architecture.png`、`it-ticket-agent-data-flow.*`。
+- 删除旧分域 profile：`mock_tool_profiles.json`、`mock_network_profiles.json`、`mock_db_profiles.json`、`mock_sde_profiles.json`、`mock_finops_profiles.json`。
+- 工具 mock resolver 收敛为 `mock_tool_responses -> mock_world_state -> mock_case`，移除 `mock_scenario / profile` fallback。
+- CICD / DB / Network / SDE / FinOps 工具统一复用 case-profile mock resolver；保留原本基于用户文本的轻量 fallback，避免无 mock 时工具不可用。
+- 相关测试从 `mock_scenario` 迁移到 `mock_tool_responses` 或 `IT_TICKET_AGENT_CASE / IT_TICKET_AGENT_CASES`。
+
+**影响**
+- 当前前端 Mock 世界、官方 eval、工具单测都使用同一份 `mock_case_profiles.json`，减少双写和口径漂移。
+- 请求 schema 中的 `mock_scenario / mock_scenarios` 仍兼容接收，但不再有内置 profile 数据源；新用例应使用 Mock 世界或 case profile。
+- 旧分域 profile 删除后，新增 tool 只需要补一份完整 Mock 世界覆盖。
+
+**下一步**
+- 后续可以继续清理 `mock_world_state / world_simulator` 兼容路径，但需要先确认是否还有外部样本依赖。

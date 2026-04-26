@@ -29,6 +29,7 @@ DOMAIN_TOOL_GROUPS: dict[str, list[str]] = {
     "cicd": [
         "check_recent_deployments",
         "check_pipeline_status",
+        "check_canary_status",
         "get_change_records",
         "get_deployment_status",
         "get_rollback_history",
@@ -73,6 +74,7 @@ DOMAIN_EXPANSION_PRIORITIES: dict[str, list[str]] = {
     "cicd": [
         "check_recent_deployments",
         "check_pipeline_status",
+        "check_canary_status",
         "get_change_records",
     ],
     "k8s": [
@@ -663,7 +665,13 @@ class ReactSupervisor:
                 evidence.append(value)
 
         source = str(payload.get("source") or tool_name).strip()
-        if tool_name == "check_service_health":
+        if tool_name == "search_knowledge_base":
+            for hit in list(payload.get("hits") or [])[:3]:
+                if isinstance(hit, dict):
+                    title = str(hit.get("title") or "未命名文档").strip()
+                    section = str(hit.get("section") or "摘要").strip()
+                    add(f"知识库命中：{title} / {section}")
+        elif tool_name == "check_service_health":
             current = dict(payload.get("current") or {})
             error_rate = current.get("http_5xx_rate_percent", payload.get("error_rate_percent"))
             p99_latency = current.get("p99_latency_ms", payload.get("p99_latency_ms"))
@@ -718,6 +726,12 @@ class ReactSupervisor:
             target_revision = candidate.get("target_revision") or payload.get("last_known_stable_revision")
             if target_revision:
                 add(f"{source}: rollback_target={target_revision}")
+        elif tool_name == "check_canary_status":
+            add(f"{source}: canary_status={payload.get('canary_status')}")
+            add(f"{source}: canary_weight={payload.get('current_weight_percent')}%")
+            metrics = dict(payload.get("metrics") or {})
+            if metrics:
+                add(f"{source}: analysis_status={metrics.get('analysis_status')} success_rate={metrics.get('success_rate_percent')} p99={metrics.get('p99_latency_ms')}")
         elif tool_name == "check_pod_status":
             if payload.get("ready_replicas") is not None and payload.get("desired_replicas") is not None:
                 add(f"{source}: ready={payload.get('ready_replicas')}/{payload.get('desired_replicas')}")
@@ -759,6 +773,9 @@ class ReactSupervisor:
                 "deadlock_count",
                 "rollback_rate",
                 "timeout_ratio",
+                "lb_status",
+                "quota_state",
+                "cpu_saturation",
             ):
                 value = payload.get(key)
                 if value is not None and value != "" and value != []:
@@ -880,7 +897,13 @@ class ReactSupervisor:
             tool_name = str(item.get("tool_name") or "")
             result = dict(item.get("result") or {})
             payload = dict(result.get("payload") or {})
-            if tool_name == "check_pod_status":
+            if tool_name == "search_knowledge_base":
+                for hit in list(payload.get("hits") or [])[:3]:
+                    if isinstance(hit, dict):
+                        title = str(hit.get("title") or "未命名文档").strip()
+                        section = str(hit.get("section") or "摘要").strip()
+                        evidence.append(f"知识库命中：{title} / {section}。")
+            elif tool_name == "check_pod_status":
                 ready = payload.get("ready_replicas")
                 desired = payload.get("desired_replicas")
                 if ready is not None and desired is not None:
@@ -1452,9 +1475,9 @@ class ReactSupervisor:
         matched_domains = list(getattr(context_snapshot, "matched_tool_domains", []) or [])
         message_lower = str(request.message or "").lower()
         explicit_domains: list[str] = []
-        if any(token in message_lower for token in ("deploy", "release", "发布", "变更", "pipeline", "回滚")):
+        if any(token in message_lower for token in ("deploy", "release", "发布", "变更", "pipeline", "回滚", "canary", "灰度")):
             explicit_domains.append("cicd")
-        if any(token in message_lower for token in ("oom", "pod", "重启", "container", "oomkilled")):
+        if any(token in message_lower for token in ("oom", "pod", "重启", "container", "oomkilled", "cpu", "线程", "thread", "throttle", "限流")):
             explicit_domains.append("k8s")
         if any(token in message_lower for token in ("502", "timeout", "超时", "ingress", "gateway", "依赖", "network")):
             explicit_domains.append("network")
@@ -1745,6 +1768,15 @@ class ReactSupervisor:
         if str(payload.get("health_status") or "").lower() in {"degraded", "unhealthy", "failed"}:
             return True
         if str(payload.get("pipeline_status") or "").lower() in {"failed", "error", "degraded"}:
+            return True
+        if str(payload.get("canary_status") or "").lower() in {"failed", "degraded", "unhealthy", "paused"}:
+            return True
+        metrics = dict(payload.get("metrics") or {})
+        if str(metrics.get("analysis_status") or "").lower() in {"failed", "degraded", "error"}:
+            return True
+        if str(payload.get("quota_state") or "").lower() in {"exhausted", "insufficient", "blocked", "depleted"}:
+            return True
+        if str(payload.get("cpu_saturation") or "").lower() in {"saturated", "critical", "degraded"}:
             return True
         if payload.get("dependency_status") == "degraded":
             return True

@@ -11,3 +11,5 @@ build/
 *.egg-info/
 *.db
 projects/it-ticket-agent/data/rag/
+# IT Ticket Agent generated eval reports
+projects/it-ticket-agent/data/*eval-report*.json

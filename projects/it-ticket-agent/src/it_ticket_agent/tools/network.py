@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from ..runtime.contracts import TaskEnvelope
 from .contracts import ReadOnlyTool, ToolExecutionResult
-from .mock_helpers import build_context, match_any, resolve_profile_mock
-
-
-DEFAULT_MOCK_PROFILES_PATH = Path(__file__).resolve().parents[3] / "data" / "mock_network_profiles.json"
-ENV_VAR = "IT_TICKET_AGENT_MOCK_NETWORK_PROFILES_PATH"
+from .mock_helpers import build_context, match_any, resolve_mock_result
 
 
 class InspectDNSResolutionTool(ReadOnlyTool):
@@ -20,7 +14,7 @@ class InspectDNSResolutionTool(ReadOnlyTool):
     retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
-        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        mocked = resolve_mock_result(task, self.name, arguments)
         if mocked is not None:
             return mocked
         ctx = build_context(task, arguments)
@@ -45,7 +39,7 @@ class InspectIngressRouteTool(ReadOnlyTool):
     retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
-        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        mocked = resolve_mock_result(task, self.name, arguments)
         if mocked is not None:
             return mocked
         ctx = build_context(task, arguments)
@@ -70,7 +64,7 @@ class InspectVpcConnectivityTool(ReadOnlyTool):
     retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
-        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        mocked = resolve_mock_result(task, self.name, arguments)
         if mocked is not None:
             return mocked
         ctx = build_context(task, arguments)
@@ -95,7 +89,7 @@ class InspectLoadBalancerStatusTool(ReadOnlyTool):
     retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
-        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        mocked = resolve_mock_result(task, self.name, arguments)
         if mocked is not None:
             return mocked
         ctx = build_context(task, arguments)
@@ -120,7 +114,7 @@ class InspectUpstreamDependencyTool(ReadOnlyTool):
     retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
-        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        mocked = resolve_mock_result(task, self.name, arguments)
         if mocked is not None:
             return mocked
         ctx = build_context(task, arguments)
@@ -147,7 +141,7 @@ class InspectEgressPolicyTool(ReadOnlyTool):
     retryable = True
 
     async def run(self, task: TaskEnvelope, arguments: dict | None = None) -> ToolExecutionResult:
-        mocked = resolve_profile_mock(task, self.name, DEFAULT_MOCK_PROFILES_PATH, ENV_VAR, arguments)
+        mocked = resolve_mock_result(task, self.name, arguments)
         if mocked is not None:
             return mocked
         ctx = build_context(task, arguments)
