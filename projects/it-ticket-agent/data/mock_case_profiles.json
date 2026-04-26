@@ -3,11 +3,70 @@
     "title": "K8s OOMKilled / Pod 重启",
     "description": "K8s / Pod OOMKilled 场景，Pod ready 1/2、日志包含 Java heap space 与 exit code 137，适合验证容器运行时根因定位。",
     "expected_root_cause": "pod_oom_killed",
+    "difficulty": "easy",
+    "failure_mode": "pod_oom_killed",
+    "root_cause_taxonomy": "runtime.container_oom_killed",
     "tags": [
       "k8s",
       "oom",
       "pod"
     ],
+    "user_prompt_templates": [
+      "order-service 最近接口一直超时，帮我排查根因。",
+      "order-service pod 反复重启，用户反馈下单失败，帮我看下。",
+      "刚发完版后 order-service 不稳定，但我不确定是不是发布问题。"
+    ],
+    "noise_factors": [
+      "recent_deploy_noise",
+      "gateway_timeout_symptom"
+    ],
+    "evaluation_focus": [
+      "tool_selection",
+      "runtime_evidence",
+      "negative_evidence"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "order-service 容器因 JVM heap space OOM 被 K8s 杀掉，Pod ready 降为 1/2。",
+      "failure_mode": "pod_oom_killed",
+      "root_cause_taxonomy": "runtime.container_oom_killed",
+      "primary_evidence_tools": [
+        "check_pod_status",
+        "inspect_pod_logs",
+        "inspect_pod_events"
+      ],
+      "negative_evidence_tools": [
+        "check_recent_deployments",
+        "inspect_vpc_connectivity",
+        "inspect_connection_pool"
+      ],
+      "preferred_first_tools": [
+        "check_pod_status",
+        "inspect_pod_logs",
+        "inspect_pod_events"
+      ],
+      "should_request_approval": false,
+      "expected_action": "",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_pod_status",
+          "inspect_pod_logs",
+          "inspect_pod_events"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -1130,11 +1189,70 @@
     "title": "网络链路 / 上游依赖超时",
     "description": "网络 / 依赖退化场景，ingress、VPC、LB 与 upstream timeout 同时异常，适合验证网络域强证据收敛。",
     "expected_root_cause": "network_path_instability",
+    "difficulty": "medium",
+    "failure_mode": "network_path_instability",
+    "root_cause_taxonomy": "network.upstream_timeout",
     "tags": [
       "network",
       "upstream",
       "timeout"
     ],
+    "user_prompt_templates": [
+      "order service为什么总是超时",
+      "order-service gateway 502 很多，upstream timeout 也在涨，帮我定位。",
+      "我怀疑是数据库慢，但用户主要反馈接口 timeout。"
+    ],
+    "noise_factors": [
+      "db_suspicion_noise",
+      "generic_timeout_symptom"
+    ],
+    "evaluation_focus": [
+      "tool_selection",
+      "causal_reasoning",
+      "cross_domain_exclusion"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "Ingress/LB/VPC 或上游依赖链路异常导致 order-service 请求超时和 gateway 502。",
+      "failure_mode": "network_path_instability",
+      "root_cause_taxonomy": "network.upstream_timeout",
+      "primary_evidence_tools": [
+        "inspect_ingress_route",
+        "inspect_vpc_connectivity",
+        "inspect_upstream_dependency"
+      ],
+      "negative_evidence_tools": [
+        "inspect_connection_pool",
+        "check_pod_status",
+        "check_recent_deployments"
+      ],
+      "preferred_first_tools": [
+        "inspect_ingress_route",
+        "inspect_vpc_connectivity",
+        "inspect_upstream_dependency"
+      ],
+      "should_request_approval": false,
+      "expected_action": "",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -2269,11 +2387,77 @@
     "title": "发布/变更回归 / 超时参数变更",
     "description": "发布/变更回归场景，commit 8f31c2a 将 readTimeout 从 3000ms 改为 300ms，适合验证从部署、变更和日志证据定位发布回归。",
     "expected_root_cause": "release_timeout_regression",
+    "difficulty": "medium",
+    "failure_mode": "release_timeout_regression",
+    "root_cause_taxonomy": "cicd.config_regression.timeout_too_low",
     "tags": [
       "cicd",
       "release",
       "change"
     ],
+    "user_prompt_templates": [
+      "order-service 下单失败率突然升高，帮我排查根因。",
+      "order-service 刚发布后开始报错，帮我看是不是发布回归。",
+      "用户反馈创建订单超时，prod 环境，帮我看下根因。"
+    ],
+    "noise_factors": [
+      "pod_restart_noise",
+      "gateway_502",
+      "unrelated_alert"
+    ],
+    "evaluation_focus": [
+      "tool_selection",
+      "causal_reasoning",
+      "change_attribution",
+      "approval_generation"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "commit 8f31c2a 将 readTimeoutMillis 从 3000ms 改为 300ms，发布后触发创建订单超时和 5xx。",
+      "failure_mode": "release_timeout_regression",
+      "root_cause_taxonomy": "cicd.config_regression.timeout_too_low",
+      "primary_evidence_tools": [
+        "check_recent_deployments",
+        "check_pipeline_status",
+        "get_deployment_status",
+        "get_change_records"
+      ],
+      "negative_evidence_tools": [
+        "inspect_vpc_connectivity",
+        "inspect_connection_pool",
+        "check_pod_status"
+      ],
+      "preferred_first_tools": [
+        "check_recent_deployments",
+        "check_pipeline_status",
+        "get_deployment_status",
+        "get_change_records",
+        "check_canary_status"
+      ],
+      "should_request_approval": true,
+      "expected_action": "cicd.rollback_release",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_change_records"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_recent_deployments",
+          "check_pipeline_status",
+          "get_deployment_status",
+          "get_change_records",
+          "check_canary_status"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -3480,11 +3664,72 @@
     "title": "数据库连接池饱和 / 慢查询",
     "description": "数据库场景，连接池接近打满、慢查询和 DB health 同时退化；网络只保留轻微上游超时噪声，适合验证 network -> db 扩域。",
     "expected_root_cause": "db_pool_saturation",
+    "difficulty": "medium",
+    "failure_mode": "db_pool_saturation",
+    "root_cause_taxonomy": "database.connection_pool_saturation",
     "tags": [
       "db",
       "connection-pool",
       "slow-query"
     ],
+    "user_prompt_templates": [
+      "order-service 数据库连接池打满了，接口很慢。",
+      "order-service 为什么一直 timeout，gateway 偶尔 502。",
+      "用户说订单查询很慢，我怀疑是网络问题，帮我确认。"
+    ],
+    "noise_factors": [
+      "gateway_502",
+      "minor_network_jitter",
+      "recent_deploy_noise"
+    ],
+    "evaluation_focus": [
+      "tool_selection",
+      "causal_reasoning",
+      "negative_evidence",
+      "cross_domain_expansion"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "慢查询和 DB IO 压力导致连接池耗尽，应用请求排队后超时。",
+      "failure_mode": "db_pool_saturation",
+      "root_cause_taxonomy": "database.connection_pool_saturation",
+      "primary_evidence_tools": [
+        "inspect_connection_pool",
+        "inspect_slow_queries",
+        "inspect_db_instance_health"
+      ],
+      "negative_evidence_tools": [
+        "inspect_upstream_dependency",
+        "check_recent_deployments",
+        "check_pod_status"
+      ],
+      "preferred_first_tools": [
+        "inspect_connection_pool",
+        "inspect_slow_queries",
+        "inspect_db_instance_health"
+      ],
+      "should_request_approval": false,
+      "expected_action": "",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_connection_pool",
+          "inspect_slow_queries",
+          "inspect_db_instance_health"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 2,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -4601,11 +4846,59 @@
     "title": "SDE 配额耗尽 / 资源开通失败",
     "description": "SDE / 资源配额场景，CPU、内存和 Pod quota 均不足，适合验证 quota 工具单域命中。",
     "expected_root_cause": "quota_exhausted",
+    "difficulty": "easy",
+    "failure_mode": "quota_exhausted",
+    "root_cause_taxonomy": "sde.resource_quota_exhausted",
     "tags": [
       "sde",
       "quota",
       "provisioning"
     ],
+    "user_prompt_templates": [
+      "order-service 新环境创建失败，提示 quota 不足。",
+      "帮我看下 order-service 资源开通为什么失败。",
+      "SDE bootstrap 卡住了，好像是配额问题。"
+    ],
+    "noise_factors": [
+      "provisioning_failure_only"
+    ],
+    "evaluation_focus": [
+      "single_tool_convergence",
+      "tool_selection"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "SDE 资源开通失败由 namespace / environment quota 耗尽导致。",
+      "failure_mode": "quota_exhausted",
+      "root_cause_taxonomy": "sde.resource_quota_exhausted",
+      "primary_evidence_tools": [
+        "get_quota_status"
+      ],
+      "negative_evidence_tools": [
+        "check_pod_status",
+        "inspect_upstream_dependency",
+        "check_recent_deployments"
+      ],
+      "preferred_first_tools": [
+        "get_quota_status"
+      ],
+      "should_request_approval": false,
+      "expected_action": "",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_tools": [
+          "get_quota_status"
+        ],
+        "first_any_tools": [
+          "get_quota_status"
+        ],
+        "first_any_tools_min_matches": 1,
+        "first_any_tools_window": 1,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 1,
+        "max_tool_calls_used": 2
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -5713,11 +6006,72 @@
     "title": "CPU 饱和 / 线程池排队",
     "description": "K8s 资源瓶颈场景，Pod 都是 Running，但 CPU throttling 和应用线程池队列持续升高，适合验证非 OOM 的运行时资源瓶颈。",
     "expected_root_cause": "cpu_thread_pool_saturation",
+    "difficulty": "medium",
+    "failure_mode": "cpu_thread_pool_saturation",
+    "root_cause_taxonomy": "runtime.cpu_thread_pool_saturation",
     "tags": [
       "k8s",
       "cpu",
       "thread-pool"
     ],
+    "user_prompt_templates": [
+      "order-service CPU 很高，线程池队列堆积，请完整排查根因。",
+      "用户反馈 order-service 响应慢，监控里 CPU 有点高。",
+      "order-service 没有明显发布，但接口越来越慢，帮我看 runtime 资源。"
+    ],
+    "noise_factors": [
+      "pod_running_but_degraded",
+      "no_recent_release"
+    ],
+    "evaluation_focus": [
+      "runtime_resource_reasoning",
+      "tool_selection",
+      "negative_evidence"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "CPU 饱和和线程池队列堆积导致请求处理延迟升高。",
+      "failure_mode": "cpu_thread_pool_saturation",
+      "root_cause_taxonomy": "runtime.cpu_thread_pool_saturation",
+      "primary_evidence_tools": [
+        "inspect_cpu_saturation",
+        "inspect_thread_pool_status",
+        "inspect_pod_logs"
+      ],
+      "negative_evidence_tools": [
+        "check_recent_deployments",
+        "inspect_connection_pool",
+        "inspect_vpc_connectivity"
+      ],
+      "preferred_first_tools": [
+        "check_pod_status",
+        "inspect_cpu_saturation",
+        "inspect_thread_pool_status",
+        "inspect_pod_logs"
+      ],
+      "should_request_approval": false,
+      "expected_action": "",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_cpu_saturation",
+          "inspect_thread_pool_status",
+          "inspect_pod_logs"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_pod_status",
+          "inspect_cpu_saturation",
+          "inspect_thread_pool_status",
+          "inspect_pod_logs"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 4,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 5
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -6818,12 +7172,75 @@
     "title": "Ingress/LB/VPC 网络阻塞",
     "description": "网络强证据场景，ingress 后端 mismatch、VPC 连接 blocked、LB backend degraded，上游 timeout 明显升高。",
     "expected_root_cause": "ingress_lb_vpc_block",
+    "difficulty": "medium",
+    "failure_mode": "ingress_lb_vpc_block",
+    "root_cause_taxonomy": "network.ingress_lb_vpc_block",
     "tags": [
       "network",
       "ingress",
       "load-balancer",
       "vpc"
     ],
+    "user_prompt_templates": [
+      "order-service gateway 502 很多，而且 upstream timeout 明显增多。",
+      "order-service 对外接口间歇性不可用，帮我定位网络链路。",
+      "用户说 502，我担心是数据库，但入口侧也有 timeout。"
+    ],
+    "noise_factors": [
+      "db_suspicion_noise",
+      "gateway_502"
+    ],
+    "evaluation_focus": [
+      "strong_signal_early_stop",
+      "tool_selection",
+      "negative_evidence"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "Ingress、LB 或 VPC 访问链路阻塞导致 upstream timeout 和 gateway 502。",
+      "failure_mode": "ingress_lb_vpc_block",
+      "root_cause_taxonomy": "network.ingress_lb_vpc_block",
+      "primary_evidence_tools": [
+        "inspect_ingress_route",
+        "inspect_vpc_connectivity",
+        "inspect_upstream_dependency",
+        "inspect_load_balancer_status"
+      ],
+      "negative_evidence_tools": [
+        "inspect_connection_pool",
+        "check_recent_deployments",
+        "check_pod_status"
+      ],
+      "preferred_first_tools": [
+        "inspect_ingress_route",
+        "inspect_vpc_connectivity",
+        "inspect_upstream_dependency",
+        "inspect_load_balancer_status"
+      ],
+      "should_request_approval": false,
+      "expected_action": "",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency",
+          "inspect_load_balancer_status"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "inspect_ingress_route",
+          "inspect_vpc_connectivity",
+          "inspect_upstream_dependency",
+          "inspect_load_balancer_status"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 3,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 4
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {
@@ -7919,11 +8336,80 @@
     "title": "灰度发布失败 / Canary 指标回退",
     "description": "发布/变更场景，灰度版本在 20% 流量下 success rate 和 p99 指标失败，pipeline 停在 canary-analysis，适合验证 canary 与回滚证据。",
     "expected_root_cause": "canary_release_regression",
+    "difficulty": "hard",
+    "failure_mode": "canary_release_regression",
+    "root_cause_taxonomy": "cicd.canary_release_regression",
     "tags": [
       "cicd",
       "canary",
       "rollback"
     ],
+    "user_prompt_templates": [
+      "order-service 灰度发布失败，canary analysis 报错，帮我定位是否需要回滚。",
+      "order-service 新版本只放了部分流量，但成功率明显下降。",
+      "发布看起来没完全失败，但 canary 指标异常，帮我确认根因。"
+    ],
+    "noise_factors": [
+      "partial_traffic_shift",
+      "healthy_pods_noise",
+      "rollback_available"
+    ],
+    "evaluation_focus": [
+      "canary_reasoning",
+      "change_attribution",
+      "approval_generation",
+      "negative_evidence"
+    ],
+    "expected_diagnosis": {
+      "root_cause": "灰度版本 canary 指标失败，新 revision 导致错误率和延迟退化，需要回滚到稳定版本。",
+      "failure_mode": "canary_release_regression",
+      "root_cause_taxonomy": "cicd.canary_release_regression",
+      "primary_evidence_tools": [
+        "check_canary_status",
+        "check_pipeline_status",
+        "get_deployment_status",
+        "get_change_records",
+        "get_rollback_history"
+      ],
+      "negative_evidence_tools": [
+        "check_pod_status",
+        "inspect_connection_pool",
+        "inspect_upstream_dependency"
+      ],
+      "preferred_first_tools": [
+        "check_recent_deployments",
+        "check_canary_status",
+        "check_pipeline_status",
+        "get_deployment_status",
+        "get_change_records"
+      ],
+      "should_request_approval": true,
+      "expected_action": "cicd.rollback_release",
+      "eval_expect": {
+        "status": "completed",
+        "route": "react_tool_first",
+        "required_any_tools": [
+          "check_canary_status",
+          "check_pipeline_status",
+          "get_deployment_status",
+          "get_change_records",
+          "get_rollback_history"
+        ],
+        "required_any_tools_min_matches": 2,
+        "first_any_tools": [
+          "check_recent_deployments",
+          "check_canary_status",
+          "check_pipeline_status",
+          "get_deployment_status",
+          "get_change_records"
+        ],
+        "first_any_tools_min_matches": 2,
+        "first_any_tools_window": 4,
+        "expansion_probe_required": false,
+        "min_tool_calls_used": 2,
+        "max_tool_calls_used": 5
+      }
+    },
     "services": {
       "order-service": {
         "check_canary_status": {

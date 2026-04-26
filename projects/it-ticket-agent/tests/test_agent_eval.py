@@ -2103,6 +2103,13 @@ class SessionFlowDatasetLoadTest(unittest.TestCase):
             "case8_canary_release_regression",
             {case.setup.tool_profile.case_id for case in dataset.cases if case.setup.tool_profile},
         )
+        network_case = next(case for case in dataset.cases if case.case_id == "network_profile_prefers_network_tools")
+        self.assertEqual(network_case.expect.status, "completed")
+        self.assertEqual(network_case.expect.route, "react_tool_first")
+        self.assertEqual(
+            network_case.expect.required_any_tools,
+            ["inspect_ingress_route", "inspect_vpc_connectivity", "inspect_upstream_dependency"],
+        )
 
     def test_world_eval_dataset_uses_mock_case_profiles(self) -> None:
         dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "world_cases.json")
@@ -2114,6 +2121,15 @@ class SessionFlowDatasetLoadTest(unittest.TestCase):
             "case6_cpu_thread_saturation",
             {case.setup.tool_profile.case_id for case in dataset.cases if case.setup.tool_profile},
         )
+        quota_case = next(case for case in dataset.cases if case.case_id == "world_quota_exhaustion_single_domain")
+        self.assertEqual(quota_case.expect.required_tools, ["get_quota_status"])
+        self.assertEqual(quota_case.expect.first_any_tools, ["get_quota_status"])
+        db_noise_case = next(case for case in dataset.cases if case.case_id == "world_timeout_db_pool_with_network_noise")
+        self.assertEqual(
+            db_noise_case.expect.required_any_tools,
+            ["inspect_connection_pool", "inspect_slow_queries", "inspect_db_instance_health"],
+        )
+        self.assertEqual(db_noise_case.expect.expanded_domains, ["db"])
 
     def test_rag_eval_keeps_retrieval_mocks_but_uses_world_profiles_for_diagnosis(self) -> None:
         dataset = load_agent_eval_dataset(PROJECT_ROOT / "data" / "evals" / "rag_cases.json")

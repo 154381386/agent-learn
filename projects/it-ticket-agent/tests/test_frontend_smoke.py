@@ -202,6 +202,8 @@ class FrontendConsoleSmokeTest(unittest.TestCase):
         self.assertIn("environmentNameInput", app_js.text)
         self.assertIn("loadMockWorlds", app_js.text)
         self.assertIn("selectedMockWorldPayload", app_js.text)
+        self.assertIn("user_prompt_templates", app_js.text)
+        self.assertIn("evaluation_focus", app_js.text)
         self.assertIn("shouldRenderAssistantAsPlainChat", app_js.text)
         self.assertIn("syncMockWorldFromDetail", app_js.text)
         self.assertIn("renderAgentActivityEvents", app_js.text)
@@ -277,6 +279,10 @@ class FrontendConsoleSmokeTest(unittest.TestCase):
         for world in order_worlds:
             self.assertEqual(world["tool_names"], expected_tool_names)
             self.assertEqual(sorted(world["mock_tool_responses"].keys()), expected_tool_names)
+            self.assertTrue(world["difficulty"])
+            self.assertTrue(world["user_prompt_templates"])
+            self.assertTrue(world["evaluation_focus"])
+            self.assertTrue(world["expected_diagnosis"].get("primary_evidence_tools"))
             for tool_name in expected_tool_names:
                 tool_response = world["mock_tool_responses"][tool_name]
                 self.assertNotIn("summary", tool_response)

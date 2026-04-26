@@ -2907,3 +2907,28 @@ uv run python -m unittest discover -s tests -q
 
 **下一步**
 - 后续可把“首轮最小探测工具数”和“排除哪些非现场工具”抽成配置，方便不同垂直 Agent 调整。
+
+## 2026-04-26 Mock World 场景 DSL 与 Eval 断言继承
+
+**问题**
+- `mock_case_profiles.json` 已经是完整 Mock 世界，但它主要像“工具返回集合”，场景意图、难度、噪声、评估重点和期望诊断散落在 eval dataset 与文档里。
+- `tool_mock_cases.json` / `world_cases.json` 反复写 `status / route / required_any_tools / tool budget` 等默认断言，新增或调整场景时容易双写漂移。
+
+**原因**
+- 早期 eval case 直接写断言最直观，但随着 Mock 世界覆盖全部工具，场景事实和评估标准应该以世界为中心维护。
+- 项目目标是 Agent 层能力，不适合引入很重的本地 Prometheus/K8s/Loki/GitLab 仿真服务。
+
+**改动**
+- 将 `mock_case_profiles.json` 升级为轻量 Agent Scenario DSL，每个世界新增 `difficulty / failure_mode / root_cause_taxonomy / user_prompt_templates / noise_factors / evaluation_focus / expected_diagnosis`。
+- 在 `expected_diagnosis.eval_expect` 中沉淀该世界的默认评估断言，包括核心证据工具、首查工具、tool budget 和是否需要扩域。
+- `load_agent_eval_dataset` 会按 `setup.tool_profile` 自动继承 profile 默认断言，eval case 只保留误导 prompt、扩域、强证据早停、forbidden tools 等 case-specific 覆盖。
+- `/api/v1/mock-worlds` 暴露场景 DSL 元数据；前端 Mock 世界卡片展示难度、评估重点和示例问题，选择世界时可自动填入第一条示例问题。
+
+**影响**
+- Mock 世界从“工具返回集合”变成“Agent 场景协议”：同一份数据同时支撑前端演示、真实 LLM eval 和场景扩展。
+- 新增 case 时先补场景事实和默认期望，再按需要添加少量 eval 覆盖，减少重复断言。
+- 项目仍保持轻量，重点留在工具选择、证据融合、扩域、审批和记忆沉淀，而不是外部系统仿真。
+
+**下一步**
+- 后续可以继续补 prompt 变体生成器，例如弱症状、误导症状、噪声症状、多轮追问和审批追问。
+- 如果场景继续增多，可以给 `mock_case_profiles.json` 增加 JSON schema 校验，保证每个世界都具备完整 DSL 字段。

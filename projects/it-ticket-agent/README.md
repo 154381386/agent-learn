@@ -156,6 +156,8 @@ P1 后 `working_memory` 不再只有结构化槽位，还包含 `narrative_summa
 1. `mock_response` / `mock_tool_responses`
 2. `mock_case`
 
+`mock_case_profiles.json` 现在不只是工具返回集合，也是一层轻量 Agent Scenario DSL：每个世界会声明 `difficulty / user_prompt_templates / noise_factors / evaluation_focus / expected_diagnosis`。其中 `expected_diagnosis.eval_expect` 是该世界的默认评估断言，`tool_mock_cases.json` 和 `world_cases.json` 只保留首轮误导、扩域、强证据早停等 case-specific 覆盖，避免重复维护 required tools、tool budget 和 route/status。
+
 示例：让服务端默认进入 `case1` OOM 世界
 
 ```bash
@@ -527,6 +529,8 @@ make eval-regression
   更强调单域收敛、跨域扩展、强证据早停等搜索策略回归
 - world dataset:
   更强调完整 mock world 下的事故结构覆盖；工具返回不再散落在 eval case 内，而是全部来自 `mock_case_profiles.json`
+- scenario DSL:
+  `expected_diagnosis.eval_expect` 提供默认断言，eval dataset 只覆盖 prompt 变体、误导入口、扩域要求和禁止工具等测试重点
 - 旧 `mock_world_state / world_simulator` 投影器已下线，避免形成第二套 mock 维护口径
 
 `run_agent_eval.py` 会自动识别 dataset 类型：

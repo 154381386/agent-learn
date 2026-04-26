@@ -551,10 +551,19 @@ function renderMockWorldSummary() {
   description.textContent = selectedMockWorld.description || '这个世界会固定返回一组 mock 工具结果。';
   const meta = document.createElement('span');
   const toolNames = (selectedMockWorld.tool_names || []).slice(0, 6).join(', ');
-  meta.textContent = `${selectedMockWorld.tool_count || 0} 个工具 mock${toolNames ? `：${toolNames}` : ''}`;
+  const difficulty = selectedMockWorld.difficulty ? `难度：${selectedMockWorld.difficulty} · ` : '';
+  meta.textContent = `${difficulty}${selectedMockWorld.tool_count || 0} 个工具 mock${toolNames ? `：${toolNames}` : ''}`;
+  const focus = document.createElement('span');
+  const focusItems = (selectedMockWorld.evaluation_focus || []).slice(0, 4).join(' / ');
+  focus.textContent = focusItems ? `评估重点：${focusItems}` : '';
+  const promptHint = document.createElement('span');
+  const promptTemplate = (selectedMockWorld.user_prompt_templates || [])[0];
+  promptHint.textContent = promptTemplate ? `示例问题：${promptTemplate}` : '';
   mockWorldSummary.appendChild(title);
   mockWorldSummary.appendChild(description);
   mockWorldSummary.appendChild(meta);
+  if (focus.textContent) mockWorldSummary.appendChild(focus);
+  if (promptHint.textContent) mockWorldSummary.appendChild(promptHint);
 }
 
 function selectMockWorld(worldId, { applyDefaults = true } = {}) {
@@ -565,6 +574,8 @@ function selectMockWorld(worldId, { applyDefaults = true } = {}) {
   if (selectedMockWorld && applyDefaults) {
     serviceNameInput.value = selectedMockWorld.service || serviceNameInput.value;
     if (environmentNameInput && !environmentNameInput.value) environmentNameInput.value = 'prod';
+    const promptTemplate = (selectedMockWorld.user_prompt_templates || [])[0];
+    if (promptTemplate && messageInput && !messageInput.value.trim()) messageInput.value = promptTemplate;
   }
   messageForm.classList.toggle('mock-world-mode', Boolean(selectedMockWorld));
   renderMockWorldSummary();

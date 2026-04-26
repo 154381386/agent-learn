@@ -234,8 +234,40 @@ class AgentEvalReport:
 def load_agent_eval_dataset(path: str | Path) -> AgentEvalDataset:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(payload, list):
-        return AgentEvalDataset(cases=[AgentEvalCase.model_validate(item) for item in payload])
-    return AgentEvalDataset.model_validate(payload)
+        dataset = AgentEvalDataset(cases=[AgentEvalCase.model_validate(item) for item in payload])
+    else:
+        dataset = AgentEvalDataset.model_validate(payload)
+    return apply_tool_profile_expectation_defaults(dataset)
+
+
+def apply_tool_profile_expectation_defaults(
+    dataset: AgentEvalDataset,
+    *,
+    profiles_path: str | Path | None = None,
+) -> AgentEvalDataset:
+    enriched_cases = [
+        _apply_tool_profile_expectation_defaults_to_case(case, profiles_path=profiles_path)
+        for case in dataset.cases
+    ]
+    return dataset.model_copy(update={"cases": enriched_cases})
+
+
+def _apply_tool_profile_expectation_defaults_to_case(
+    case: AgentEvalCase,
+    *,
+    profiles_path: str | Path | None = None,
+) -> AgentEvalCase:
+    profile_defaults = resolve_tool_profile_eval_expectation(
+        case.setup.tool_profile,
+        profiles_path=profiles_path,
+    )
+    if not profile_defaults:
+        return case
+    explicit_expectation = case.expect.model_dump(include=case.expect.model_fields_set, mode="json")
+    merged_expectation = AgentEvalExpectation.model_validate(
+        _deep_merge_dicts(profile_defaults, explicit_expectation)
+    )
+    return case.model_copy(update={"expect": merged_expectation})
 
 
 def _deep_merge_dicts(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -246,6 +278,37 @@ def _deep_merge_dicts(base: Mapping[str, Any], override: Mapping[str, Any]) -> d
         else:
             merged[key] = value
     return merged
+
+
+def resolve_tool_profile_case_payload(
+    profile: ToolProfileRef | None,
+    *,
+    profiles_path: str | Path | None = None,
+) -> dict[str, Any]:
+    if profile is None:
+        return {}
+    path = Path(profiles_path or DEFAULT_CASE_PROFILES_PATH)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    case_payload = payload.get(profile.case_id)
+    return dict(case_payload) if isinstance(case_payload, dict) else {}
+
+
+def resolve_tool_profile_eval_expectation(
+    profile: ToolProfileRef | None,
+    *,
+    profiles_path: str | Path | None = None,
+) -> dict[str, Any]:
+    case_payload = resolve_tool_profile_case_payload(profile, profiles_path=profiles_path)
+    expected_diagnosis = case_payload.get("expected_diagnosis")
+    if not isinstance(expected_diagnosis, Mapping):
+        return {}
+    eval_expect = expected_diagnosis.get("eval_expect")
+    return dict(eval_expect) if isinstance(eval_expect, Mapping) else {}
 
 
 def resolve_tool_profile_mock_responses(

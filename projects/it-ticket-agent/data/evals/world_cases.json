@@ -24,21 +24,12 @@
         }
       },
       "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
-        "required_any_tools": [
-          "inspect_connection_pool",
-          "inspect_slow_queries",
-          "inspect_db_instance_health"
-        ],
-        "required_any_tools_min_matches": 2,
         "first_any_tools": [
           "inspect_ingress_route",
           "inspect_vpc_connectivity",
           "inspect_upstream_dependency",
           "inspect_load_balancer_status"
         ],
-        "first_any_tools_min_matches": 2,
         "first_any_tools_window": 3,
         "expanded_domains": [
           "db"
@@ -64,14 +55,6 @@
         }
       },
       "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
-        "required_any_tools": [
-          "check_pod_status",
-          "inspect_pod_logs",
-          "inspect_pod_events"
-        ],
-        "required_any_tools_min_matches": 2,
         "first_any_tools": [
           "check_recent_deployments",
           "check_pipeline_status",
@@ -79,7 +62,6 @@
           "get_change_records",
           "check_canary_status"
         ],
-        "first_any_tools_min_matches": 2,
         "first_any_tools_window": 3,
         "expanded_domains": [
           "k8s"
@@ -105,23 +87,11 @@
         }
       },
       "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
-        "required_any_tools": [
-          "inspect_ingress_route",
-          "inspect_vpc_connectivity",
-          "inspect_upstream_dependency",
-          "inspect_load_balancer_status"
-        ],
-        "required_any_tools_min_matches": 2,
-        "expansion_probe_required": false,
         "forbidden_tools": [
           "inspect_connection_pool",
           "check_recent_deployments",
           "check_pod_status"
-        ],
-        "min_tool_calls_used": 2,
-        "max_tool_calls_used": 4
+        ]
       }
     },
     {
@@ -140,20 +110,16 @@
         }
       },
       "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
         "required_any_tools": [
           "inspect_upstream_dependency",
           "inspect_vpc_connectivity",
           "inspect_ingress_route"
         ],
-        "required_any_tools_min_matches": 2,
         "first_any_tools": [
           "inspect_connection_pool",
           "inspect_slow_queries",
           "inspect_db_instance_health"
         ],
-        "first_any_tools_min_matches": 2,
         "first_any_tools_window": 3,
         "expanded_domains": [
           "network"
@@ -178,21 +144,7 @@
           "service": "order-service"
         }
       },
-      "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
-        "required_tools": [
-          "get_quota_status"
-        ],
-        "first_any_tools": [
-          "get_quota_status"
-        ],
-        "first_any_tools_min_matches": 1,
-        "first_any_tools_window": 1,
-        "expansion_probe_required": false,
-        "min_tool_calls_used": 1,
-        "max_tool_calls_used": 2
-      }
+      "expect": {}
     },
     {
       "case_id": "world_cpu_thread_pool_saturation",
@@ -209,27 +161,7 @@
           "service": "order-service"
         }
       },
-      "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
-        "required_any_tools": [
-          "inspect_cpu_saturation",
-          "inspect_thread_pool_status",
-          "inspect_pod_logs"
-        ],
-        "required_any_tools_min_matches": 2,
-        "first_any_tools": [
-          "check_pod_status",
-          "inspect_cpu_saturation",
-          "inspect_thread_pool_status",
-          "inspect_pod_logs"
-        ],
-        "first_any_tools_min_matches": 2,
-        "first_any_tools_window": 4,
-        "expansion_probe_required": false,
-        "min_tool_calls_used": 2,
-        "max_tool_calls_used": 5
-      }
+      "expect": {}
     },
     {
       "case_id": "world_canary_regression_stays_cicd",
@@ -246,21 +178,7 @@
           "service": "order-service"
         }
       },
-      "expect": {
-        "status": "completed",
-        "route": "react_tool_first",
-        "required_any_tools": [
-          "check_canary_status",
-          "check_pipeline_status",
-          "get_deployment_status",
-          "get_change_records",
-          "get_rollback_history"
-        ],
-        "required_any_tools_min_matches": 2,
-        "expansion_probe_required": false,
-        "min_tool_calls_used": 2,
-        "max_tool_calls_used": 5
-      }
+      "expect": {}
     }
   ]
 }

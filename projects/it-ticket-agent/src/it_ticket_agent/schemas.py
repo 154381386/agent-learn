@@ -147,6 +147,12 @@ class MockWorldResponse(BaseModel):
     service: str
     label: str
     description: str = ""
+    difficulty: str = ""
+    tags: List[str] = Field(default_factory=list)
+    user_prompt_templates: List[str] = Field(default_factory=list)
+    noise_factors: List[str] = Field(default_factory=list)
+    evaluation_focus: List[str] = Field(default_factory=list)
+    expected_diagnosis: Dict[str, Any] = Field(default_factory=dict)
     tool_count: int = 0
     tool_names: List[str] = Field(default_factory=list)
     mock_tool_responses: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
