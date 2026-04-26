@@ -2,72 +2,84 @@
   "车云服务": {
     "error": {
       "inspect_db_instance_health": {
-        "summary": "车云服务数据库实例状态降级。",
-        "payload": {"service": "车云服务", "db_health": "degraded"},
-        "evidence": ["primary CPU high"]
+        "payload": {
+          "service": "车云服务",
+          "db_health": "degraded"
+        }
       },
       "inspect_replication_status": {
-        "summary": "车云服务复制延迟较高。",
-        "payload": {"service": "车云服务", "lag_seconds": 42},
-        "evidence": ["replication lag 42s"]
+        "payload": {
+          "service": "车云服务",
+          "lag_seconds": 42
+        }
       },
       "inspect_slow_queries": {
-        "summary": "车云服务存在慢查询。",
-        "payload": {"service": "车云服务", "slow_query_count": 4},
-        "evidence": ["top query exceeds 3s"]
+        "payload": {
+          "service": "车云服务",
+          "slow_query_count": 4
+        }
       },
       "inspect_connection_pool": {
-        "summary": "车云服务连接池已接近耗尽。",
-        "payload": {"service": "车云服务", "pool_state": "saturated"},
-        "evidence": ["pool usage 97%"]
+        "payload": {
+          "service": "车云服务",
+          "pool_state": "saturated"
+        }
       },
       "inspect_schema_change_records": {
-        "summary": "车云服务最近存在 schema 变更。",
-        "payload": {"service": "车云服务", "schema_change_count": 1},
-        "evidence": ["DDL change in last hour"]
+        "payload": {
+          "service": "车云服务",
+          "schema_change_count": 1
+        }
       }
     },
     "health": {
       "inspect_db_instance_health": {
-        "summary": "车云服务数据库实例正常。",
-        "payload": {"service": "车云服务", "db_health": "healthy"},
-        "evidence": ["replica healthy"]
+        "payload": {
+          "service": "车云服务",
+          "db_health": "healthy"
+        }
       }
     }
   },
   "支付服务": {
     "error": {
       "inspect_db_instance_health": {
-        "summary": "支付服务数据库状态异常。",
-        "payload": {"service": "支付服务", "db_health": "degraded"},
-        "evidence": ["storage latency elevated"]
+        "payload": {
+          "service": "支付服务",
+          "db_health": "degraded"
+        }
       },
       "inspect_replication_status": {
-        "summary": "支付服务主从复制延迟。",
-        "payload": {"service": "支付服务", "lag_seconds": 65},
-        "evidence": ["lag exceeds threshold"]
+        "payload": {
+          "service": "支付服务",
+          "lag_seconds": 65
+        }
       },
       "inspect_slow_queries": {
-        "summary": "支付服务慢查询增多。",
-        "payload": {"service": "支付服务", "slow_query_count": 5},
-        "evidence": ["callback query slow"]
+        "payload": {
+          "service": "支付服务",
+          "slow_query_count": 5
+        }
       },
       "inspect_connection_pool": {
-        "summary": "支付服务连接池饱和。",
-        "payload": {"service": "支付服务", "pool_state": "saturated"},
-        "evidence": ["too many connections"]
+        "payload": {
+          "service": "支付服务",
+          "pool_state": "saturated"
+        }
       },
       "inspect_schema_change_records": {
-        "summary": "支付服务最近有 schema 变更。",
-        "payload": {"service": "支付服务", "schema_change_count": 2},
-        "evidence": ["two migrations in last 24h"]
+        "payload": {
+          "service": "支付服务",
+          "schema_change_count": 2
+        }
       }
     },
     "health": {
       "inspect_db_instance_health": {
-        "summary": "支付服务数据库健康正常。",
-        "payload": {"service": "支付服务", "db_health": "healthy"},
-        "evidence": ["db metrics normal"]
+        "payload": {
+          "service": "支付服务",
+          "db_health": "healthy"
+        }
       }
     }
   }

@@ -410,11 +410,28 @@ class SupervisorOrchestrator:
         incident_metadata = incident_state.get("metadata") if isinstance(incident_state.get("metadata"), dict) else {}
         if isinstance(incident_metadata.get("aggregated_result"), dict):
             aggregated_result = dict(incident_metadata.get("aggregated_result") or {})
+        ranked_result = incident_state.get("ranked_result") if isinstance(incident_state.get("ranked_result"), dict) else {}
+        ranked_primary = (ranked_result.get("primary") or {}) if isinstance(ranked_result, dict) else {}
         key_evidence = []
-        if isinstance(diagnosis.get("evidence"), list):
-            key_evidence.extend(str(item) for item in diagnosis.get("evidence", []) if item)
-        if not key_evidence and isinstance(aggregated_result.get("evidence"), list):
-            key_evidence.extend(str(item) for item in aggregated_result.get("evidence", []) if item)
+
+        def add_evidence_items(items: Any) -> None:
+            if not isinstance(items, list):
+                return
+            for item in items:
+                value = ""
+                if isinstance(item, dict):
+                    value = str(item.get("evidence") or item.get("summary") or item.get("detail") or item.get("title") or "")
+                else:
+                    value = str(item or "")
+                value = value.strip()
+                if value and value not in key_evidence:
+                    key_evidence.append(value)
+
+        add_evidence_items(ranked_primary.get("evidence"))
+        add_evidence_items(ranked_primary.get("source_refs"))
+        add_evidence_items(diagnosis.get("evidence"))
+        if not key_evidence:
+            add_evidence_items(aggregated_result.get("evidence"))
         findings = diagnosis.get("findings") if isinstance(diagnosis.get("findings"), list) else []
         if not findings and isinstance(aggregated_result.get("findings"), list):
             findings = aggregated_result.get("findings")
@@ -441,7 +458,6 @@ class SupervisorOrchestrator:
         approved_actions = incident_state.get("approved_actions") if isinstance(incident_state.get("approved_actions"), list) else []
         execution_results = incident_state.get("execution_results") if isinstance(incident_state.get("execution_results"), list) else []
         diagnosis_approval = diagnosis.get("approval") if isinstance(diagnosis.get("approval"), dict) else {}
-        ranked_result = incident_state.get("ranked_result") if isinstance(incident_state.get("ranked_result"), dict) else {}
         final_action = ""
         if approved_actions and isinstance(approved_actions[0], dict):
             final_action = str(approved_actions[0].get("action") or "")
@@ -452,9 +468,11 @@ class SupervisorOrchestrator:
 
         root_cause = str(
             diagnosis.get("root_cause")
-            or diagnosis.get("summary")
+            or ranked_primary.get("root_cause")
+            or aggregated_result.get("root_cause")
             or aggregated_result.get("summary")
             or incident_state.get("final_summary")
+            or diagnosis.get("summary")
             or ""
         )
         symptom = str(

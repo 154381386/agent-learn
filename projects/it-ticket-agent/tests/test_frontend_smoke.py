@@ -263,6 +263,30 @@ class FrontendConsoleSmokeTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         worlds = response.json()
         self.assertTrue(worlds)
+
+        from it_ticket_agent.tools.runtime import build_default_tools
+
+        expected_tool_names = sorted(
+            name
+            for name in build_default_tools().keys()
+            if name not in {"search_knowledge_base", "search_similar_incidents"}
+        )
+        order_worlds = [item for item in worlds if item["service"] == "order-service"]
+        self.assertGreaterEqual(len(order_worlds), 3)
+        payload_key_shapes: dict[str, tuple[str, ...]] = {}
+        for world in order_worlds:
+            self.assertEqual(world["tool_names"], expected_tool_names)
+            self.assertEqual(sorted(world["mock_tool_responses"].keys()), expected_tool_names)
+            for tool_name in expected_tool_names:
+                tool_response = world["mock_tool_responses"][tool_name]
+                self.assertNotIn("summary", tool_response)
+                self.assertNotIn("evidence", tool_response)
+                payload = tool_response.get("payload") or {}
+                self.assertTrue(payload, msg=f"{world['world_id']}::{tool_name} payload is empty")
+                shape = tuple(sorted(payload.keys()))
+                previous = payload_key_shapes.setdefault(tool_name, shape)
+                self.assertEqual(shape, previous, msg=f"payload keys mismatch for {tool_name}")
+
         network_world = next((item for item in worlds if item["world_id"] == "case2::order-service"), None)
         self.assertIsNotNone(network_world)
         self.assertEqual(network_world["case_id"], "case2")
@@ -276,6 +300,18 @@ class FrontendConsoleSmokeTest(unittest.TestCase):
             network_world["mock_tool_responses"]["inspect_upstream_dependency"]["payload"]["dependency_status"],
             "degraded",
         )
+        deploy_world = next((item for item in worlds if item["world_id"] == "case3::order-service"), None)
+        self.assertIsNotNone(deploy_world)
+        self.assertIn("get_change_records", deploy_world["tool_names"])
+        self.assertIn("get_rollback_history", deploy_world["tool_names"])
+        change_response = deploy_world["mock_tool_responses"]["get_change_records"]
+        self.assertEqual(
+            change_response["payload"]["changes"][0]["commit_id"],
+            "8f31c2a",
+        )
+        self.assertNotIn("summary", change_response)
+        self.assertNotIn("evidence", change_response)
+        self.assertIn("发布/变更", deploy_world["description"])
 
 
     def test_sessions_list_api_supports_frontend_session_management(self) -> None:

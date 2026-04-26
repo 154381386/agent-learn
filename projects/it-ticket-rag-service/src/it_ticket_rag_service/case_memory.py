@@ -371,7 +371,23 @@ class CaseMemoryService:
             limit=max(target_top_k, 4),
         )
         hits = self._merge_cases(exact_cases, pattern_cases, semantic_cases)
-        hits.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+        def rank_key(item: Dict[str, Any]) -> tuple[int, int, int, int, int, float]:
+            service_match = int(bool(service) and str(item.get("service") or "") == service)
+            failure_match = int(bool(inferred_failure_mode) and str(item.get("failure_mode") or "") == inferred_failure_mode)
+            taxonomy_match = int(bool(inferred_taxonomy) and str(item.get("root_cause_taxonomy") or "") == inferred_taxonomy)
+            same_service_same_pattern = int(service_match and (failure_match or taxonomy_match))
+            exact_source = int("exact" in str(item.get("recall_source") or ""))
+            return (
+                same_service_same_pattern,
+                failure_match,
+                taxonomy_match,
+                service_match,
+                exact_source,
+                float(item.get("score") or 0.0),
+            )
+
+        hits.sort(key=rank_key, reverse=True)
         return {
             "query": query,
             "hits": hits[:target_top_k],

@@ -11,12 +11,17 @@ class RAGSearchRequest(BaseModel):
 
 class RAGHit(BaseModel):
     chunk_id: str
+    parent_id: str = ""
     title: str
     section: str
+    parent_section: str = ""
     path: str
     category: str
     score: float
     snippet: str
+    child_snippet: str = ""
+    parent_snippet: str = ""
+    retrieval_granularity: str = "chunk"
 
 
 class RAGSearchResponse(BaseModel):

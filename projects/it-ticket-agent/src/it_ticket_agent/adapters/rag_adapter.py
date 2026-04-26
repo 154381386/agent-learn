@@ -28,16 +28,21 @@ def normalize_hit(hit: Any) -> KnowledgeHit:
         payload = {"snippet": hit, "title": hit}
     return KnowledgeHit(
         chunk_id=str(payload.get("chunk_id", payload.get("id", ""))),
+        parent_id=str(payload.get("parent_id", "")),
         title=str(payload.get("title", payload.get("document", ""))),
         section=str(payload.get("section", payload.get("heading", ""))),
+        parent_section=str(payload.get("parent_section", "")),
         path=str(payload.get("path", payload.get("source", ""))),
         category=str(payload.get("category", payload.get("type", ""))),
         score=float(payload.get("score", 0.0) or 0.0),
         snippet=str(payload.get("snippet", payload.get("content", payload.get("text", "")))),
+        child_snippet=str(payload.get("child_snippet", "")),
+        parent_snippet=str(payload.get("parent_snippet", "")),
+        retrieval_granularity=str(payload.get("retrieval_granularity", "chunk")),
         metadata={
             key: value
             for key, value in payload.items()
-            if key not in {"chunk_id", "id", "title", "document", "section", "heading", "path", "source", "category", "type", "score", "snippet", "content", "text"}
+            if key not in {"chunk_id", "id", "parent_id", "title", "document", "section", "heading", "parent_section", "path", "source", "category", "type", "score", "snippet", "child_snippet", "parent_snippet", "retrieval_granularity", "content", "text"}
         },
     )
 

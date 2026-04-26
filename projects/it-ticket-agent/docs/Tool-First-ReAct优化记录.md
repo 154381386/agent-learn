@@ -2608,3 +2608,172 @@ uv run python -m unittest discover -s tests -q
 **下一步**
 - 给 Mock 世界增加推荐起始问题和预期根因，方便一键跑演示。
 - 在 case / playbook 列表增加来源标记，如 `mock_world_id`、`source_session`，让演示样本和真实生产样本更容易区分。
+
+## 2026-04-26 知识 RAG 父子分块召回
+
+**问题**
+- 之前知识库虽然有 section-aware chunking 和 metadata，但检索结果本质上仍是扁平 chunk。
+- 用户问到父子分块时，当前实现不能明确做到“子块向量召回、父块上下文返回”。
+- Agent 侧也无法区分命中的小片段和实际提供给模型的完整上下文。
+
+**原因**
+- pgvector 只有 `documents / chunks` 两层，`chunks` 没有 `parent_id`，没有独立父块表。
+- 本地 `index.json` 只保存 chunks，没有父章节块。
+- RAG API schema 只返回 `snippet`，缺少 `child_snippet / parent_snippet / retrieval_granularity`。
+
+**改动**
+- RAG service 新增 `KnowledgeParentBlock`，本地索引写入 `parents`，pgvector 新增 `parent_blocks` 表。
+- `chunks` 增加 `parent_id`，检索仍以 child chunk 做 sparse/dense/rerank/MMR，最终命中后 hydrate 父章节窗口。
+- RAG API 和 Agent `KnowledgeHit` 增加 `parent_id / parent_section / child_snippet / parent_snippet / retrieval_granularity`。
+- `chunking_signature` 加入 `strategy=section-parent-child-v1`，避免旧索引因为文档 checksum 未变而跳过父块回填。
+- 增加本地 parent-child 回归测试，覆盖“子块命中但返回父块上下文”和旧索引 fallback。
+
+**影响**
+- 知识检索精度仍由小 chunk 保证，但 Agent 拿到的是更完整的章节上下文，减少孤立片段误读。
+- pgvector 和本地索引行为一致；旧索引仍可降级加载，不会因为缺少 parent 表直接失败。
+- 前端/工作台后续可以同时展示命中点和父上下文，解释“为什么召回这条知识”。
+
+**下一步**
+- 可以在诊断工作台的 RAG 面板里把 `child_snippet` 和 `parent_snippet` 分开展示。
+- 后续如果文档规模继续变大，可再加 parent-level 去重、按文档/章节聚合 rerank、以及跨 parent 的上下文预算裁剪。
+
+## 2026-04-26 Mock 世界端到端验证与记忆链路修复
+
+**问题**
+- 用 `case1::order-service` 跑完整 mock 世界时，首次暴露出 RAG 本机调用 502、approval audit event 主键冲突、显式 OOM 被 timeout/5xx 带偏、case-memory 排序不稳等问题。
+- 成功诊断后，`incident_case.key_evidence` 一度保存了审批后执行摘要/变更记录，而不是选中根因的 OOM 证据。
+- case-memory 能召回新案例，但跨服务 OOM 案例可能因为 `pattern + semantic_hybrid` 分数叠加排到同服务案例前面。
+
+**原因**
+- Agent 侧 `httpx.AsyncClient` 默认 `trust_env=True`，在当前系统代理环境下访问 `127.0.0.1:8201` 会被代理成 502。
+- PG 中 `approval_audit_event.event_id` 序列曾低于已有最大主键，导致创建审批事件时冲突。
+- rule-based fallback 中 `explicit_network_signal` 和 `matched cicd/db` 会抑制显式 OOM 的 K8s 假设，导致只查变更、网络和 DB。
+- incident case 生成时优先取 response diagnosis evidence，审批恢复后的 response evidence 可能已经变成执行阶段摘要。
+- case-memory 最终排序只按合并分数，缺少“同服务 + 同故障类型”的业务优先级。
+
+**改动**
+- `RAGServiceClient` 调用 RAG service 时设置 `trust_env=False`，本机服务调用不再被系统代理影响。
+- `PostgresApprovalStoreV2._init_db()` 启动时校准 `approval_audit_event` sequence 到当前最大 `event_id`。
+- rule-based fallback 调整假设生成：显式 OOM/POD 信号始终保留 K8s 检查，不再被 timeout/5xx 或泛化 domain match 屏蔽。
+- `incident_case` 生成优先保存 `ranked_result.primary` 的 root cause 和 evidence/source_refs，再合并最终 response evidence。
+- case-memory 排序增加业务 key：同服务同 failure/taxonomy 优先，其次才看 exact/pattern/semantic 合并分数。
+- 增加回归测试：OOM + timeout 仍执行 `check_pod_status / inspect_pod_logs / inspect_pod_events`；同服务同故障案例优先于跨服务语义高分案例。
+
+**影响**
+- Mock 世界完整链路现在可以跑通：会话 -> RAG -> mock tools -> 高风险审批 -> action 执行 -> feedback -> verified case -> case-memory sync -> Playbook candidate。
+- 最终 `incident_case` 和 case-memory 文档保存的是 OOMKilled、ready 1/2、OutOfMemoryError、exit code 137、Pod event 等根因证据。
+- case-memory 查询 `order-service OOMKilled Java heap space ready 1/2` 时，同服务新案例排在跨服务 OOM 案例前面。
+
+**下一步**
+- 可以把 mock world 的预期根因、推荐开场问题和应调用工具固化为 eval case，避免只靠人工观察。
+- 可以给诊断工作台增加“本次命中的 RAG / case / playbook 是否影响了工具选择”的对照视图。
+
+## 2026-04-26 Mock 世界发布回归链路增强
+
+**问题**
+- 原 `case1::order-service` 过于简单，测试问题必须显式写出 `OOMKilled / Java heap / exit code 137`，等于把根因直接告诉 Agent。
+- 发布/变更方向虽然已有 `check_recent_deployments / get_change_records` 等工具，但规则链路主要靠用户文本触发回滚动作，不能做到“通过工具证据发现某次 commit 导致故障”。
+- 用户在前端测试时不容易看到审批后的 mock action 执行效果，容易误以为审批链路没接上。
+
+**原因**
+- Mock world 描述直接摘取工具 summary，UI 上会提前泄露关键证据。
+- `H-CICD` 的 `recommended_action` 只在用户提到“回滚 / 发布失败 / 最近变更”时设置；如果用户只说“错误率升高、下单失败”，即使工具查到可疑 commit，也不会自动生成回滚审批。
+- rollback mock executor 没有把 `target_revision` 透传到执行结果里，执行反馈不够像真实动作。
+
+**改动**
+- 新增 `case3::order-service`：生产下单失败/5xx/延迟升高，Pod、网络、DB 基本正常，工具链路通过最近发布、rollout、change records 定位 commit `8f31c2a` 把 `readTimeoutMillis` 从 `3000ms` 改成 `300ms`。
+- `H-CICD` 规则验证扩展为服务健康、最近发布、rollout、pipeline、change records、rollback history 六类只读检查。
+- `ReactSupervisor` 增加基于工具证据的动作推导：当近期发布 + 相关 commit + 服务/rollout 退化形成闭环时，即使用户没提“发布/回滚”，也会生成 `cicd.rollback_release` 高风险审批。
+- `H-K8S` 也支持从工具证据识别 OOM 后生成 `restart_pods`，降低对用户显式说出 OOM 的依赖。
+- Mock world 列表描述改为按工具域展示，不再提前暴露具体根因。
+- rollback mock executor 返回 `target_revision` 和本地 job id，让审批后执行结果更像真实动作。
+
+**影响**
+- 更适合真实演示的问题可以变成“order-service 创建订单接口错误率突然升高，用户反馈下单失败”，根因需要 Agent 通过工具查出来。
+- 全链路能覆盖：RAG / case-memory -> 只读工具排查 -> commit 级证据 -> 高风险回滚审批 -> mock action 执行 -> feedback -> case 入库。
+- 前端 mock 世界不会在选择阶段泄露 OOM 或 commit 细节，用户需要从诊断过程里看到工具如何收敛。
+
+**下一步**
+- 把 case3 固化成一键 eval：断言必须调用 `get_change_records`，必须指出 commit `8f31c2a`，必须触发 `cicd.rollback_release` 审批。
+- 前端执行结果面板可以进一步突出“审批后执行了哪个 action、目标版本、job id、执行状态”。
+
+
+## 2026-04-26 Mock Tool 返回真实化
+
+**问题**
+- `case3::order-service` 已能通过工具链路定位发布 commit，但 mock payload 偏“结论化”：字段主要是 `health_status / latest_revision / diff_summary / log_snippets`。
+- 前端和 LLM 都能看到结果，但不像真实值班工具输出，缺少来源系统、查询参数、时间窗、原始片段、资源标识和基线对比。
+
+**原因**
+- 早期 mock 主要服务规则验证，追求最小字段闭环。
+- 真实诊断工具通常来自 Prometheus、Alertmanager、Kubernetes API、ArgoCD、GitLab、Loki、RDS 等系统，返回会同时包含 request、raw response、metrics、events、logs、release history 等结构。
+
+**改动**
+- 保留统一 `ToolExecutionResult` contract：`tool_name / status / summary / payload / evidence / risk` 不变。
+- 补强 `case3::order-service` 的关键工具 payload：增加 `source`、`request`、`observed_at`、`time_range`、`raw_response`、PromQL/API/kubectl/log query、release records、GitLab compare、diff hunks、K8s pod metadata、Loki log streams、SLO burn、rollback candidate 等字段。
+- 保留原有关键字段，如 `latest_revision`、`previous_revision`、`changes`、`last_known_stable_revision`、`ready_replicas`、`log_snippets`，避免破坏现有推理和测试。
+
+**影响**
+- Mock world 现在更像“真实系统返回的结构化观测结果”，而不是人工写好的根因摘要。
+- LLM 可以基于工具来源、查询、时间线、日志、diff 和指标自己收敛根因：commit `8f31c2a` 将 `readTimeoutMillis` 从 `3000ms` 改为 `300ms`，导致 create-order 下游调用超时。
+- 前端工作台展示 tool payload 时，能看到更接近生产工具的表单字段，后续也更容易把不同来源系统分组展示。
+
+**下一步**
+- 为 tool payload 增加轻量 schema/renderer hints，让前端按 `metrics / logs / events / changes / rollout` 自动选择更可读的表格或时间线展示。
+- 给 eval 增加断言：模型不能只复述 summary，必须引用至少一个真实化字段，如 PromQL 指标、GitLab diff hunk、Loki log entry 或 ArgoCD release record。
+
+
+## 2026-04-26 Mock Tool Raw Output 去摘要化
+
+**问题**
+- 上一轮把 mock tool 返回真实化时，仍保留了顶层 `summary/evidence`，这不符合真实工具边界。
+- 真实 tool 不经过 LLM，不应该自己生成自然语言摘要；它只应该返回结构化数据，诊断摘要和证据解释应由 Agent/runtime 基于 payload 派生。
+
+**原因**
+- 早期 `ToolExecutionResult` 同时承担了 raw tool output、UI 展示、规则诊断证据三种职责。
+- mock profile 为了方便测试，直接把人工写好的 `summary/evidence` 放在工具返回里，导致模型可能读到“加工后的结论”。
+
+**改动**
+- mock resolver 不再把 mock profile 的顶层 `summary/evidence` 注入 `ToolExecutionResult`；mock tool 只返回 `status/payload/risk`。
+- mock-world API 对外暴露的 `mock_tool_responses` 会清洗掉 `summary/evidence`，前端传回后端的也是结构化 payload。
+- ReAct prompt 和 tool message 改为 model-visible 结构：`tool_name/status/payload/risk`，不再把 `summary/evidence` 放进 LLM 上下文。
+- 规则诊断、working memory、pinned findings、用户报告所需证据，统一从结构化 `payload` 派生，而不是读取 tool 自带 evidence。
+- 清理 mock profile 顶层 `summary/evidence`，保留 GitLab commit summary、Alertmanager annotation summary 这类真实系统原始字段。
+
+**影响**
+- Mock world 更接近真实工具：Prometheus/Loki/GitLab/K8s 只提供结构化观测数据。
+- LLM 需要从指标、日志、diff、事件、发布记录中自己串证据，不能依赖 mock tool 直接给出的人工结论。
+- UI 侧如果没有 summary/evidence，会展示 payload；后续可继续按 payload schema 做表单化渲染。
+
+**下一步**
+- 进一步把内部兼容 envelope 中的展示字段与 raw tool result 拆成两个模型：`RawToolResult` 和 `ToolObservationView`。
+- 给各类 payload 增加 renderer hints，让前端按 metrics/logs/events/changes 自动渲染。
+
+
+## 2026-04-26 Mock World 全工具覆盖与结构对齐
+
+**问题**
+- 三个 mock world 之前只覆盖关键路径工具：`case1` 覆盖 13/29，`case2` 覆盖 14/29，`case3` 覆盖 20/29。
+- LLM 理论上可以调用任意已注册只读诊断 tool；如果某个 tool 没有 world 内固定返回，会 fallback 到工具默认启发式逻辑，导致 mock world 不封闭。
+- 同名 tool 在不同 world 的 payload key 不完全一致，前端表单化展示和 eval 断言都不稳定。
+
+**原因**
+- 早期 mock world 是为了验证某条诊断主链路，不是完整环境投影。
+- 工具 mock 以“相关工具异常”为主，缺少“无关工具正常/排除性返回”。
+- 没有测试强制校验每个 world 覆盖全部非 RAG tool，也没有校验同名 tool 的 payload 顶层结构一致。
+
+**改动**
+- 将 `case1::order-service`、`case2::order-service`、`case3::order-service` 都补齐为 29 个非 RAG 只读工具返回。
+- RAG / Case Memory / Playbook 仍然不属于 mock world，由真实检索链路负责。
+- 每个 world 的同名 tool 使用相同 payload 顶层 key；差异只体现在字段值，例如 OOM、网络阻塞、发布回归分别通过日志、事件、指标、变更、网络探测等值体现。
+- 保持 tool raw output 去摘要化：mock response 顶层仍不包含 `summary/evidence`，只保留结构化 `payload`。
+- 前端 smoke test 增加校验：每个 order-service mock world 必须覆盖全部非 RAG tools，且同名 tool payload key 必须一致。
+
+**影响**
+- Mock world 变成封闭的可复现场景：LLM 调任意只读诊断 tool 都能得到该世界内一致的结构化返回。
+- 无关方向也会返回正常/排除性证据，避免默认逻辑污染诊断过程。
+- 前端可以安全地按 tool schema 渲染表单，eval 也可以断言任意 tool 的结构存在。
+
+**下一步**
+- 可以继续把每个 tool 的 payload schema 抽成显式定义，用 schema 生成 mock skeleton 和前端 renderer。
+- 可以把“完整 world 覆盖率”加入 CI，防止新增 tool 后忘记补 mock world。

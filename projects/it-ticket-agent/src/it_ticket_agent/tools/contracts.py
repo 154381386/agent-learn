@@ -11,7 +11,7 @@ from ..runtime.contracts import TaskEnvelope
 class ToolExecutionResult(BaseModel):
     tool_name: str
     status: str
-    summary: str
+    summary: str = ""
     payload: Dict[str, Any] = Field(default_factory=dict)
     evidence: List[str] = Field(default_factory=list)
     risk: str = "low"
@@ -19,7 +19,7 @@ class ToolExecutionResult(BaseModel):
 
 class BaseTool(ABC):
     name: str
-    summary: str
+    summary: str = ""
     input_schema: Dict[str, Any] = {"type": "object", "properties": {}}
     risk_level: str = "low"
     retryable: bool = False

@@ -2,67 +2,78 @@
   "车云服务": {
     "error": {
       "inspect_cost_anomaly": {
-        "summary": "车云服务检测到成本尖峰。",
-        "payload": {"service": "车云服务", "anomaly_status": "suspected"},
-        "evidence": ["daily cost +38%"]
+        "payload": {
+          "service": "车云服务",
+          "anomaly_status": "suspected"
+        }
       },
       "inspect_budget_guardrail": {
-        "summary": "车云服务预算护栏告警。",
-        "payload": {"service": "车云服务", "budget_state": "warning"},
-        "evidence": ["budget usage 91%"]
+        "payload": {
+          "service": "车云服务",
+          "budget_state": "warning"
+        }
       },
       "inspect_idle_resource_candidates": {
-        "summary": "车云服务存在闲置资源候选。",
-        "payload": {"service": "车云服务", "candidate_count": 3},
-        "evidence": ["3 idle instances"]
+        "payload": {
+          "service": "车云服务",
+          "candidate_count": 3
+        }
       },
       "inspect_commitment_coverage": {
-        "summary": "车云服务承诺覆盖率偏低。",
-        "payload": {"service": "车云服务", "coverage_ratio": 0.41},
-        "evidence": ["coverage below target"]
+        "payload": {
+          "service": "车云服务",
+          "coverage_ratio": 0.41
+        }
       }
     },
     "health": {
       "inspect_cost_anomaly": {
-        "summary": "车云服务未发现明显成本异常。",
-        "payload": {"service": "车云服务", "anomaly_status": "none"},
-        "evidence": ["cost trend stable"]
+        "payload": {
+          "service": "车云服务",
+          "anomaly_status": "none"
+        }
       },
       "inspect_budget_guardrail": {
-        "summary": "车云服务预算正常。",
-        "payload": {"service": "车云服务", "budget_state": "within_budget"},
-        "evidence": ["budget usage 52%"]
+        "payload": {
+          "service": "车云服务",
+          "budget_state": "within_budget"
+        }
       }
     }
   },
   "支付服务": {
     "error": {
       "inspect_cost_anomaly": {
-        "summary": "支付服务账单出现尖峰。",
-        "payload": {"service": "支付服务", "anomaly_status": "suspected"},
-        "evidence": ["network egress cost spike"]
+        "payload": {
+          "service": "支付服务",
+          "anomaly_status": "suspected"
+        }
       },
       "inspect_budget_guardrail": {
-        "summary": "支付服务预算接近上限。",
-        "payload": {"service": "支付服务", "budget_state": "warning"},
-        "evidence": ["budget usage 95%"]
+        "payload": {
+          "service": "支付服务",
+          "budget_state": "warning"
+        }
       },
       "inspect_idle_resource_candidates": {
-        "summary": "支付服务存在 2 个闲置资源候选。",
-        "payload": {"service": "支付服务", "candidate_count": 2},
-        "evidence": ["2 idle reserved nodes"]
+        "payload": {
+          "service": "支付服务",
+          "candidate_count": 2
+        }
       },
       "inspect_commitment_coverage": {
-        "summary": "支付服务承诺覆盖率不足。",
-        "payload": {"service": "支付服务", "coverage_ratio": 0.48},
-        "evidence": ["coverage gap persists"]
+        "payload": {
+          "service": "支付服务",
+          "coverage_ratio": 0.48
+        }
       }
     },
     "health": {
       "inspect_cost_anomaly": {
-        "summary": "支付服务成本趋势稳定。",
-        "payload": {"service": "支付服务", "anomaly_status": "none"},
-        "evidence": ["daily cost stable"]
+        "payload": {
+          "service": "支付服务",
+          "anomaly_status": "none"
+        }
       }
     }
   }

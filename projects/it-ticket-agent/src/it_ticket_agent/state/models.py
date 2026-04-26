@@ -13,12 +13,17 @@ ApprovalStatus = Literal["approved", "rejected", "cancelled"]
 
 class KnowledgeHit(BaseModel):
     chunk_id: str = ""
+    parent_id: str = ""
     title: str = ""
     section: str = ""
+    parent_section: str = ""
     path: str = ""
     category: str = ""
     score: float = 0.0
     snippet: str = ""
+    child_snippet: str = ""
+    parent_snippet: str = ""
+    retrieval_granularity: str = "chunk"
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

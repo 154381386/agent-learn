@@ -2,122 +2,1118 @@
   "case1": {
     "services": {
       "order-service": {
-        "check_service_health": {
-          "summary": "order-service 在 case1 中表现为内存型故障。",
+        "check_canary_status": {
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "argocd-rollouts",
+            "request": {
+              "source": "argocd-rollouts",
+              "query": "kubectl argo rollouts get rollout order-service -n default",
+              "timeout_ms": 3000
+            },
+            "canary_enabled": false,
+            "canary_status": "not_enabled",
+            "current_weight_percent": 0,
+            "baseline_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "canary_revision": "",
+            "metrics": {
+              "success_rate_percent": 90.6,
+              "p99_latency_ms": 3200,
+              "analysis_status": "not_run"
+            },
+            "analysis_runs": []
+          }
+        },
+        "check_pipeline_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "gitlab-ci",
+            "project": "commerce/order-service",
+            "request": {
+              "source": "gitlab-ci",
+              "query": "GET /projects/commerce%2Forder-service/pipelines/7f8d9aa",
+              "timeout_ms": 3000
+            },
+            "pipeline_status": "success",
+            "failed_stage": "none",
+            "pipeline": {
+              "id": "pipe-7f8d9aa",
+              "commit_id": "7f8d9aa",
+              "branch": "main",
+              "status": "success",
+              "started_at": "2026-04-26T09:08:00+08:00",
+              "finished_at": "2026-04-26T09:38:00+08:00",
+              "duration_sec": 457
+            },
+            "jobs": [
+              {
+                "name": "unit-test",
+                "status": "success",
+                "duration_sec": 91
+              },
+              {
+                "name": "build-image",
+                "status": "success",
+                "duration_sec": 156
+              },
+              {
+                "name": "deploy-prod",
+                "status": "success",
+                "duration_sec": 84
+              }
+            ]
+          }
+        },
+        "check_pod_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "kubernetes-api",
+            "request": {
+              "source": "kubernetes-api",
+              "query": "kubectl -n default get pods -l app=order-service -o json",
+              "timeout_ms": 3000
+            },
+            "selector": "app=order-service",
+            "deployment": "order-service",
+            "replicaset": "order-service-6c9d7b8c9f",
+            "pods": [
+              {
+                "name": "order-service-6c9d7b8c9f-4k2mp",
+                "status": "Running",
+                "phase": "Running",
+                "ready": true,
+                "ready_containers": "2/2",
+                "restarts": 0,
+                "last_reason": "none",
+                "node": "cn-shanghai.10.20.31.17",
+                "pod_ip": "10.244.18.91",
+                "image": "registry.example.com/order-service:2026.04.26.0900-7f8d9aa",
+                "started_at": "2026-04-26T09:38:00+08:00"
+              },
+              {
+                "name": "order-service-6c9d7b8c9f-8xj2d",
+                "status": "OOMKilled",
+                "phase": "OOMKilled",
+                "ready": false,
+                "ready_containers": "1/2",
+                "restarts": 6,
+                "last_reason": "OOMKilled",
+                "node": "cn-shanghai.10.20.32.18",
+                "pod_ip": "10.244.19.92",
+                "image": "registry.example.com/order-service:2026.04.26.0900-7f8d9aa",
+                "started_at": "2026-04-26T09:38:00+08:00"
+              }
+            ],
+            "ready_replicas": 1,
+            "desired_replicas": 2,
+            "raw_response": {
+              "api_version": "v1",
+              "resource_version": "742193844",
+              "item_count": 2
+            }
+          }
+        },
+        "check_recent_alerts": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "alertmanager",
+            "receiver": "oncall-order-platform",
+            "request": {
+              "source": "alertmanager",
+              "query": {
+                "filters": {
+                  "service": "order-service",
+                  "status": "firing"
+                },
+                "window_minutes": 30
+              },
+              "timeout_ms": 3000
+            },
+            "window_minutes": 30,
+            "alert_count": 2,
+            "highest_severity": "critical",
+            "alerts": [
+              {
+                "fingerprint": "am-oom-0",
+                "name": "OrderServicePodOOMKilled",
+                "severity": "critical",
+                "status": "firing",
+                "starts_at": "2026-04-26T09:21:30+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "Pod terminated with OOMKilled",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              },
+              {
+                "fingerprint": "am-oom-1",
+                "name": "OrderServiceHighErrorRate",
+                "severity": "high",
+                "status": "firing",
+                "starts_at": "2026-04-26T09:21:30+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "5xx rate above baseline after pod restarts",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              }
+            ],
+            "raw_response": {
+              "status_code": 200,
+              "truncated": false
+            }
+          }
+        },
+        "check_recent_deployments": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "argocd",
+            "application": "order-service-prod",
+            "request": {
+              "source": "argocd",
+              "query": "GET /api/v1/applications/order-service-prod/resource-tree",
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "has_recent_deploy": false,
+            "deploy_count": 0,
+            "latest_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "previous_revision": "order-service:2026.04.26.0805-21c0afe",
+            "deploy_minutes_ago": 0,
+            "symptom_started_minutes_ago": 17,
+            "deployed_by": "platform-bot",
+            "release_records": [
+              {
+                "revision": "order-service:2026.04.26.0900-7f8d9aa",
+                "git_sha": "7f8d9aa9bd16",
+                "deployed_at": "2026-04-26T09:00:00+08:00",
+                "sync_completed_at": "2026-04-26T09:02:00+08:00",
+                "deployed_by": "platform-bot",
+                "pipeline_id": "pipe-7f8d9aa",
+                "health": "Healthy",
+                "sync_status": "Synced"
+              },
+              {
+                "revision": "order-service:2026.04.26.0805-21c0afe",
+                "git_sha": "21c0afec0041",
+                "deployed_at": "2026-04-26T08:05:00+08:00",
+                "sync_completed_at": "2026-04-26T08:07:00+08:00",
+                "deployed_by": "platform-bot",
+                "pipeline_id": "pipe-21c0afe",
+                "health": "Healthy",
+                "sync_status": "Synced"
+              }
+            ],
+            "correlation": {
+              "symptom_first_seen_at": "2026-04-26T09:21:30+08:00",
+              "latest_deploy_finished_at": "",
+              "lag_after_deploy_minutes": -1
+            },
+            "signals": [
+              "has_recent_deploy=False",
+              "latest_revision=order-service:2026.04.26.0900-7f8d9aa",
+              "symptom_started_minutes_ago=17"
+            ],
+            "raw_response": {
+              "argocd_health": "Healthy",
+              "argocd_sync": "Synced"
+            }
+          }
+        },
+        "check_service_health": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "prometheus",
+            "datasource": "prod-prometheus-shanghai",
+            "request": {
+              "source": "prometheus",
+              "query": [
+                "sum(rate(http_server_requests_seconds_count{service=\"order-service\",status=~\"5..\",uri=~\"/orders/.*\"}[5m])) / sum(rate(http_server_requests_seconds_count{service=\"order-service\",uri=~\"/orders/.*\"}[5m]))",
+                "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{service=\"order-service\",uri=\"/orders/create\"}[5m])) by (le))"
+              ],
+              "timeout_ms": 3000
+            },
             "environment": "prod-shanghai-1",
             "health_status": "unhealthy",
             "replica_status": "insufficient_replicas",
             "error_rate_percent": 9.4,
             "p99_latency_ms": 3200,
-            "impacted_endpoints": ["/orders/create", "/orders/query"]
-          },
-          "evidence": ["error rate 升高", "内存抖动导致 ready 副本不足"]
-        },
-        "check_recent_alerts": {
-          "summary": "order-service 在 case1 中触发内存与错误率告警。",
-          "payload": {
-            "service": "order-service",
-            "window_minutes": 30,
-            "alert_count": 2,
-            "highest_severity": "critical",
-            "alerts": [
-              {"name": "order-service pod oom killed", "severity": "critical", "status": "firing"},
-              {"name": "order-service high error rate", "severity": "high", "status": "firing"}
-            ]
-          },
-          "evidence": ["OOM 告警 firing", "错误率告警 firing"]
-        },
-        "check_pod_status": {
-          "summary": "order-service 在 case1 中有一个 Pod 因 OOMKilled 反复重启。",
-          "payload": {
-            "service": "order-service",
-            "namespace": "default",
-            "pods": [
-              {"name": "order-service-7f8d9", "status": "Running", "ready": true, "restarts": 0},
-              {"name": "order-service-7f8da", "status": "OOMKilled", "ready": false, "restarts": 6, "last_reason": "OOMKilled"}
+            "impacted_endpoints": [
+              "/orders/create",
+              "/orders/query"
             ],
-            "ready_replicas": 1,
-            "desired_replicas": 2
-          },
-          "evidence": ["order-service-7f8da OOMKilled", "ready 1/2"]
+            "slo": {
+              "availability_target": 99.9,
+              "latency_p99_target_ms": 1200
+            },
+            "current": {
+              "http_5xx_rate_percent": 9.4,
+              "http_5xx_rps": 28.2,
+              "total_rps": 300.2,
+              "p50_latency_ms": 410,
+              "p95_latency_ms": 1900,
+              "p99_latency_ms": 3200
+            },
+            "baseline": {
+              "http_5xx_rate_percent": 0.22,
+              "p99_latency_ms": 720
+            },
+            "series_samples": [
+              {
+                "ts": "2026-04-26T09:08:00+08:00",
+                "5xx_rate_percent": 0.22,
+                "p99_latency_ms": 720
+              },
+              {
+                "ts": "2026-04-26T09:21:30+08:00",
+                "5xx_rate_percent": 6.39,
+                "p99_latency_ms": 2496
+              },
+              {
+                "ts": "2026-04-26T09:38:00+08:00",
+                "5xx_rate_percent": 9.4,
+                "p99_latency_ms": 3200
+              }
+            ],
+            "raw_response": {
+              "status": "success",
+              "result_type": "vector",
+              "sample_count": 3
+            }
+          }
+        },
+        "get_change_records": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "gitlab",
+            "project": "commerce/order-service",
+            "request": {
+              "source": "gitlab",
+              "query": {
+                "api": "GET /repository/compare",
+                "from": "21c0afe",
+                "to": "7f8d9aa"
+              },
+              "timeout_ms": 3000
+            },
+            "change_count": 0,
+            "suspect_component": "none",
+            "compare": {
+              "from_revision": "21c0afe",
+              "to_revision": "7f8d9aa",
+              "commit_count": 0,
+              "changed_files": 0
+            },
+            "changes": []
+          }
+        },
+        "get_deployment_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "kubernetes/argocd",
+            "request": {
+              "source": "kubernetes/argocd",
+              "query": {
+                "kubectl": "kubectl -n default rollout status deploy/order-service",
+                "argocd_app": "order-service-prod"
+              },
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "rollout_status": "stable",
+            "active_alerts": [
+              "OrderServicePodOOMKilled",
+              "OrderServiceHighErrorRate"
+            ],
+            "current_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "stable_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "kubernetes": {
+              "deployment": "order-service",
+              "generation": 184,
+              "observed_generation": 184,
+              "replicas": 2,
+              "updated_replicas": 2,
+              "available_replicas": 1,
+              "conditions": [
+                {
+                  "type": "Available",
+                  "status": "False",
+                  "reason": "MinimumReplicasAvailable"
+                },
+                {
+                  "type": "Progressing",
+                  "status": "True",
+                  "reason": "NewReplicaSetAvailable"
+                }
+              ]
+            },
+            "argocd": {
+              "sync_status": "Synced",
+              "health_status": "Healthy",
+              "revision": "7f8d9aa"
+            },
+            "status_reason": "rollout_stable_or_not_incident_source"
+          }
+        },
+        "get_quota_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "quota-service",
+            "request": {
+              "source": "quota-service",
+              "query": {
+                "resource_group": "prod-order",
+                "resources": [
+                  "cpu",
+                  "memory",
+                  "pod"
+                ]
+              },
+              "timeout_ms": 3000
+            },
+            "quota_state": "sufficient",
+            "resource": "prod-order",
+            "used": {
+              "cpu_cores": 186,
+              "memory_gb": 740,
+              "pods": 1260
+            },
+            "limit": {
+              "cpu_cores": 400,
+              "memory_gb": 1600,
+              "pods": 3000
+            },
+            "available": {
+              "cpu_cores": 214,
+              "memory_gb": 860,
+              "pods": 1740
+            },
+            "blocking_requests": []
+          }
+        },
+        "get_rollback_history": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "argocd/helm-release-store",
+            "request": {
+              "source": "argocd/helm-release-store",
+              "query": {
+                "release": "order-service",
+                "history_limit": 5
+              },
+              "timeout_ms": 3000
+            },
+            "last_known_stable_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "rollback_recommended": false,
+            "recent_rollbacks": [],
+            "history": [
+              {
+                "revision": "order-service:2026.04.26.0900-7f8d9aa",
+                "status": "current",
+                "deployed_at": "2026-04-26T09:38:00+08:00"
+              },
+              {
+                "revision": "order-service:2026.04.26.0900-7f8d9aa",
+                "status": "healthy",
+                "deployed_at": "2026-04-26T09:17:49+08:00"
+              }
+            ],
+            "rollback_candidate": {
+              "target_revision": "order-service:2026.04.26.0900-7f8d9aa",
+              "git_sha": "21c0afe",
+              "health_before_current_release": "healthy",
+              "requires_approval": true
+            }
+          }
+        },
+        "inspect_build_failure_logs": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "gitlab-ci",
+            "request": {
+              "source": "gitlab-ci",
+              "query": {
+                "job": "deploy-prod",
+                "pipeline_id": "pipe-7f8d9aa"
+              },
+              "timeout_ms": 3000
+            },
+            "failed_stage": "none",
+            "suspected_error": "none",
+            "log_snippets": [
+              "build success",
+              "unit tests passed",
+              "deploy job completed"
+            ],
+            "job_logs": [
+              {
+                "stage": "unit-test",
+                "status": "success",
+                "tail": "BUILD SUCCESSFUL"
+              },
+              {
+                "stage": "build-image",
+                "status": "success",
+                "tail": "pushed registry.example.com/order-service:7f8d9aa"
+              },
+              {
+                "stage": "deploy-prod",
+                "status": "success",
+                "tail": "application/order-service-prod synced successfully"
+              }
+            ],
+            "raw_log_excerpt": [
+              "helm template rendered successfully",
+              "argocd app sync order-service-prod --revision 7f8d9aa completed"
+            ]
+          }
+        },
+        "inspect_connection_pool": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "hikari-metrics/prometheus",
+            "request": {
+              "source": "hikari-metrics/prometheus",
+              "query": {
+                "pool": "order-db-main",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "pool_state": "healthy",
+            "active_connections": 38,
+            "max_connections": 200,
+            "pool": {
+              "name": "order-db-main",
+              "active": 38,
+              "idle": 88,
+              "max": 200,
+              "pending_threads": 0,
+              "timeout_count_30m": 0
+            }
+          }
+        },
+        "inspect_cpu_saturation": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "prometheus/cadvisor",
+            "request": {
+              "source": "prometheus/cadvisor",
+              "query": [
+                "rate(container_cpu_usage_seconds_total{pod=~\"order-service.*\"}[5m])",
+                "rate(container_cpu_cfs_throttled_seconds_total{pod=~\"order-service.*\"}[5m])"
+              ],
+              "timeout_ms": 3000
+            },
+            "cpu_saturation": "normal",
+            "cpu_usage_ratio": 0.53,
+            "throttling_ratio": 0.01,
+            "samples": [
+              {
+                "ts": "2026-04-26T09:08:00+08:00",
+                "cpu_usage_ratio": 0.42,
+                "throttling_ratio": 0.01
+              },
+              {
+                "ts": "2026-04-26T09:38:00+08:00",
+                "cpu_usage_ratio": 0.53,
+                "throttling_ratio": 0.01
+              }
+            ]
+          }
+        },
+        "inspect_db_instance_health": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "rds-control-plane",
+            "request": {
+              "source": "rds-control-plane",
+              "query": {
+                "instance": "order-db",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "db_health": "healthy",
+            "role": "primary",
+            "availability": "available",
+            "cpu_percent": 31.4,
+            "iops_percent": 24.2,
+            "storage_percent": 52.1,
+            "failover_events": []
+          }
+        },
+        "inspect_deadlock_signals": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "signal": "deadlock"
+              },
+              "timeout_ms": 3000
+            },
+            "deadlock_count": 0,
+            "lock_wait_count": 0,
+            "top_wait_events": []
+          }
+        },
+        "inspect_dns_resolution": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "dns-probe/coredns",
+            "request": {
+              "source": "dns-probe/coredns",
+              "query": "dig inventory-service.default.svc.cluster.local A +short",
+              "timeout_ms": 3000
+            },
+            "resolution_status": "healthy",
+            "answers": [
+              "10.96.143.21"
+            ],
+            "rcode": "NOERROR",
+            "p95_lookup_ms": 3.8
+          }
+        },
+        "inspect_egress_policy": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "network-policy-controller",
+            "request": {
+              "source": "network-policy-controller",
+              "query": {
+                "from": "default/order-service",
+                "to": "default/inventory-service"
+              },
+              "timeout_ms": 3000
+            },
+            "policy_status": "healthy",
+            "matched_policies": [
+              "allow-order-to-inventory"
+            ],
+            "decision": "allow"
+          }
+        },
+        "inspect_error_budget_burn": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "slo-service",
+            "request": {
+              "source": "slo-service",
+              "query": {
+                "slo": "create-order-availability",
+                "window": "1h/6h multi-window burn"
+              },
+              "timeout_ms": 3000
+            },
+            "burn_state": "fast_burn",
+            "burn_rate": 3.2,
+            "budget_consumed_percent_1h": 10.56,
+            "budget_remaining_percent_30d": 71.2,
+            "objective": "99.9% successful create-order requests"
+          }
+        },
+        "inspect_ingress_route": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "ingress-controller",
+            "request": {
+              "source": "ingress-controller",
+              "query": {
+                "resource": "ingress/order-api",
+                "namespace": "default"
+              },
+              "timeout_ms": 3000
+            },
+            "route_status": "healthy",
+            "routes": [
+              {
+                "host": "api.example.com",
+                "path": "/orders",
+                "backend": "order-service:8080",
+                "status": "valid"
+              }
+            ],
+            "controller_errors": []
+          }
+        },
+        "inspect_jvm_memory": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "prometheus/jmx-exporter",
+            "request": {
+              "source": "prometheus/jmx-exporter",
+              "query": [
+                "jvm_memory_used_bytes / jvm_memory_max_bytes",
+                "rate(jvm_gc_pause_seconds_count[5m])"
+              ],
+              "timeout_ms": 3000
+            },
+            "heap_usage_ratio": 0.98,
+            "gc_pressure": "critical",
+            "heap": {
+              "used_mb": 2007,
+              "max_mb": 2048,
+              "usage_ratio": 0.98
+            },
+            "gc": {
+              "young_gc_per_min": 4.1,
+              "old_gc_per_min": 4.7,
+              "p99_pause_ms": 680
+            }
+          }
+        },
+        "inspect_load_balancer_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "alb-controller",
+            "request": {
+              "source": "alb-controller",
+              "query": {
+                "listener": "api-example-com-https",
+                "backend": "order-service"
+              },
+              "timeout_ms": 3000
+            },
+            "lb_status": "healthy",
+            "backend_health": [
+              {
+                "target": "order-service:8080",
+                "status": "healthy",
+                "reason": "success"
+              }
+            ],
+            "listener_status": "active"
+          }
+        },
+        "inspect_pod_events": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "kubernetes-api",
+            "request": {
+              "source": "kubernetes-api",
+              "query": "kubectl -n default get events --field-selector involvedObject.name~order-service",
+              "timeout_ms": 3000
+            },
+            "event_count": 2,
+            "last_termination_reason": "OOMKilled",
+            "events": [
+              {
+                "type": "Warning",
+                "reason": "OOMKilled",
+                "message": "Container app was killed because it exceeded memory limit",
+                "first_timestamp": "2026-04-26T09:21:30+08:00",
+                "last_timestamp": "2026-04-26T09:38:00+08:00",
+                "count": 6
+              },
+              {
+                "type": "Warning",
+                "reason": "BackOff",
+                "message": "Back-off restarting failed container",
+                "first_timestamp": "2026-04-26T09:21:30+08:00",
+                "last_timestamp": "2026-04-26T09:38:00+08:00",
+                "count": 5
+              }
+            ],
+            "raw_response": {
+              "api_version": "v1",
+              "resource_version": "742195219"
+            }
+          }
         },
         "inspect_pod_logs": {
-          "summary": "order-service 在 case1 中命中 OOM 日志。",
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
             "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "loki",
+            "request": {
+              "source": "loki",
+              "query": "{namespace=\"default\", app=\"order-service\"} |= \"orders\"",
+              "timeout_ms": 3000
+            },
             "error_pattern": "oom_killed",
             "oom_detected": true,
             "log_snippets": [
               "java.lang.OutOfMemoryError: Java heap space",
-              "container terminated with exit code 137"
-            ]
-          },
-          "evidence": ["OutOfMemoryError", "exit code 137"]
+              "container terminated with exit code 137",
+              "heap dump written before container termination"
+            ],
+            "log_streams": [
+              {
+                "labels": {
+                  "pod": "order-service-6c9d7b8c9f-4k2mp",
+                  "container": "app"
+                },
+                "entries": [
+                  {
+                    "ts": "2026-04-26T09:38:00+08:00",
+                    "level": "ERROR",
+                    "trace_id": "trc-oom-0",
+                    "message": "java.lang.OutOfMemoryError: Java heap space"
+                  },
+                  {
+                    "ts": "2026-04-26T09:38:00+08:00",
+                    "level": "WARN",
+                    "trace_id": "trc-oom-1",
+                    "message": "container terminated with exit code 137"
+                  },
+                  {
+                    "ts": "2026-04-26T09:38:00+08:00",
+                    "level": "ERROR",
+                    "trace_id": "trc-oom-2",
+                    "message": "heap dump written before container termination"
+                  }
+                ]
+              }
+            ],
+            "parsed_error_counts": {
+              "OutOfMemoryError": 31,
+              "ExitCode137": 6,
+              "SocketTimeoutException": 0,
+              "HTTP_504": 0
+            }
+          }
         },
-        "inspect_pod_events": {
-          "summary": "order-service 在 case1 中 Pod 事件显示 OOMKilled。",
+        "inspect_replication_status": {
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
             "namespace": "default",
-            "event_count": 2,
-            "last_termination_reason": "OOMKilled",
-            "events": [
-              {"type": "Warning", "reason": "OOMKilled", "message": "Container killed due to memory limit"},
-              {"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container"}
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "rds-replication-monitor",
+            "request": {
+              "source": "rds-replication-monitor",
+              "query": {
+                "instance": "order-db",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "lag_seconds": 0,
+            "replication_status": "healthy",
+            "replicas": [
+              {
+                "name": "order-db-ro-1",
+                "lag_seconds": 0,
+                "state": "streaming"
+              }
             ]
-          },
-          "evidence": ["last_termination_reason=OOMKilled"]
+          }
         },
-        "inspect_jvm_memory": {
-          "summary": "order-service 在 case1 中 JVM 堆内存已打满。",
+        "inspect_slow_queries": {
           "payload": {
             "service": "order-service",
-            "heap_usage_ratio": 0.98,
-            "gc_pressure": "critical"
-          },
-          "evidence": ["heap_usage=0.98", "gc_pressure=critical"]
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "window": "30m",
+                "min_duration_ms": 500
+              },
+              "timeout_ms": 3000
+            },
+            "slow_query_count": 0,
+            "max_latency_ms": 88,
+            "slow_queries": [],
+            "db_cpu_percent": 31.4
+          }
         },
-        "inspect_error_budget_burn": {
-          "summary": "order-service 在 case1 中错误预算快速消耗。",
+        "inspect_thread_pool_status": {
           "payload": {
             "service": "order-service",
-            "burn_state": "fast_burn",
-            "burn_rate": 3.2
-          },
-          "evidence": ["burn_rate=3.2"]
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "jmx/threadpool-exporter",
+            "request": {
+              "source": "jmx/threadpool-exporter",
+              "query": {
+                "pool": "tomcat-http-nio",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "pool_state": "healthy",
+            "queue_depth": 8,
+            "active_threads": 18,
+            "max_threads": 200,
+            "rejected_count_30m": 0
+          }
         },
-        "inspect_dns_resolution": {
-          "summary": "order-service 在 case1 中 DNS 正常。",
-          "payload": {"service": "order-service", "resolution_status": "healthy"},
-          "evidence": ["DNS stable"]
-        },
-        "inspect_ingress_route": {
-          "summary": "order-service 在 case1 中 Ingress 正常。",
-          "payload": {"service": "order-service", "route_status": "healthy"},
-          "evidence": ["route healthy"]
-        },
-        "inspect_load_balancer_status": {
-          "summary": "order-service 在 case1 中负载均衡正常。",
-          "payload": {"service": "order-service", "lb_status": "healthy"},
-          "evidence": ["all backends healthy"]
-        },
-        "inspect_vpc_connectivity": {
-          "summary": "order-service 在 case1 中 VPC 连通性正常。",
-          "payload": {"service": "order-service", "connectivity_status": "healthy"},
-          "evidence": ["east-west network healthy"]
+        "inspect_transaction_rollback_rate": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "metric": "transaction_rollback_rate"
+              },
+              "timeout_ms": 3000
+            },
+            "rollback_rate": 0.0,
+            "rollback_count_30m": 0,
+            "transaction_count_30m": 12000
+          }
         },
         "inspect_upstream_dependency": {
-          "summary": "order-service 在 case1 中上游依赖健康。",
-          "payload": {"service": "order-service", "dependency_status": "healthy", "timeout_ratio": 0.0},
-          "evidence": ["upstream healthy"]
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "prometheus/istio",
+            "request": {
+              "source": "prometheus/istio",
+              "query": [
+                "histogram_quantile(0.99, rate(istio_request_duration_milliseconds_bucket[5m]))",
+                "sum(rate(istio_requests_total{response_code=~\"5..\"}[5m]))"
+              ],
+              "timeout_ms": 3000
+            },
+            "dependency_status": "healthy",
+            "timeout_ratio": 0.0,
+            "server_p99_ms": 620,
+            "dependency": "inventory-service",
+            "server_side": {
+              "p50_ms": 120,
+              "p95_ms": 510,
+              "p99_ms": 820,
+              "5xx_rate_percent": 0.08
+            },
+            "client_side": {
+              "configured_timeout_ms": 3000,
+              "timeout_count_30m": 0
+            }
+          }
         },
-        "inspect_egress_policy": {
-          "summary": "order-service 在 case1 中出口网络策略正常。",
-          "payload": {"service": "order-service", "policy_status": "healthy"},
-          "evidence": ["egress allowed"]
+        "inspect_vpc_connectivity": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T09:38:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:08:00+08:00",
+              "end": "2026-04-26T09:38:00+08:00"
+            },
+            "source": "network-probe",
+            "request": {
+              "source": "network-probe",
+              "query": {
+                "from": "order-service",
+                "to": "inventory-service:8080",
+                "protocol": "tcp"
+              },
+              "timeout_ms": 3000
+            },
+            "connectivity_status": "healthy",
+            "tcp_connect": {
+              "success_rate_percent": 100.0,
+              "p95_connect_ms": 8.2
+            },
+            "packet_loss_percent": 0.0
+          }
         }
       }
     }
@@ -125,131 +1121,2333 @@
   "case2": {
     "services": {
       "order-service": {
-        "check_service_health": {
-          "summary": "order-service 在 case2 中表现为网络抖动型故障。",
+        "check_canary_status": {
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "argocd-rollouts",
+            "request": {
+              "source": "argocd-rollouts",
+              "query": "kubectl argo rollouts get rollout order-service -n default",
+              "timeout_ms": 3000
+            },
+            "canary_enabled": false,
+            "canary_status": "not_enabled",
+            "current_weight_percent": 0,
+            "baseline_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "canary_revision": "",
+            "metrics": {
+              "success_rate_percent": 94.3,
+              "p99_latency_ms": 4100,
+              "analysis_status": "not_run"
+            },
+            "analysis_runs": []
+          }
+        },
+        "check_pipeline_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "gitlab-ci",
+            "project": "commerce/order-service",
+            "request": {
+              "source": "gitlab-ci",
+              "query": "GET /projects/commerce%2Forder-service/pipelines/7f8d9aa",
+              "timeout_ms": 3000
+            },
+            "pipeline_status": "success",
+            "failed_stage": "none",
+            "pipeline": {
+              "id": "pipe-7f8d9aa",
+              "commit_id": "7f8d9aa",
+              "branch": "main",
+              "status": "success",
+              "started_at": "2026-04-26T09:48:00+08:00",
+              "finished_at": "2026-04-26T10:18:00+08:00",
+              "duration_sec": 457
+            },
+            "jobs": [
+              {
+                "name": "unit-test",
+                "status": "success",
+                "duration_sec": 91
+              },
+              {
+                "name": "build-image",
+                "status": "success",
+                "duration_sec": 156
+              },
+              {
+                "name": "deploy-prod",
+                "status": "success",
+                "duration_sec": 84
+              }
+            ]
+          }
+        },
+        "check_pod_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "kubernetes-api",
+            "request": {
+              "source": "kubernetes-api",
+              "query": "kubectl -n default get pods -l app=order-service -o json",
+              "timeout_ms": 3000
+            },
+            "selector": "app=order-service",
+            "deployment": "order-service",
+            "replicaset": "order-service-6c9d7b8c9f",
+            "pods": [
+              {
+                "name": "order-service-6c9d7b8c9f-4k2mp",
+                "status": "Running",
+                "phase": "Running",
+                "ready": true,
+                "ready_containers": "2/2",
+                "restarts": 0,
+                "last_reason": "none",
+                "node": "cn-shanghai.10.20.31.17",
+                "pod_ip": "10.244.18.91",
+                "image": "registry.example.com/order-service:2026.04.26.0900-7f8d9aa",
+                "started_at": "2026-04-26T10:18:00+08:00"
+              },
+              {
+                "name": "order-service-6c9d7b8c9f-8xj2d",
+                "status": "Running",
+                "phase": "Running",
+                "ready": true,
+                "ready_containers": "2/2",
+                "restarts": 0,
+                "last_reason": "none",
+                "node": "cn-shanghai.10.20.32.18",
+                "pod_ip": "10.244.19.92",
+                "image": "registry.example.com/order-service:2026.04.26.0900-7f8d9aa",
+                "started_at": "2026-04-26T10:18:00+08:00"
+              }
+            ],
+            "ready_replicas": 2,
+            "desired_replicas": 2,
+            "raw_response": {
+              "api_version": "v1",
+              "resource_version": "742197844",
+              "item_count": 2
+            }
+          }
+        },
+        "check_recent_alerts": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "alertmanager",
+            "receiver": "oncall-order-platform",
+            "request": {
+              "source": "alertmanager",
+              "query": {
+                "filters": {
+                  "service": "order-service",
+                  "status": "firing"
+                },
+                "window_minutes": 30
+              },
+              "timeout_ms": 3000
+            },
+            "window_minutes": 30,
+            "alert_count": 3,
+            "highest_severity": "high",
+            "alerts": [
+              {
+                "fingerprint": "am-network-0",
+                "name": "OrderServiceTimeoutSpike",
+                "severity": "high",
+                "status": "firing",
+                "starts_at": "2026-04-26T10:02:10+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "Timeout ratio above 25%",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              },
+              {
+                "fingerprint": "am-network-1",
+                "name": "OrderServiceP99LatencyHigh",
+                "severity": "high",
+                "status": "firing",
+                "starts_at": "2026-04-26T10:02:10+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "p99 latency above 4s",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              },
+              {
+                "fingerprint": "am-network-2",
+                "name": "OrderServiceUpstreamDependencyDegraded",
+                "severity": "high",
+                "status": "firing",
+                "starts_at": "2026-04-26T10:02:10+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "Inventory path reports degraded dependency",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              }
+            ],
+            "raw_response": {
+              "status_code": 200,
+              "truncated": false
+            }
+          }
+        },
+        "check_recent_deployments": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "argocd",
+            "application": "order-service-prod",
+            "request": {
+              "source": "argocd",
+              "query": "GET /api/v1/applications/order-service-prod/resource-tree",
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "has_recent_deploy": false,
+            "deploy_count": 0,
+            "latest_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "previous_revision": "order-service:2026.04.26.0805-21c0afe",
+            "deploy_minutes_ago": 0,
+            "symptom_started_minutes_ago": 16,
+            "deployed_by": "platform-bot",
+            "release_records": [
+              {
+                "revision": "order-service:2026.04.26.0900-7f8d9aa",
+                "git_sha": "7f8d9aa9bd16",
+                "deployed_at": "2026-04-26T09:00:00+08:00",
+                "sync_completed_at": "2026-04-26T09:02:00+08:00",
+                "deployed_by": "platform-bot",
+                "pipeline_id": "pipe-7f8d9aa",
+                "health": "Healthy",
+                "sync_status": "Synced"
+              },
+              {
+                "revision": "order-service:2026.04.26.0805-21c0afe",
+                "git_sha": "21c0afec0041",
+                "deployed_at": "2026-04-26T08:05:00+08:00",
+                "sync_completed_at": "2026-04-26T08:07:00+08:00",
+                "deployed_by": "platform-bot",
+                "pipeline_id": "pipe-21c0afe",
+                "health": "Healthy",
+                "sync_status": "Synced"
+              }
+            ],
+            "correlation": {
+              "symptom_first_seen_at": "2026-04-26T10:02:10+08:00",
+              "latest_deploy_finished_at": "",
+              "lag_after_deploy_minutes": -1
+            },
+            "signals": [
+              "has_recent_deploy=False",
+              "latest_revision=order-service:2026.04.26.0900-7f8d9aa",
+              "symptom_started_minutes_ago=16"
+            ],
+            "raw_response": {
+              "argocd_health": "Healthy",
+              "argocd_sync": "Synced"
+            }
+          }
+        },
+        "check_service_health": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "prometheus",
+            "datasource": "prod-prometheus-shanghai",
+            "request": {
+              "source": "prometheus",
+              "query": [
+                "sum(rate(http_server_requests_seconds_count{service=\"order-service\",status=~\"5..\",uri=~\"/orders/.*\"}[5m])) / sum(rate(http_server_requests_seconds_count{service=\"order-service\",uri=~\"/orders/.*\"}[5m]))",
+                "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{service=\"order-service\",uri=\"/orders/create\"}[5m])) by (le))"
+              ],
+              "timeout_ms": 3000
+            },
             "environment": "prod-shanghai-1",
             "health_status": "degraded",
             "replica_status": "all_ready",
             "error_rate_percent": 5.7,
             "p99_latency_ms": 4100,
-            "impacted_endpoints": ["/orders/create", "/orders/query"]
-          },
-          "evidence": ["副本正常", "但超时与延迟明显抬升"]
-        },
-        "check_recent_alerts": {
-          "summary": "order-service 在 case2 中网络与延迟告警波动明显。",
-          "payload": {
-            "service": "order-service",
-            "window_minutes": 30,
-            "alert_count": 3,
-            "highest_severity": "high",
-            "alerts": [
-              {"name": "order-service timeout spike", "severity": "high", "status": "firing"},
-              {"name": "order-service p99 latency elevated", "severity": "high", "status": "firing"},
-              {"name": "order-service upstream dependency degraded", "severity": "high", "status": "firing"}
-            ]
-          },
-          "evidence": ["timeout 告警 firing", "latency 告警 firing"]
-        },
-        "check_pod_status": {
-          "summary": "order-service 在 case2 中 Pod 本身基本健康。",
-          "payload": {
-            "service": "order-service",
-            "namespace": "default",
-            "pods": [
-              {"name": "order-service-7f8d9", "status": "Running", "ready": true, "restarts": 0},
-              {"name": "order-service-7f8da", "status": "Running", "ready": true, "restarts": 0}
+            "impacted_endpoints": [
+              "/orders/create",
+              "/orders/query"
             ],
-            "ready_replicas": 2,
-            "desired_replicas": 2
-          },
-          "evidence": ["ready 2/2"]
+            "slo": {
+              "availability_target": 99.9,
+              "latency_p99_target_ms": 1200
+            },
+            "current": {
+              "http_5xx_rate_percent": 5.7,
+              "http_5xx_rps": 17.1,
+              "total_rps": 300.2,
+              "p50_latency_ms": 410,
+              "p95_latency_ms": 2800,
+              "p99_latency_ms": 4100
+            },
+            "baseline": {
+              "http_5xx_rate_percent": 0.19,
+              "p99_latency_ms": 750
+            },
+            "series_samples": [
+              {
+                "ts": "2026-04-26T09:48:00+08:00",
+                "5xx_rate_percent": 0.19,
+                "p99_latency_ms": 750
+              },
+              {
+                "ts": "2026-04-26T10:02:10+08:00",
+                "5xx_rate_percent": 3.88,
+                "p99_latency_ms": 3198
+              },
+              {
+                "ts": "2026-04-26T10:18:00+08:00",
+                "5xx_rate_percent": 5.7,
+                "p99_latency_ms": 4100
+              }
+            ],
+            "raw_response": {
+              "status": "success",
+              "result_type": "vector",
+              "sample_count": 3
+            }
+          }
         },
-        "inspect_pod_logs": {
-          "summary": "order-service 在 case2 中日志总体正常，没有 OOM 线索。",
+        "get_change_records": {
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
             "namespace": "default",
-            "error_pattern": "none",
-            "oom_detected": false,
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "gitlab",
+            "project": "commerce/order-service",
+            "request": {
+              "source": "gitlab",
+              "query": {
+                "api": "GET /repository/compare",
+                "from": "21c0afe",
+                "to": "7f8d9aa"
+              },
+              "timeout_ms": 3000
+            },
+            "change_count": 0,
+            "suspect_component": "none",
+            "compare": {
+              "from_revision": "21c0afe",
+              "to_revision": "7f8d9aa",
+              "commit_count": 0,
+              "changed_files": 0
+            },
+            "changes": []
+          }
+        },
+        "get_deployment_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "kubernetes/argocd",
+            "request": {
+              "source": "kubernetes/argocd",
+              "query": {
+                "kubectl": "kubectl -n default rollout status deploy/order-service",
+                "argocd_app": "order-service-prod"
+              },
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "rollout_status": "stable",
+            "active_alerts": [
+              "OrderServiceTimeoutSpike",
+              "OrderServiceP99LatencyHigh",
+              "OrderServiceUpstreamDependencyDegraded"
+            ],
+            "current_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "stable_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "kubernetes": {
+              "deployment": "order-service",
+              "generation": 184,
+              "observed_generation": 184,
+              "replicas": 2,
+              "updated_replicas": 2,
+              "available_replicas": 2,
+              "conditions": [
+                {
+                  "type": "Available",
+                  "status": "True",
+                  "reason": "MinimumReplicasAvailable"
+                },
+                {
+                  "type": "Progressing",
+                  "status": "True",
+                  "reason": "NewReplicaSetAvailable"
+                }
+              ]
+            },
+            "argocd": {
+              "sync_status": "Synced",
+              "health_status": "Healthy",
+              "revision": "7f8d9aa"
+            },
+            "status_reason": "rollout_stable_or_not_incident_source"
+          }
+        },
+        "get_quota_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "quota-service",
+            "request": {
+              "source": "quota-service",
+              "query": {
+                "resource_group": "prod-order",
+                "resources": [
+                  "cpu",
+                  "memory",
+                  "pod"
+                ]
+              },
+              "timeout_ms": 3000
+            },
+            "quota_state": "sufficient",
+            "resource": "prod-order",
+            "used": {
+              "cpu_cores": 186,
+              "memory_gb": 740,
+              "pods": 1260
+            },
+            "limit": {
+              "cpu_cores": 400,
+              "memory_gb": 1600,
+              "pods": 3000
+            },
+            "available": {
+              "cpu_cores": 214,
+              "memory_gb": 860,
+              "pods": 1740
+            },
+            "blocking_requests": []
+          }
+        },
+        "get_rollback_history": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "argocd/helm-release-store",
+            "request": {
+              "source": "argocd/helm-release-store",
+              "query": {
+                "release": "order-service",
+                "history_limit": 5
+              },
+              "timeout_ms": 3000
+            },
+            "last_known_stable_revision": "order-service:2026.04.26.0900-7f8d9aa",
+            "rollback_recommended": false,
+            "recent_rollbacks": [],
+            "history": [
+              {
+                "revision": "order-service:2026.04.26.0900-7f8d9aa",
+                "status": "current",
+                "deployed_at": "2026-04-26T10:18:00+08:00"
+              },
+              {
+                "revision": "order-service:2026.04.26.0900-7f8d9aa",
+                "status": "healthy",
+                "deployed_at": "2026-04-26T09:17:49+08:00"
+              }
+            ],
+            "rollback_candidate": {
+              "target_revision": "order-service:2026.04.26.0900-7f8d9aa",
+              "git_sha": "21c0afe",
+              "health_before_current_release": "healthy",
+              "requires_approval": true
+            }
+          }
+        },
+        "inspect_build_failure_logs": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "gitlab-ci",
+            "request": {
+              "source": "gitlab-ci",
+              "query": {
+                "job": "deploy-prod",
+                "pipeline_id": "pipe-7f8d9aa"
+              },
+              "timeout_ms": 3000
+            },
+            "failed_stage": "none",
+            "suspected_error": "none",
             "log_snippets": [
-              "request completed normally",
-              "no critical error pattern found"
+              "build success",
+              "unit tests passed",
+              "deploy job completed"
+            ],
+            "job_logs": [
+              {
+                "stage": "unit-test",
+                "status": "success",
+                "tail": "BUILD SUCCESSFUL"
+              },
+              {
+                "stage": "build-image",
+                "status": "success",
+                "tail": "pushed registry.example.com/order-service:7f8d9aa"
+              },
+              {
+                "stage": "deploy-prod",
+                "status": "success",
+                "tail": "application/order-service-prod synced successfully"
+              }
+            ],
+            "raw_log_excerpt": [
+              "helm template rendered successfully",
+              "argocd app sync order-service-prod --revision 7f8d9aa completed"
             ]
-          },
-          "evidence": ["日志正常", "没有 OOM 线索"]
+          }
+        },
+        "inspect_connection_pool": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "hikari-metrics/prometheus",
+            "request": {
+              "source": "hikari-metrics/prometheus",
+              "query": {
+                "pool": "order-db-main",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "pool_state": "healthy",
+            "active_connections": 41,
+            "max_connections": 200,
+            "pool": {
+              "name": "order-db-main",
+              "active": 41,
+              "idle": 88,
+              "max": 200,
+              "pending_threads": 0,
+              "timeout_count_30m": 0
+            }
+          }
+        },
+        "inspect_cpu_saturation": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "prometheus/cadvisor",
+            "request": {
+              "source": "prometheus/cadvisor",
+              "query": [
+                "rate(container_cpu_usage_seconds_total{pod=~\"order-service.*\"}[5m])",
+                "rate(container_cpu_cfs_throttled_seconds_total{pod=~\"order-service.*\"}[5m])"
+              ],
+              "timeout_ms": 3000
+            },
+            "cpu_saturation": "normal",
+            "cpu_usage_ratio": 0.48,
+            "throttling_ratio": 0.01,
+            "samples": [
+              {
+                "ts": "2026-04-26T09:48:00+08:00",
+                "cpu_usage_ratio": 0.42,
+                "throttling_ratio": 0.01
+              },
+              {
+                "ts": "2026-04-26T10:18:00+08:00",
+                "cpu_usage_ratio": 0.48,
+                "throttling_ratio": 0.01
+              }
+            ]
+          }
+        },
+        "inspect_db_instance_health": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "rds-control-plane",
+            "request": {
+              "source": "rds-control-plane",
+              "query": {
+                "instance": "order-db",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "db_health": "healthy",
+            "role": "primary",
+            "availability": "available",
+            "cpu_percent": 31.4,
+            "iops_percent": 24.2,
+            "storage_percent": 52.1,
+            "failover_events": []
+          }
+        },
+        "inspect_deadlock_signals": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "signal": "deadlock"
+              },
+              "timeout_ms": 3000
+            },
+            "deadlock_count": 0,
+            "lock_wait_count": 0,
+            "top_wait_events": []
+          }
+        },
+        "inspect_dns_resolution": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "dns-probe/coredns",
+            "request": {
+              "source": "dns-probe/coredns",
+              "query": "dig inventory-service.default.svc.cluster.local A +short",
+              "timeout_ms": 3000
+            },
+            "resolution_status": "healthy",
+            "answers": [
+              "10.96.143.21"
+            ],
+            "rcode": "NOERROR",
+            "p95_lookup_ms": 3.8
+          }
+        },
+        "inspect_egress_policy": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "network-policy-controller",
+            "request": {
+              "source": "network-policy-controller",
+              "query": {
+                "from": "default/order-service",
+                "to": "default/inventory-service"
+              },
+              "timeout_ms": 3000
+            },
+            "policy_status": "healthy",
+            "matched_policies": [
+              "allow-order-to-inventory"
+            ],
+            "decision": "allow"
+          }
+        },
+        "inspect_error_budget_burn": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "slo-service",
+            "request": {
+              "source": "slo-service",
+              "query": {
+                "slo": "create-order-availability",
+                "window": "1h/6h multi-window burn"
+              },
+              "timeout_ms": 3000
+            },
+            "burn_state": "fast_burn",
+            "burn_rate": 4.1,
+            "budget_consumed_percent_1h": 13.53,
+            "budget_remaining_percent_30d": 71.2,
+            "objective": "99.9% successful create-order requests"
+          }
+        },
+        "inspect_ingress_route": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "ingress-controller",
+            "request": {
+              "source": "ingress-controller",
+              "query": {
+                "resource": "ingress/order-api",
+                "namespace": "default"
+              },
+              "timeout_ms": 3000
+            },
+            "route_status": "mismatch_or_unhealthy",
+            "routes": [
+              {
+                "host": "api.example.com",
+                "path": "/orders",
+                "backend": "order-service:8080",
+                "status": "mismatch"
+              }
+            ],
+            "controller_errors": [
+              "route backend health degraded for /orders"
+            ]
+          }
+        },
+        "inspect_jvm_memory": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "prometheus/jmx-exporter",
+            "request": {
+              "source": "prometheus/jmx-exporter",
+              "query": [
+                "jvm_memory_used_bytes / jvm_memory_max_bytes",
+                "rate(jvm_gc_pause_seconds_count[5m])"
+              ],
+              "timeout_ms": 3000
+            },
+            "heap_usage_ratio": 0.46,
+            "gc_pressure": "normal",
+            "heap": {
+              "used_mb": 942,
+              "max_mb": 2048,
+              "usage_ratio": 0.46
+            },
+            "gc": {
+              "young_gc_per_min": 4.1,
+              "old_gc_per_min": 0.0,
+              "p99_pause_ms": 38
+            }
+          }
+        },
+        "inspect_load_balancer_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "alb-controller",
+            "request": {
+              "source": "alb-controller",
+              "query": {
+                "listener": "api-example-com-https",
+                "backend": "order-service"
+              },
+              "timeout_ms": 3000
+            },
+            "lb_status": "degraded",
+            "backend_health": [
+              {
+                "target": "order-service:8080",
+                "status": "degraded",
+                "reason": "backend timeout"
+              }
+            ],
+            "listener_status": "active"
+          }
         },
         "inspect_pod_events": {
-          "summary": "order-service 在 case2 中 Pod 事件正常。",
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
             "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "kubernetes-api",
+            "request": {
+              "source": "kubernetes-api",
+              "query": "kubectl -n default get events --field-selector involvedObject.name~order-service",
+              "timeout_ms": 3000
+            },
             "event_count": 1,
             "last_termination_reason": "none",
             "events": [
-              {"type": "Normal", "reason": "Pulled", "message": "Container image already present"}
-            ]
-          },
-          "evidence": ["last_termination_reason=none"]
+              {
+                "type": "Normal",
+                "reason": "Pulled",
+                "message": "Container image already present",
+                "first_timestamp": "2026-04-26T10:02:10+08:00",
+                "last_timestamp": "2026-04-26T10:18:00+08:00",
+                "count": 2
+              }
+            ],
+            "raw_response": {
+              "api_version": "v1",
+              "resource_version": "742195219"
+            }
+          }
         },
-        "inspect_jvm_memory": {
-          "summary": "order-service 在 case2 中 JVM 内存正常。",
+        "inspect_pod_logs": {
           "payload": {
             "service": "order-service",
-            "heap_usage_ratio": 0.46,
-            "gc_pressure": "normal"
-          },
-          "evidence": ["heap_usage=0.46"]
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "loki",
+            "request": {
+              "source": "loki",
+              "query": "{namespace=\"default\", app=\"order-service\"} |= \"orders\"",
+              "timeout_ms": 3000
+            },
+            "error_pattern": "none",
+            "oom_detected": false,
+            "log_snippets": [
+              "request completed normally; no application exception pattern found",
+              "client observed upstream timeout while waiting for inventory-service",
+              "no OutOfMemoryError observed in current window"
+            ],
+            "log_streams": [
+              {
+                "labels": {
+                  "pod": "order-service-6c9d7b8c9f-4k2mp",
+                  "container": "app"
+                },
+                "entries": [
+                  {
+                    "ts": "2026-04-26T10:18:00+08:00",
+                    "level": "ERROR",
+                    "trace_id": "trc-network-0",
+                    "message": "request completed normally; no application exception pattern found"
+                  },
+                  {
+                    "ts": "2026-04-26T10:18:00+08:00",
+                    "level": "WARN",
+                    "trace_id": "trc-network-1",
+                    "message": "client observed upstream timeout while waiting for inventory-service"
+                  },
+                  {
+                    "ts": "2026-04-26T10:18:00+08:00",
+                    "level": "ERROR",
+                    "trace_id": "trc-network-2",
+                    "message": "no OutOfMemoryError observed in current window"
+                  }
+                ]
+              }
+            ],
+            "parsed_error_counts": {
+              "OutOfMemoryError": 0,
+              "ExitCode137": 0,
+              "SocketTimeoutException": 0,
+              "HTTP_504": 126
+            }
+          }
+        },
+        "inspect_replication_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "rds-replication-monitor",
+            "request": {
+              "source": "rds-replication-monitor",
+              "query": {
+                "instance": "order-db",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "lag_seconds": 0,
+            "replication_status": "healthy",
+            "replicas": [
+              {
+                "name": "order-db-ro-1",
+                "lag_seconds": 0,
+                "state": "streaming"
+              }
+            ]
+          }
+        },
+        "inspect_slow_queries": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "window": "30m",
+                "min_duration_ms": 500
+              },
+              "timeout_ms": 3000
+            },
+            "slow_query_count": 0,
+            "max_latency_ms": 92,
+            "slow_queries": [],
+            "db_cpu_percent": 31.4
+          }
         },
         "inspect_thread_pool_status": {
-          "summary": "order-service 在 case2 中线程池积压明显。",
           "payload": {
             "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "jmx/threadpool-exporter",
+            "request": {
+              "source": "jmx/threadpool-exporter",
+              "query": {
+                "pool": "tomcat-http-nio",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
             "pool_state": "saturated",
-            "queue_depth": 126
-          },
-          "evidence": ["queue_depth=126"]
+            "queue_depth": 126,
+            "active_threads": 68,
+            "max_threads": 200,
+            "rejected_count_30m": 0
+          }
         },
-        "inspect_error_budget_burn": {
-          "summary": "order-service 在 case2 中错误预算快速燃烧。",
+        "inspect_transaction_rollback_rate": {
           "payload": {
             "service": "order-service",
-            "burn_state": "fast_burn",
-            "burn_rate": 4.1
-          },
-          "evidence": ["burn_rate=4.1"]
-        },
-        "inspect_dns_resolution": {
-          "summary": "order-service 在 case2 中 DNS 本身正常。",
-          "payload": {"service": "order-service", "resolution_status": "healthy"},
-          "evidence": ["DNS lookup stable"]
-        },
-        "inspect_ingress_route": {
-          "summary": "order-service 在 case2 中入口路由有抖动。",
-          "payload": {"service": "order-service", "route_status": "mismatch_or_unhealthy"},
-          "evidence": ["gateway upstream unhealthy"]
-        },
-        "inspect_load_balancer_status": {
-          "summary": "order-service 在 case2 中 LB 后端波动较大。",
-          "payload": {"service": "order-service", "lb_status": "degraded"},
-          "evidence": ["2 unhealthy backends"]
-        },
-        "inspect_vpc_connectivity": {
-          "summary": "order-service 在 case2 中 VPC 链路存在抖动。",
-          "payload": {"service": "order-service", "connectivity_status": "blocked"},
-          "evidence": ["intermittent timeout observed"]
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "metric": "transaction_rollback_rate"
+              },
+              "timeout_ms": 3000
+            },
+            "rollback_rate": 0.0,
+            "rollback_count_30m": 0,
+            "transaction_count_30m": 12000
+          }
         },
         "inspect_upstream_dependency": {
-          "summary": "order-service 在 case2 中上游依赖明显波动。",
-          "payload": {"service": "order-service", "dependency_status": "degraded", "timeout_ratio": 0.31},
-          "evidence": ["timeout_ratio=0.31"]
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "prometheus/istio",
+            "request": {
+              "source": "prometheus/istio",
+              "query": [
+                "histogram_quantile(0.99, rate(istio_request_duration_milliseconds_bucket[5m]))",
+                "sum(rate(istio_requests_total{response_code=~\"5..\"}[5m]))"
+              ],
+              "timeout_ms": 3000
+            },
+            "dependency_status": "degraded",
+            "timeout_ratio": 0.31,
+            "server_p99_ms": 3900,
+            "dependency": "inventory-service",
+            "server_side": {
+              "p50_ms": 120,
+              "p95_ms": 2600,
+              "p99_ms": 3900,
+              "5xx_rate_percent": 0.08
+            },
+            "client_side": {
+              "configured_timeout_ms": 3000,
+              "timeout_count_30m": 186
+            }
+          }
+        },
+        "inspect_vpc_connectivity": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:18:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T09:48:00+08:00",
+              "end": "2026-04-26T10:18:00+08:00"
+            },
+            "source": "network-probe",
+            "request": {
+              "source": "network-probe",
+              "query": {
+                "from": "order-service",
+                "to": "inventory-service:8080",
+                "protocol": "tcp"
+              },
+              "timeout_ms": 3000
+            },
+            "connectivity_status": "blocked",
+            "tcp_connect": {
+              "success_rate_percent": 62.0,
+              "p95_connect_ms": 1800.0
+            },
+            "packet_loss_percent": 7.4
+          }
+        }
+      }
+    }
+  },
+  "case3": {
+    "services": {
+      "order-service": {
+        "check_canary_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "argocd-rollouts",
+            "request": {
+              "source": "argocd-rollouts",
+              "query": "kubectl argo rollouts get rollout order-service -n default",
+              "timeout_ms": 3000
+            },
+            "canary_enabled": false,
+            "canary_status": "not_enabled",
+            "current_weight_percent": 0,
+            "baseline_revision": "order-service:2026.04.26.0915-3d91ab7",
+            "canary_revision": "",
+            "metrics": {
+              "success_rate_percent": 87.2,
+              "p99_latency_ms": 4800,
+              "analysis_status": "not_run"
+            },
+            "analysis_runs": []
+          }
+        },
+        "check_pipeline_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "gitlab-ci",
+            "project": "commerce/order-service",
+            "request": {
+              "source": "gitlab-ci",
+              "query": "GET /projects/commerce%2Forder-service/pipelines/8f31c2a",
+              "timeout_ms": 3000
+            },
+            "pipeline_status": "success",
+            "failed_stage": "none",
+            "pipeline": {
+              "id": "pipe-8f31c2a",
+              "commit_id": "8f31c2a",
+              "branch": "main",
+              "status": "success",
+              "started_at": "2026-04-26T10:28:00+08:00",
+              "finished_at": "2026-04-26T10:58:00+08:00",
+              "duration_sec": 457
+            },
+            "jobs": [
+              {
+                "name": "unit-test",
+                "status": "success",
+                "duration_sec": 91
+              },
+              {
+                "name": "build-image",
+                "status": "success",
+                "duration_sec": 156
+              },
+              {
+                "name": "deploy-prod",
+                "status": "success",
+                "duration_sec": 84
+              }
+            ]
+          }
+        },
+        "check_pod_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "kubernetes-api",
+            "request": {
+              "source": "kubernetes-api",
+              "query": "kubectl -n default get pods -l app=order-service -o json",
+              "timeout_ms": 3000
+            },
+            "selector": "app=order-service",
+            "deployment": "order-service",
+            "replicaset": "order-service-6c9d7b8c9f",
+            "pods": [
+              {
+                "name": "order-service-6c9d7b8c9f-4k2mp",
+                "status": "Running",
+                "phase": "Running",
+                "ready": true,
+                "ready_containers": "2/2",
+                "restarts": 0,
+                "last_reason": "none",
+                "node": "cn-shanghai.10.20.31.17",
+                "pod_ip": "10.244.18.91",
+                "image": "registry.example.com/order-service:2026.04.26.1042-8f31c2a",
+                "started_at": "2026-04-26T10:58:00+08:00"
+              },
+              {
+                "name": "order-service-6c9d7b8c9f-8xj2d",
+                "status": "Running",
+                "phase": "Running",
+                "ready": true,
+                "ready_containers": "2/2",
+                "restarts": 0,
+                "last_reason": "none",
+                "node": "cn-shanghai.10.20.32.18",
+                "pod_ip": "10.244.19.92",
+                "image": "registry.example.com/order-service:2026.04.26.1042-8f31c2a",
+                "started_at": "2026-04-26T10:58:00+08:00"
+              },
+              {
+                "name": "order-service-6c9d7b8c9f-b7lqc",
+                "status": "Running",
+                "phase": "Running",
+                "ready": true,
+                "ready_containers": "2/2",
+                "restarts": 0,
+                "last_reason": "none",
+                "node": "cn-shanghai.10.20.33.19",
+                "pod_ip": "10.244.20.93",
+                "image": "registry.example.com/order-service:2026.04.26.1042-8f31c2a",
+                "started_at": "2026-04-26T10:58:00+08:00"
+              }
+            ],
+            "ready_replicas": 3,
+            "desired_replicas": 3,
+            "raw_response": {
+              "api_version": "v1",
+              "resource_version": "7421914844",
+              "item_count": 3
+            }
+          }
+        },
+        "check_recent_alerts": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "alertmanager",
+            "receiver": "oncall-order-platform",
+            "request": {
+              "source": "alertmanager",
+              "query": {
+                "filters": {
+                  "service": "order-service",
+                  "status": "firing"
+                },
+                "window_minutes": 30
+              },
+              "timeout_ms": 3000
+            },
+            "window_minutes": 30,
+            "alert_count": 3,
+            "highest_severity": "critical",
+            "alerts": [
+              {
+                "fingerprint": "am-deploy_timeout-0",
+                "name": "OrderServiceHigh5xxRate",
+                "severity": "critical",
+                "status": "firing",
+                "starts_at": "2026-04-26T10:44:20+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "5xx rate above 10% for 5m",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              },
+              {
+                "fingerprint": "am-deploy_timeout-1",
+                "name": "OrderServiceP99LatencyHigh",
+                "severity": "high",
+                "status": "firing",
+                "starts_at": "2026-04-26T10:44:20+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "p99 latency above 3s for 5m",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              },
+              {
+                "fingerprint": "am-deploy_timeout-2",
+                "name": "OrderServiceErrorBudgetFastBurn",
+                "severity": "high",
+                "status": "firing",
+                "starts_at": "2026-04-26T10:44:20+08:00",
+                "labels": {
+                  "service": "order-service",
+                  "cluster": "prod-shanghai-1",
+                  "namespace": "default",
+                  "route": "/orders/create"
+                },
+                "annotations": {
+                  "summary": "fast burn rate above 4x",
+                  "runbook_url": "kb://runbooks/order-service/high-error-rate"
+                }
+              }
+            ],
+            "raw_response": {
+              "status_code": 200,
+              "truncated": false
+            }
+          }
+        },
+        "check_recent_deployments": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "argocd",
+            "application": "order-service-prod",
+            "request": {
+              "source": "argocd",
+              "query": "GET /api/v1/applications/order-service-prod/resource-tree",
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "has_recent_deploy": true,
+            "deploy_count": 1,
+            "latest_revision": "order-service:2026.04.26.1042-8f31c2a",
+            "previous_revision": "order-service:2026.04.26.0915-3d91ab7",
+            "deploy_minutes_ago": 18,
+            "symptom_started_minutes_ago": 14,
+            "deployed_by": "alice",
+            "release_records": [
+              {
+                "revision": "order-service:2026.04.26.1042-8f31c2a",
+                "git_sha": "8f31c2a9bd16",
+                "deployed_at": "2026-04-26T10:58:00+08:00",
+                "sync_completed_at": "2026-04-26T10:58:00+08:00",
+                "deployed_by": "alice",
+                "pipeline_id": "pipe-8f31c2a",
+                "health": "Degraded",
+                "sync_status": "Synced"
+              },
+              {
+                "revision": "order-service:2026.04.26.0915-3d91ab7",
+                "git_sha": "3d91ab7c0041",
+                "deployed_at": "2026-04-26T08:05:00+08:00",
+                "sync_completed_at": "2026-04-26T08:07:00+08:00",
+                "deployed_by": "platform-bot",
+                "pipeline_id": "pipe-3d91ab7",
+                "health": "Healthy",
+                "sync_status": "Synced"
+              }
+            ],
+            "correlation": {
+              "symptom_first_seen_at": "2026-04-26T10:44:20+08:00",
+              "latest_deploy_finished_at": "2026-04-26T10:58:00+08:00",
+              "lag_after_deploy_minutes": 2
+            },
+            "signals": [
+              "has_recent_deploy=True",
+              "latest_revision=order-service:2026.04.26.1042-8f31c2a",
+              "symptom_started_minutes_ago=14"
+            ],
+            "raw_response": {
+              "argocd_health": "Degraded",
+              "argocd_sync": "Synced"
+            }
+          }
+        },
+        "check_service_health": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "prometheus",
+            "datasource": "prod-prometheus-shanghai",
+            "request": {
+              "source": "prometheus",
+              "query": [
+                "sum(rate(http_server_requests_seconds_count{service=\"order-service\",status=~\"5..\",uri=~\"/orders/.*\"}[5m])) / sum(rate(http_server_requests_seconds_count{service=\"order-service\",uri=~\"/orders/.*\"}[5m]))",
+                "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{service=\"order-service\",uri=\"/orders/create\"}[5m])) by (le))"
+              ],
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "health_status": "unhealthy",
+            "replica_status": "all_ready",
+            "error_rate_percent": 12.8,
+            "p99_latency_ms": 4800,
+            "impacted_endpoints": [
+              "/orders/create",
+              "/orders/query"
+            ],
+            "slo": {
+              "availability_target": 99.9,
+              "latency_p99_target_ms": 1200
+            },
+            "current": {
+              "http_5xx_rate_percent": 12.8,
+              "http_5xx_rps": 38.4,
+              "total_rps": 300.2,
+              "p50_latency_ms": 410,
+              "p95_latency_ms": 3500,
+              "p99_latency_ms": 4800
+            },
+            "baseline": {
+              "http_5xx_rate_percent": 0.18,
+              "p99_latency_ms": 760
+            },
+            "series_samples": [
+              {
+                "ts": "2026-04-26T10:28:00+08:00",
+                "5xx_rate_percent": 0.18,
+                "p99_latency_ms": 760
+              },
+              {
+                "ts": "2026-04-26T10:44:20+08:00",
+                "5xx_rate_percent": 8.7,
+                "p99_latency_ms": 3744
+              },
+              {
+                "ts": "2026-04-26T10:58:00+08:00",
+                "5xx_rate_percent": 12.8,
+                "p99_latency_ms": 4800
+              }
+            ],
+            "raw_response": {
+              "status": "success",
+              "result_type": "vector",
+              "sample_count": 3
+            }
+          }
+        },
+        "get_change_records": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "gitlab",
+            "project": "commerce/order-service",
+            "request": {
+              "source": "gitlab",
+              "query": {
+                "api": "GET /repository/compare",
+                "from": "3d91ab7",
+                "to": "8f31c2a"
+              },
+              "timeout_ms": 3000
+            },
+            "change_count": 3,
+            "suspect_component": "order-client-timeout",
+            "compare": {
+              "from_revision": "3d91ab7",
+              "to_revision": "8f31c2a",
+              "commit_count": 3,
+              "changed_files": 3
+            },
+            "changes": [
+              {
+                "change_id": "MR-8421",
+                "commit_id": "8f31c2a",
+                "full_commit_id": "8f31c2a9bd16f4e933c0a5de03b06d2a77a8f201",
+                "author": "alice",
+                "committed_at": "2026-04-26T10:28:31+08:00",
+                "file": "src/main/java/com/acme/order/OrderClientConfig.java",
+                "summary": "将 createOrder readTimeout 从 3000ms 改为 300ms",
+                "diff_summary": "readTimeoutMillis: 3000 -> 300",
+                "diff_hunks": [
+                  {
+                    "file": "src/main/java/com/acme/order/OrderClientConfig.java",
+                    "old_start": 42,
+                    "new_start": 42,
+                    "patch": "- readTimeoutMillis = 3000\n+ readTimeoutMillis = 300"
+                  }
+                ],
+                "deployed_minutes_ago": 18,
+                "correlates_with_incident": true,
+                "suspect": true,
+                "risk": "timeout_amplification"
+              },
+              {
+                "change_id": "MR-8418",
+                "commit_id": "0bd92fe",
+                "full_commit_id": "0bd92fe7f102afd1118c2f00bb7e113c083f19a2",
+                "author": "bob",
+                "committed_at": "2026-04-26T09:59:14+08:00",
+                "file": "README.md",
+                "summary": "更新订单接口文档",
+                "diff_summary": "documentation only",
+                "diff_hunks": [],
+                "deployed_minutes_ago": 18,
+                "correlates_with_incident": false,
+                "suspect": false,
+                "risk": "documentation_only"
+              },
+              {
+                "change_id": "CFG-1932",
+                "commit_id": "6a71d9c",
+                "full_commit_id": "6a71d9cf44c3320033a7080e415ad8926e45b00a",
+                "author": "platform-bot",
+                "committed_at": "2026-04-26T09:51:07+08:00",
+                "file": "deploy/values.yaml",
+                "summary": "调整日志采样率",
+                "diff_summary": "logging.sampleRate: 0.10 -> 0.05",
+                "diff_hunks": [],
+                "deployed_minutes_ago": 18,
+                "correlates_with_incident": false,
+                "suspect": false,
+                "risk": "low"
+              }
+            ]
+          }
+        },
+        "get_deployment_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "kubernetes/argocd",
+            "request": {
+              "source": "kubernetes/argocd",
+              "query": {
+                "kubectl": "kubectl -n default rollout status deploy/order-service",
+                "argocd_app": "order-service-prod"
+              },
+              "timeout_ms": 3000
+            },
+            "environment": "prod-shanghai-1",
+            "rollout_status": "degraded",
+            "active_alerts": [
+              "OrderServiceHigh5xxRate",
+              "OrderServiceP99LatencyHigh",
+              "OrderServiceErrorBudgetFastBurn"
+            ],
+            "current_revision": "order-service:2026.04.26.1042-8f31c2a",
+            "stable_revision": "order-service:2026.04.26.0915-3d91ab7",
+            "kubernetes": {
+              "deployment": "order-service",
+              "generation": 184,
+              "observed_generation": 184,
+              "replicas": 3,
+              "updated_replicas": 3,
+              "available_replicas": 3,
+              "conditions": [
+                {
+                  "type": "Available",
+                  "status": "True",
+                  "reason": "MinimumReplicasAvailable"
+                },
+                {
+                  "type": "Progressing",
+                  "status": "True",
+                  "reason": "NewReplicaSetAvailable"
+                }
+              ]
+            },
+            "argocd": {
+              "sync_status": "Synced",
+              "health_status": "Degraded",
+              "revision": "8f31c2a"
+            },
+            "status_reason": "rollout_completed_but_service_metrics_degraded"
+          }
+        },
+        "get_quota_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "quota-service",
+            "request": {
+              "source": "quota-service",
+              "query": {
+                "resource_group": "prod-order",
+                "resources": [
+                  "cpu",
+                  "memory",
+                  "pod"
+                ]
+              },
+              "timeout_ms": 3000
+            },
+            "quota_state": "sufficient",
+            "resource": "prod-order",
+            "used": {
+              "cpu_cores": 186,
+              "memory_gb": 740,
+              "pods": 1260
+            },
+            "limit": {
+              "cpu_cores": 400,
+              "memory_gb": 1600,
+              "pods": 3000
+            },
+            "available": {
+              "cpu_cores": 214,
+              "memory_gb": 860,
+              "pods": 1740
+            },
+            "blocking_requests": []
+          }
+        },
+        "get_rollback_history": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "argocd/helm-release-store",
+            "request": {
+              "source": "argocd/helm-release-store",
+              "query": {
+                "release": "order-service",
+                "history_limit": 5
+              },
+              "timeout_ms": 3000
+            },
+            "last_known_stable_revision": "order-service:2026.04.26.0915-3d91ab7",
+            "rollback_recommended": true,
+            "recent_rollbacks": [],
+            "history": [
+              {
+                "revision": "order-service:2026.04.26.1042-8f31c2a",
+                "status": "degraded",
+                "deployed_at": "2026-04-26T10:58:00+08:00"
+              },
+              {
+                "revision": "order-service:2026.04.26.0915-3d91ab7",
+                "status": "healthy",
+                "deployed_at": "2026-04-26T09:17:49+08:00"
+              }
+            ],
+            "rollback_candidate": {
+              "target_revision": "order-service:2026.04.26.0915-3d91ab7",
+              "git_sha": "3d91ab7",
+              "health_before_current_release": "healthy",
+              "requires_approval": true
+            }
+          }
+        },
+        "inspect_build_failure_logs": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "gitlab-ci",
+            "request": {
+              "source": "gitlab-ci",
+              "query": {
+                "job": "deploy-prod",
+                "pipeline_id": "pipe-8f31c2a"
+              },
+              "timeout_ms": 3000
+            },
+            "failed_stage": "none",
+            "suspected_error": "none",
+            "log_snippets": [
+              "build success",
+              "unit tests passed",
+              "deploy job completed"
+            ],
+            "job_logs": [
+              {
+                "stage": "unit-test",
+                "status": "success",
+                "tail": "BUILD SUCCESSFUL"
+              },
+              {
+                "stage": "build-image",
+                "status": "success",
+                "tail": "pushed registry.example.com/order-service:8f31c2a"
+              },
+              {
+                "stage": "deploy-prod",
+                "status": "success",
+                "tail": "application/order-service-prod synced successfully"
+              }
+            ],
+            "raw_log_excerpt": [
+              "helm template rendered successfully",
+              "argocd app sync order-service-prod --revision 8f31c2a completed"
+            ]
+          }
+        },
+        "inspect_connection_pool": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "hikari-metrics/prometheus",
+            "request": {
+              "source": "hikari-metrics/prometheus",
+              "query": {
+                "pool": "order-db-main",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "pool_state": "healthy",
+            "active_connections": 42,
+            "max_connections": 200,
+            "pool": {
+              "name": "order-db-main",
+              "active": 42,
+              "idle": 88,
+              "max": 200,
+              "pending_threads": 0,
+              "timeout_count_30m": 0
+            }
+          }
+        },
+        "inspect_cpu_saturation": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "prometheus/cadvisor",
+            "request": {
+              "source": "prometheus/cadvisor",
+              "query": [
+                "rate(container_cpu_usage_seconds_total{pod=~\"order-service.*\"}[5m])",
+                "rate(container_cpu_cfs_throttled_seconds_total{pod=~\"order-service.*\"}[5m])"
+              ],
+              "timeout_ms": 3000
+            },
+            "cpu_saturation": "normal",
+            "cpu_usage_ratio": 0.57,
+            "throttling_ratio": 0.01,
+            "samples": [
+              {
+                "ts": "2026-04-26T10:28:00+08:00",
+                "cpu_usage_ratio": 0.42,
+                "throttling_ratio": 0.01
+              },
+              {
+                "ts": "2026-04-26T10:58:00+08:00",
+                "cpu_usage_ratio": 0.57,
+                "throttling_ratio": 0.01
+              }
+            ]
+          }
+        },
+        "inspect_db_instance_health": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "rds-control-plane",
+            "request": {
+              "source": "rds-control-plane",
+              "query": {
+                "instance": "order-db",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "db_health": "healthy",
+            "role": "primary",
+            "availability": "available",
+            "cpu_percent": 31.4,
+            "iops_percent": 24.2,
+            "storage_percent": 52.1,
+            "failover_events": []
+          }
+        },
+        "inspect_deadlock_signals": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "signal": "deadlock"
+              },
+              "timeout_ms": 3000
+            },
+            "deadlock_count": 0,
+            "lock_wait_count": 0,
+            "top_wait_events": []
+          }
+        },
+        "inspect_dns_resolution": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "dns-probe/coredns",
+            "request": {
+              "source": "dns-probe/coredns",
+              "query": "dig inventory-service.default.svc.cluster.local A +short",
+              "timeout_ms": 3000
+            },
+            "resolution_status": "healthy",
+            "answers": [
+              "10.96.143.21"
+            ],
+            "rcode": "NOERROR",
+            "p95_lookup_ms": 3.8
+          }
         },
         "inspect_egress_policy": {
-          "summary": "order-service 在 case2 中出口网络策略正常。",
-          "payload": {"service": "order-service", "policy_status": "healthy"},
-          "evidence": ["egress allowed"]
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "network-policy-controller",
+            "request": {
+              "source": "network-policy-controller",
+              "query": {
+                "from": "default/order-service",
+                "to": "default/inventory-service"
+              },
+              "timeout_ms": 3000
+            },
+            "policy_status": "healthy",
+            "matched_policies": [
+              "allow-order-to-inventory"
+            ],
+            "decision": "allow"
+          }
+        },
+        "inspect_error_budget_burn": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "slo-service",
+            "request": {
+              "source": "slo-service",
+              "query": {
+                "slo": "create-order-availability",
+                "window": "1h/6h multi-window burn"
+              },
+              "timeout_ms": 3000
+            },
+            "burn_state": "fast_burn",
+            "burn_rate": 5.6,
+            "budget_consumed_percent_1h": 18.48,
+            "budget_remaining_percent_30d": 71.2,
+            "objective": "99.9% successful create-order requests"
+          }
+        },
+        "inspect_ingress_route": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "ingress-controller",
+            "request": {
+              "source": "ingress-controller",
+              "query": {
+                "resource": "ingress/order-api",
+                "namespace": "default"
+              },
+              "timeout_ms": 3000
+            },
+            "route_status": "healthy",
+            "routes": [
+              {
+                "host": "api.example.com",
+                "path": "/orders",
+                "backend": "order-service:8080",
+                "status": "valid"
+              }
+            ],
+            "controller_errors": []
+          }
+        },
+        "inspect_jvm_memory": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "prometheus/jmx-exporter",
+            "request": {
+              "source": "prometheus/jmx-exporter",
+              "query": [
+                "jvm_memory_used_bytes / jvm_memory_max_bytes",
+                "rate(jvm_gc_pause_seconds_count[5m])"
+              ],
+              "timeout_ms": 3000
+            },
+            "heap_usage_ratio": 0.51,
+            "gc_pressure": "normal",
+            "heap": {
+              "used_mb": 1044,
+              "max_mb": 2048,
+              "usage_ratio": 0.51
+            },
+            "gc": {
+              "young_gc_per_min": 4.1,
+              "old_gc_per_min": 0.0,
+              "p99_pause_ms": 38
+            }
+          }
+        },
+        "inspect_load_balancer_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "alb-controller",
+            "request": {
+              "source": "alb-controller",
+              "query": {
+                "listener": "api-example-com-https",
+                "backend": "order-service"
+              },
+              "timeout_ms": 3000
+            },
+            "lb_status": "healthy",
+            "backend_health": [
+              {
+                "target": "order-service:8080",
+                "status": "healthy",
+                "reason": "success"
+              }
+            ],
+            "listener_status": "active"
+          }
+        },
+        "inspect_pod_events": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "kubernetes-api",
+            "request": {
+              "source": "kubernetes-api",
+              "query": "kubectl -n default get events --field-selector involvedObject.name~order-service",
+              "timeout_ms": 3000
+            },
+            "event_count": 2,
+            "last_termination_reason": "none",
+            "events": [
+              {
+                "type": "Normal",
+                "reason": "Pulled",
+                "message": "Container image registry.example.com/order-service:2026.04.26.1042-8f31c2a already present",
+                "first_timestamp": "2026-04-26T10:44:20+08:00",
+                "last_timestamp": "2026-04-26T10:58:00+08:00",
+                "count": 3
+              },
+              {
+                "type": "Normal",
+                "reason": "Started",
+                "message": "Started container app",
+                "first_timestamp": "2026-04-26T10:44:20+08:00",
+                "last_timestamp": "2026-04-26T10:58:00+08:00",
+                "count": 3
+              }
+            ],
+            "raw_response": {
+              "api_version": "v1",
+              "resource_version": "742195219"
+            }
+          }
+        },
+        "inspect_pod_logs": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "loki",
+            "request": {
+              "source": "loki",
+              "query": "{namespace=\"default\", app=\"order-service\"} |= \"orders\"",
+              "timeout_ms": 3000
+            },
+            "error_pattern": "client_read_timeout_after_config_change",
+            "oom_detected": false,
+            "log_snippets": [
+              "createOrder failed: downstream=inventory-service op=reserve timeout=PT0.3S elapsed=301ms error=java.net.SocketTimeoutException",
+              "client timeout config active revision=8f31c2a createOrder.readTimeoutMillis=300",
+              "POST /orders/create failed status=504 cause=Read timed out after 300ms"
+            ],
+            "log_streams": [
+              {
+                "labels": {
+                  "pod": "order-service-6c9d7b8c9f-4k2mp",
+                  "container": "app"
+                },
+                "entries": [
+                  {
+                    "ts": "2026-04-26T10:58:00+08:00",
+                    "level": "ERROR",
+                    "trace_id": "trc-deploy_timeout-0",
+                    "message": "createOrder failed: downstream=inventory-service op=reserve timeout=PT0.3S elapsed=301ms error=java.net.SocketTimeoutException"
+                  },
+                  {
+                    "ts": "2026-04-26T10:58:00+08:00",
+                    "level": "WARN",
+                    "trace_id": "trc-deploy_timeout-1",
+                    "message": "client timeout config active revision=8f31c2a createOrder.readTimeoutMillis=300"
+                  },
+                  {
+                    "ts": "2026-04-26T10:58:00+08:00",
+                    "level": "ERROR",
+                    "trace_id": "trc-deploy_timeout-2",
+                    "message": "POST /orders/create failed status=504 cause=Read timed out after 300ms"
+                  }
+                ]
+              }
+            ],
+            "parsed_error_counts": {
+              "OutOfMemoryError": 0,
+              "ExitCode137": 0,
+              "SocketTimeoutException": 184,
+              "HTTP_504": 171
+            }
+          }
+        },
+        "inspect_replication_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "rds-replication-monitor",
+            "request": {
+              "source": "rds-replication-monitor",
+              "query": {
+                "instance": "order-db",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "lag_seconds": 0,
+            "replication_status": "healthy",
+            "replicas": [
+              {
+                "name": "order-db-ro-1",
+                "lag_seconds": 0,
+                "state": "streaming"
+              }
+            ]
+          }
+        },
+        "inspect_slow_queries": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "window": "30m",
+                "min_duration_ms": 500
+              },
+              "timeout_ms": 3000
+            },
+            "slow_query_count": 0,
+            "max_latency_ms": 95,
+            "slow_queries": [],
+            "db_cpu_percent": 31.4
+          }
+        },
+        "inspect_thread_pool_status": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "jmx/threadpool-exporter",
+            "request": {
+              "source": "jmx/threadpool-exporter",
+              "query": {
+                "pool": "tomcat-http-nio",
+                "window": "30m"
+              },
+              "timeout_ms": 3000
+            },
+            "pool_state": "healthy",
+            "queue_depth": 12,
+            "active_threads": 18,
+            "max_threads": 200,
+            "rejected_count_30m": 0
+          }
+        },
+        "inspect_transaction_rollback_rate": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "rds-performance-insights",
+            "request": {
+              "source": "rds-performance-insights",
+              "query": {
+                "database": "order-db",
+                "metric": "transaction_rollback_rate"
+              },
+              "timeout_ms": 3000
+            },
+            "rollback_rate": 0.0,
+            "rollback_count_30m": 0,
+            "transaction_count_30m": 12000
+          }
+        },
+        "inspect_upstream_dependency": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "prometheus/istio",
+            "request": {
+              "source": "prometheus/istio",
+              "query": [
+                "histogram_quantile(0.99, rate(istio_request_duration_milliseconds_bucket[5m]))",
+                "sum(rate(istio_requests_total{response_code=~\"5..\"}[5m]))"
+              ],
+              "timeout_ms": 3000
+            },
+            "dependency_status": "healthy",
+            "timeout_ratio": 0.0,
+            "server_p99_ms": 820,
+            "dependency": "inventory-service",
+            "server_side": {
+              "p50_ms": 120,
+              "p95_ms": 510,
+              "p99_ms": 820,
+              "5xx_rate_percent": 0.08
+            },
+            "client_side": {
+              "configured_timeout_ms": 300,
+              "timeout_count_30m": 184
+            }
+          }
+        },
+        "inspect_vpc_connectivity": {
+          "payload": {
+            "service": "order-service",
+            "cluster": "prod-shanghai-1",
+            "namespace": "default",
+            "observed_at": "2026-04-26T10:58:00+08:00",
+            "time_range": {
+              "start": "2026-04-26T10:28:00+08:00",
+              "end": "2026-04-26T10:58:00+08:00"
+            },
+            "source": "network-probe",
+            "request": {
+              "source": "network-probe",
+              "query": {
+                "from": "order-service",
+                "to": "inventory-service:8080",
+                "protocol": "tcp"
+              },
+              "timeout_ms": 3000
+            },
+            "connectivity_status": "healthy",
+            "tcp_connect": {
+              "success_rate_percent": 100.0,
+              "p95_connect_ms": 8.2
+            },
+            "packet_loss_percent": 0.0
+          }
         }
       }
     }

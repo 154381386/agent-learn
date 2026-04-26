@@ -10,7 +10,7 @@ from ..rag_client import RAGServiceClient
 from ..runtime.contracts import TaskEnvelope
 from ..case_retrieval import infer_failure_mode, infer_root_cause_taxonomy
 from ..service_names import canonical_service_name, infer_service_name
-from .mock_helpers import resolve_world_state_mock
+from .mock_helpers import mock_tool_result, resolve_world_state_mock
 from .contracts import ReadOnlyTool, ToolExecutionResult
 
 
@@ -170,14 +170,7 @@ def _resolve_case_mock(task: TaskEnvelope, tool_name: str, arguments: dict | Non
         payload = default_tools.get(tool_name)
     if not isinstance(payload, dict):
         return None
-    return ToolExecutionResult(
-        tool_name=tool_name,
-        status=str(payload.get("status") or "completed"),
-        summary=str(payload.get("summary") or f"{service_name} 已命中 {case_name}：{tool_name}"),
-        payload=dict(payload.get("payload") or {}),
-        evidence=[str(item) for item in payload.get("evidence", []) if item],
-        risk=str(payload.get("risk") or "low"),
-    )
+    return mock_tool_result(tool_name, payload)
 
 
 def _resolve_profile_mock(task: TaskEnvelope, tool_name: str, arguments: dict | None = None) -> ToolExecutionResult | None:
@@ -195,14 +188,7 @@ def _resolve_profile_mock(task: TaskEnvelope, tool_name: str, arguments: dict | 
     payload = profile.get(tool_name)
     if not isinstance(payload, dict):
         return None
-    return ToolExecutionResult(
-        tool_name=tool_name,
-        status=str(payload.get("status") or "completed"),
-        summary=str(payload.get("summary") or f"{service_name} 已命中 {scenario} mock：{tool_name}"),
-        payload=dict(payload.get("payload") or {}),
-        evidence=[str(item) for item in payload.get("evidence", []) if item],
-        risk=str(payload.get("risk") or "low"),
-    )
+    return mock_tool_result(tool_name, payload)
 
 
 def _match_any(message: str, keywords: list[str]) -> bool:
@@ -228,14 +214,7 @@ def _resolve_mock_result(task: TaskEnvelope, tool_name: str, arguments: dict | N
             return case_mock
         return _resolve_profile_mock(task, tool_name, arguments)
 
-    return ToolExecutionResult(
-        tool_name=tool_name,
-        status=str(payload.get("status") or "completed"),
-        summary=str(payload.get("summary") or f"已返回 mock 响应：{tool_name}"),
-        payload=dict(payload.get("payload") or {}),
-        evidence=[str(item) for item in payload.get("evidence", []) if item],
-        risk=str(payload.get("risk") or "low"),
-    )
+    return mock_tool_result(tool_name, payload)
 
 
 class SearchKnowledgeBaseTool(ReadOnlyTool):

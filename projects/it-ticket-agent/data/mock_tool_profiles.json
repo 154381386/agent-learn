@@ -2,33 +2,22 @@
   "车云服务": {
     "error": {
       "check_recent_deployments": {
-        "summary": "已命中车云服务最近异常发布记录。",
         "payload": {
           "service": "车云服务",
           "signals": [
             "10:32 发布 release-2026.04.08.3 后告警开始上升",
             "关联变更单 CHG-240408-17"
           ]
-        },
-        "evidence": [
-          "最近发布版本：release-2026.04.08.3",
-          "变更窗口：2026-04-08 10:30"
-        ]
+        }
       },
       "check_pipeline_status": {
-        "summary": "车云服务流水线最近一次执行失败。",
         "payload": {
           "status": "failed",
           "failed_stage": "deploy-prod",
           "pipeline_id": 902341
-        },
-        "evidence": [
-          "pipeline #902341 状态 failed",
-          "失败阶段 deploy-prod"
-        ]
+        }
       },
       "get_deployment_status": {
-        "summary": "车云服务 rollout 当前处于降级状态。",
         "payload": {
           "rollout_status": "degraded",
           "active_alerts": [
@@ -37,14 +26,9 @@
           ],
           "current_revision": "release-2026.04.08.3",
           "previous_revision": "release-2026.04.06.1"
-        },
-        "evidence": [
-          "当前版本：release-2026.04.08.3",
-          "上一稳定版本：release-2026.04.06.1"
-        ]
+        }
       },
       "check_service_health": {
-        "summary": "车云服务健康状态异常。",
         "payload": {
           "service": "车云服务",
           "environment": "prod-shanghai-1",
@@ -56,14 +40,9 @@
             "/car/status",
             "/car/orders"
           ]
-        },
-        "evidence": [
-          "3/8 pod ready",
-          "错误率 12.6%"
-        ]
+        }
       },
       "check_recent_alerts": {
-        "summary": "车云服务最近 30 分钟有高优先级告警。",
         "payload": {
           "service": "车云服务",
           "window_minutes": 30,
@@ -81,14 +60,9 @@
               "status": "firing"
             }
           ]
-        },
-        "evidence": [
-          "critical 告警仍在 firing",
-          "探针失败告警持续 18 分钟"
-        ]
+        }
       },
       "check_canary_status": {
-        "summary": "车云服务灰度已暂停，等待回滚。",
         "payload": {
           "service": "车云服务",
           "environment": "prod-shanghai-1",
@@ -98,14 +72,9 @@
             "error_rate_guardrail",
             "readiness_guardrail"
           ]
-        },
-        "evidence": [
-          "灰度流量 10%",
-          "guardrail 未通过"
-        ]
+        }
       },
       "inspect_build_failure_logs": {
-        "summary": "车云服务部署阶段日志显示 readiness probe 失败。",
         "payload": {
           "service": "车云服务",
           "failed_stage": "deploy",
@@ -114,14 +83,9 @@
             "rollout status: degraded",
             "readiness probe failed on pod car-cloud-6fd79"
           ]
-        },
-        "evidence": [
-          "失败阶段：deploy",
-          "readiness probe failed"
-        ]
+        }
       },
       "get_rollback_history": {
-        "summary": "车云服务历史回滚记录显示 release-2026.04.06.1 为最近稳定版本。",
         "payload": {
           "service": "车云服务",
           "recent_rollbacks": [
@@ -138,13 +102,9 @@
           ],
           "last_known_stable_revision": "release-2026.04.06.1",
           "rollback_recommended": true
-        },
-        "evidence": [
-          "最近稳定版本：release-2026.04.06.1"
-        ]
+        }
       },
       "get_git_commit_history": {
-        "summary": "已命中车云服务最近可疑 git 提交。",
         "payload": {
           "service": "车云服务",
           "commits": [
@@ -161,14 +121,9 @@
               "minutes_ago": 78
             }
           ]
-        },
-        "evidence": [
-          "最近提交 a1b2c3d",
-          "提交包含 probe 相关改动"
-        ]
+        }
       },
       "get_change_records": {
-        "summary": "已查询车云服务最近变更记录。",
         "payload": {
           "service": "车云服务",
           "changes": [
@@ -185,13 +140,9 @@
               "owner": "ops-bot"
             }
           ]
-        },
-        "evidence": [
-          "变更单 CHG-240408-17 与故障时间重合"
-        ]
+        }
       },
       "check_pod_status": {
-        "summary": "车云服务 pod 状态异常。",
         "payload": {
           "service": "车云服务",
           "namespace": "default",
@@ -211,16 +162,11 @@
           ],
           "ready_replicas": 1,
           "desired_replicas": 2
-        },
-        "evidence": [
-          "pod car-cloud-6fd79 CrashLoopBackOff",
-          "ready 1/2"
-        ]
+        }
       }
     },
     "health": {
       "check_service_health": {
-        "summary": "车云服务健康状态正常。",
         "payload": {
           "service": "车云服务",
           "environment": "prod-shanghai-1",
@@ -229,14 +175,9 @@
           "error_rate_percent": 0.1,
           "p99_latency_ms": 160,
           "impacted_endpoints": []
-        },
-        "evidence": [
-          "ready 2/2",
-          "错误率 0.1%"
-        ]
+        }
       },
       "check_recent_alerts": {
-        "summary": "车云服务最近没有活跃故障告警。",
         "payload": {
           "service": "车云服务",
           "window_minutes": 30,
@@ -249,13 +190,9 @@
               "status": "stable"
             }
           ]
-        },
-        "evidence": [
-          "最近 30 分钟无 firing 告警"
-        ]
+        }
       },
       "check_pod_status": {
-        "summary": "车云服务 pod 状态正常。",
         "payload": {
           "service": "车云服务",
           "namespace": "default",
@@ -275,13 +212,9 @@
           ],
           "ready_replicas": 2,
           "desired_replicas": 2
-        },
-        "evidence": [
-          "ready 2/2"
-        ]
+        }
       },
       "get_git_commit_history": {
-        "summary": "车云服务最近 git 提交平稳。",
         "payload": {
           "service": "车云服务",
           "commits": [
@@ -292,17 +225,13 @@
               "minutes_ago": 180
             }
           ]
-        },
-        "evidence": [
-          "最近无高风险提交"
-        ]
+        }
       }
     }
   },
   "支付服务": {
     "error": {
       "check_service_health": {
-        "summary": "支付服务健康状态降级。",
         "payload": {
           "service": "支付服务",
           "environment": "prod-shanghai-1",
@@ -314,14 +243,9 @@
             "/pay/create",
             "/pay/query"
           ]
-        },
-        "evidence": [
-          "ready 4/6",
-          "交易接口延迟上升"
-        ]
+        }
       },
       "check_recent_alerts": {
-        "summary": "支付服务存在交易失败和延迟告警。",
         "payload": {
           "service": "支付服务",
           "window_minutes": 30,
@@ -339,13 +263,9 @@
               "status": "firing"
             }
           ]
-        },
-        "evidence": [
-          "支付失败告警 firing"
-        ]
+        }
       },
       "get_git_commit_history": {
-        "summary": "支付服务最近提交包含风控规则调整。",
         "payload": {
           "service": "支付服务",
           "commits": [
@@ -362,13 +282,9 @@
               "minutes_ago": 95
             }
           ]
-        },
-        "evidence": [
-          "最近提交 p1q2r3s 与回调逻辑相关"
-        ]
+        }
       },
       "get_change_records": {
-        "summary": "支付服务最近变更包含配置热更新。",
         "payload": {
           "service": "支付服务",
           "changes": [
@@ -385,13 +301,9 @@
               "owner": "payment-team"
             }
           ]
-        },
-        "evidence": [
-          "配置变更 CHG-240408-31 与故障时间接近"
-        ]
+        }
       },
       "check_pod_status": {
-        "summary": "支付服务 pod 有部分实例未就绪。",
         "payload": {
           "service": "支付服务",
           "namespace": "default",
@@ -411,15 +323,11 @@
           ],
           "ready_replicas": 1,
           "desired_replicas": 2
-        },
-        "evidence": [
-          "payment-7aa12 未就绪"
-        ]
+        }
       }
     },
     "health": {
       "check_service_health": {
-        "summary": "支付服务运行正常。",
         "payload": {
           "service": "支付服务",
           "environment": "prod-shanghai-1",
@@ -428,13 +336,9 @@
           "error_rate_percent": 0.05,
           "p99_latency_ms": 120,
           "impacted_endpoints": []
-        },
-        "evidence": [
-          "ready 2/2"
-        ]
+        }
       },
       "check_pod_status": {
-        "summary": "支付服务 pod 全部就绪。",
         "payload": {
           "service": "支付服务",
           "namespace": "default",
@@ -454,13 +358,9 @@
           ],
           "ready_replicas": 2,
           "desired_replicas": 2
-        },
-        "evidence": [
-          "ready 2/2"
-        ]
+        }
       },
       "get_git_commit_history": {
-        "summary": "支付服务最近无异常提交。",
         "payload": {
           "service": "支付服务",
           "commits": [
@@ -471,10 +371,7 @@
               "minutes_ago": 260
             }
           ]
-        },
-        "evidence": [
-          "最近提交稳定"
-        ]
+        }
       }
     }
   }

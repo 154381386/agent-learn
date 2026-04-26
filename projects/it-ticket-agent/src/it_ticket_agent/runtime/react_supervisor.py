@@ -608,7 +608,38 @@ class ReactSupervisor:
         return next_state
 
     @staticmethod
-    def _recent_observations_for_prompt(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _compact_tool_payload(payload: dict[str, Any], *, list_limit: int = 3, depth: int = 0) -> dict[str, Any]:
+        if depth > 3:
+            return {}
+        compact: dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                compact[key] = ReactSupervisor._compact_tool_payload(value, list_limit=list_limit, depth=depth + 1)
+            elif isinstance(value, list):
+                items: list[Any] = []
+                for entry in value[:list_limit]:
+                    if isinstance(entry, dict):
+                        items.append(ReactSupervisor._compact_tool_payload(entry, list_limit=list_limit, depth=depth + 1))
+                    else:
+                        items.append(entry)
+                compact[key] = items
+            else:
+                compact[key] = value
+        return compact
+
+    @staticmethod
+    def _model_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+        visible = {
+            "tool_name": result.get("tool_name") or result.get("name"),
+            "status": result.get("status"),
+            "payload": result.get("payload") or {},
+        }
+        if result.get("risk"):
+            visible["risk"] = result.get("risk")
+        return visible
+
+    @classmethod
+    def _recent_observations_for_prompt(cls, observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         compact: list[dict[str, Any]] = []
         for item in observations[-3:]:
             result = dict(item.get("result") or {})
@@ -617,24 +648,140 @@ class ReactSupervisor:
                     "tool_name": item.get("tool_name"),
                     "arguments": item.get("arguments") or {},
                     "status": result.get("status"),
-                    "summary": result.get("summary"),
-                    "evidence": list(result.get("evidence") or [])[:3],
+                    "payload": cls._compact_tool_payload(dict(result.get("payload") or {})),
                 }
             )
         return compact
+
+    @staticmethod
+    def _derive_payload_evidence(tool_name: str, payload: dict[str, Any]) -> list[str]:
+        evidence: list[str] = []
+
+        def add(text: object) -> None:
+            value = str(text or "").strip()
+            if value and value not in evidence:
+                evidence.append(value)
+
+        source = str(payload.get("source") or tool_name).strip()
+        if tool_name == "check_service_health":
+            current = dict(payload.get("current") or {})
+            error_rate = current.get("http_5xx_rate_percent", payload.get("error_rate_percent"))
+            p99_latency = current.get("p99_latency_ms", payload.get("p99_latency_ms"))
+            health_status = payload.get("health_status")
+            if health_status:
+                add(f"{source}: health_status={health_status}")
+            if error_rate is not None:
+                add(f"{source}: 5xx_rate={error_rate}%")
+            if p99_latency is not None:
+                add(f"{source}: p99_latency_ms={p99_latency}")
+        elif tool_name == "check_recent_alerts":
+            for alert in list(payload.get("alerts") or [])[:3]:
+                if isinstance(alert, dict):
+                    add(f"{source}: alert={alert.get('name')} status={alert.get('status')} severity={alert.get('severity')}")
+        elif tool_name == "inspect_error_budget_burn":
+            add(f"{source}: burn_state={payload.get('burn_state')} burn_rate={payload.get('burn_rate')}")
+        elif tool_name == "check_recent_deployments":
+            if payload.get("latest_revision"):
+                add(f"{source}: latest_revision={payload.get('latest_revision')}")
+            if payload.get("previous_revision"):
+                add(f"{source}: previous_revision={payload.get('previous_revision')}")
+            correlation = dict(payload.get("correlation") or {})
+            if correlation.get("lag_after_deploy_minutes") is not None:
+                add(f"{source}: symptom_lag_after_deploy_minutes={correlation.get('lag_after_deploy_minutes')}")
+            for record in list(payload.get("release_records") or [])[:2]:
+                if isinstance(record, dict):
+                    add(f"{source}: release revision={record.get('revision')} health={record.get('health')}")
+        elif tool_name == "get_deployment_status":
+            add(f"{source}: rollout_status={payload.get('rollout_status') or dict(payload.get('argocd') or {}).get('health_status')}")
+            if payload.get("current_revision"):
+                add(f"{source}: current_revision={payload.get('current_revision')}")
+            argocd = dict(payload.get("argocd") or {})
+            if argocd:
+                add(f"{source}: argocd_sync={argocd.get('sync_status')} health={argocd.get('health_status')} revision={argocd.get('revision')}")
+        elif tool_name == "check_pipeline_status":
+            pipeline = dict(payload.get("pipeline") or {})
+            add(f"{source}: pipeline_status={pipeline.get('status') or payload.get('pipeline_status')}")
+        elif tool_name == "get_change_records":
+            compare = dict(payload.get("compare") or {})
+            if compare:
+                add(f"{source}: compare={compare.get('from_revision')}..{compare.get('to_revision')} commits={compare.get('commit_count')}")
+            for change in list(payload.get("changes") or [])[:3]:
+                if not isinstance(change, dict):
+                    continue
+                diff = str(change.get("diff_summary") or "").strip()
+                if not diff:
+                    hunks = [hunk for hunk in list(change.get("diff_hunks") or []) if isinstance(hunk, dict)]
+                    diff = str(hunks[0].get("patch") or "").replace("\n", " ").strip() if hunks else ""
+                add(f"{source}: commit={change.get('commit_id') or change.get('change_id')} file={change.get('file')} diff={diff}")
+        elif tool_name == "get_rollback_history":
+            candidate = dict(payload.get("rollback_candidate") or {})
+            target_revision = candidate.get("target_revision") or payload.get("last_known_stable_revision")
+            if target_revision:
+                add(f"{source}: rollback_target={target_revision}")
+        elif tool_name == "check_pod_status":
+            if payload.get("ready_replicas") is not None and payload.get("desired_replicas") is not None:
+                add(f"{source}: ready={payload.get('ready_replicas')}/{payload.get('desired_replicas')}")
+            for pod in list(payload.get("pods") or [])[:3]:
+                if isinstance(pod, dict):
+                    add(f"{source}: pod={pod.get('name')} status={pod.get('status')} restarts={pod.get('restarts')}")
+        elif tool_name == "inspect_pod_logs":
+            if payload.get("error_pattern"):
+                add(f"{source}: error_pattern={payload.get('error_pattern')}")
+            counts = dict(payload.get("parsed_error_counts") or {})
+            for error_name, count in counts.items():
+                if count:
+                    add(f"{source}: {error_name}={count}")
+            for stream in list(payload.get("log_streams") or [])[:2]:
+                if not isinstance(stream, dict):
+                    continue
+                for entry in list(stream.get("entries") or [])[:2]:
+                    if isinstance(entry, dict):
+                        add(f"{source}: {entry.get('level')} {entry.get('message')}")
+        elif tool_name == "inspect_pod_events":
+            add(f"{source}: last_termination_reason={payload.get('last_termination_reason')}")
+            for event in list(payload.get("events") or [])[:2]:
+                if isinstance(event, dict):
+                    add(f"{source}: event={event.get('type')}/{event.get('reason')} {event.get('message')}")
+        elif tool_name == "inspect_jvm_memory":
+            heap = dict(payload.get("heap") or {})
+            add(f"{source}: heap_usage_ratio={heap.get('usage_ratio') or payload.get('heap_usage_ratio')}")
+            add(f"{source}: gc_pressure={payload.get('gc_pressure')}")
+        else:
+            for key in (
+                "connectivity_status",
+                "dependency_status",
+                "route_status",
+                "resolution_status",
+                "policy_status",
+                "pool_state",
+                "db_health",
+                "slow_query_count",
+                "deadlock_count",
+                "rollback_rate",
+                "timeout_ratio",
+            ):
+                value = payload.get(key)
+                if value is not None and value != "" and value != []:
+                    add(f"{source}: {key}={value}")
+            for snippet in list(payload.get("log_snippets") or [])[:2]:
+                add(f"{source}: {snippet}")
+
+        return evidence[:8]
+
+    @staticmethod
+    def _derive_observation_evidence(item: dict[str, Any]) -> list[str]:
+        tool_name = str(item.get("tool_name") or "")
+        result = dict(item.get("result") or {})
+        return ReactSupervisor._derive_payload_evidence(tool_name, dict(result.get("payload") or {}))
 
     def _summarize_observations(self, observations: list[dict[str, Any]]) -> str:
         if len(observations) <= self.summary_after_n_steps:
             return ""
         summary_lines: list[str] = []
         for item in observations[:-2]:
-            result = dict(item.get("result") or {})
             tool_name = str(item.get("tool_name") or "")
-            summary = str(result.get("summary") or "")
-            evidence = ", ".join(str(entry) for entry in list(result.get("evidence") or [])[:2])
-            line = f"{tool_name}: {summary}".strip()
-            if evidence:
-                line = f"{line} | evidence={evidence}"
+            evidence = ", ".join(self._derive_observation_evidence(item)[:2])
+            line = f"{tool_name}: {evidence}".strip()
             if line and line not in summary_lines:
                 summary_lines.append(line)
         return "\n".join(summary_lines[:8])
@@ -643,8 +790,7 @@ class ReactSupervisor:
     def _extract_pinned_findings(observations: list[dict[str, Any]]) -> list[str]:
         pinned: list[str] = []
         for item in observations:
-            result = dict(item.get("result") or {})
-            for entry in list(result.get("evidence") or []):
+            for entry in ReactSupervisor._derive_observation_evidence(item):
                 text = str(entry).strip()
                 if text and text not in pinned:
                     pinned.append(text)
@@ -671,8 +817,7 @@ class ReactSupervisor:
     def _flatten_evidence(observations: list[dict[str, Any]]) -> list[str]:
         evidence: list[str] = []
         for item in observations:
-            result = dict(item.get("result") or {})
-            for entry in list(result.get("evidence") or []):
+            for entry in ReactSupervisor._derive_observation_evidence(item):
                 text = str(entry).strip()
                 if text and text not in evidence:
                     evidence.append(text)
@@ -772,11 +917,34 @@ class ReactSupervisor:
                     evidence.append(f"Pod 日志错误模式：{error_pattern}。")
                 elif not payload.get("oom_detected"):
                     evidence.append("Pod 日志未发现明显 OOM 或应用异常模式。")
+            elif tool_name == "check_recent_deployments":
+                if payload.get("has_recent_deploy"):
+                    latest = str(payload.get("latest_revision") or "unknown")
+                    previous = str(payload.get("previous_revision") or "")
+                    suffix = f"，上一稳定版本 {previous}" if previous else ""
+                    evidence.append(f"故障窗口附近存在发布：{latest}{suffix}。")
+                for signal in list(payload.get("signals") or [])[:2]:
+                    evidence.append(str(signal))
+            elif tool_name == "get_deployment_status":
+                rollout_status = str(payload.get("rollout_status") or "")
+                if rollout_status and rollout_status.lower() not in {"stable", "healthy", "success"}:
+                    evidence.append(f"当前 rollout 状态为 {rollout_status}。")
             elif tool_name == "get_change_records":
                 changes = list(payload.get("changes") or [])
-                change_ids = ", ".join(str(change.get("change_id") or "") for change in changes[:3] if change.get("change_id"))
+                change_ids = []
+                for change in changes[:3]:
+                    if not isinstance(change, dict):
+                        continue
+                    commit_id = str(change.get("commit_id") or change.get("change_id") or "").strip()
+                    summary = str(change.get("summary") or change.get("diff_summary") or change.get("file") or "").strip()
+                    if commit_id:
+                        change_ids.append(f"{commit_id}{f'（{summary}）' if summary else ''}")
                 if change_ids:
-                    evidence.append(f"故障窗口附近存在变更记录：{change_ids}。")
+                    evidence.append(f"故障窗口附近存在变更记录：{', '.join(change_ids)}。")
+            elif tool_name == "get_rollback_history":
+                stable_revision = str(payload.get("last_known_stable_revision") or "").strip()
+                if stable_revision:
+                    evidence.append(f"可回滚上一稳定版本：{stable_revision}。")
             elif tool_name == "inspect_vpc_connectivity":
                 connectivity_status = str(payload.get("connectivity_status") or "")
                 if connectivity_status and connectivity_status.lower() != "healthy":
@@ -800,9 +968,6 @@ class ReactSupervisor:
                 if slow_query_count is not None:
                     suffix = f"，最大延迟 {max_latency_ms}ms" if max_latency_ms is not None else ""
                     evidence.append(f"慢查询数量为 {slow_query_count}{suffix}。")
-            elif tool_name == "check_recent_deployments":
-                for signal in list(payload.get("signals") or [])[:2]:
-                    evidence.append(str(signal))
             for entry in list(result.get("evidence") or []):
                 text = str(entry).strip()
                 if text and text not in evidence and not self._is_low_value_evidence(text):
@@ -862,6 +1027,19 @@ class ReactSupervisor:
         dependency_status = str(upstream.get("dependency_status") or "").lower()
         pool_state = str(pool.get("pool_state") or "").lower()
         slow_query_count = int(slow_queries.get("slow_query_count") or 0)
+        deploy_payload = {
+            "check_recent_deployments": payloads.get("check_recent_deployments") or {},
+            "get_deployment_status": payloads.get("get_deployment_status") or {},
+            "check_service_health": payloads.get("check_service_health") or {},
+            "get_change_records": payloads.get("get_change_records") or {},
+        }
+        if self._has_deploy_regression_evidence(deploy_payload):
+            change = self._select_suspect_change(deploy_payload)
+            commit_id = str(change.get("commit_id") or change.get("change_id") or "").strip()
+            change_summary = str(change.get("summary") or change.get("diff_summary") or change.get("file") or "").strip()
+            if commit_id:
+                return f"高概率是近期发布回归：commit {commit_id}（{change_summary or '变更内容'}）与错误率/延迟升高时间窗口重合。"
+            return "高概率是近期发布或配置变更回归，变更窗口与服务错误率/延迟升高时间重合。"
         if connectivity_status in {"blocked", "degraded", "unstable"} or dependency_status in {"degraded", "timeout", "unhealthy"}:
             return "高概率是网络链路或上游依赖退化导致请求超时，需要优先核对 VPC 连通性、依赖状态和超时比例。"
         if pool_state in {"saturated", "degraded", "exhausted"}:
@@ -936,9 +1114,26 @@ class ReactSupervisor:
         pool_state = str(pool.get("pool_state") or "").lower()
 
         actions: list[str] = []
+        deploy_payload = {
+            "check_recent_deployments": payloads.get("check_recent_deployments") or {},
+            "get_deployment_status": payloads.get("get_deployment_status") or {},
+            "check_service_health": payloads.get("check_service_health") or {},
+            "get_change_records": payloads.get("get_change_records") or {},
+        }
         if changes:
-            change_ids = ", ".join(str(change.get("change_id") or "") for change in changes[:3] if change.get("change_id"))
-            actions.append(f"已查询到变更记录 {change_ids}，下一步应打开变更 diff、部署版本和配置项，和故障时间线逐项对齐。")
+            formatted_changes = []
+            for change in changes[:3]:
+                if not isinstance(change, dict):
+                    continue
+                commit_id = str(change.get("commit_id") or change.get("change_id") or "").strip()
+                summary = str(change.get("summary") or change.get("diff_summary") or change.get("file") or "").strip()
+                if commit_id:
+                    formatted_changes.append(f"{commit_id}{f'（{summary}）' if summary else ''}")
+            actions.append(f"已查询到变更记录 {', '.join(formatted_changes) or '若干变更'}，下一步应打开变更 diff、部署版本和配置项，和故障时间线逐项对齐。")
+            if self._has_deploy_regression_evidence(deploy_payload):
+                rollback = payloads.get("get_rollback_history") or {}
+                stable_revision = str(rollback.get("last_known_stable_revision") or "上一稳定版本")
+                actions.append(f"当前证据已满足发布回归候选，建议发起回滚到 {stable_revision} 的审批；审批通过后再执行回滚动作。")
         elif "get_change_records" not in observed_tools:
             actions.append("先查询最近变更记录，再判断发布/配置变更是否和故障时间窗口重合。")
 
@@ -964,7 +1159,10 @@ class ReactSupervisor:
             actions.append("补查上游依赖超时比例和 VPC 连通性，确认 502/超时是否来自依赖或网络链路。")
 
         actions.append("在确认影响范围和证据闭环前，不建议直接自动重启、扩容或回滚生产服务。")
-        actions.append("如果需要由 Agent 自动执行回滚、扩缩容或重启，需要先注册对应 action tool，并进入人工审批。")
+        if self._has_deploy_regression_evidence(deploy_payload):
+            actions.append("回滚动作已在执行注册表中登记；如果本轮排序选择发布回归为主因，会进入人工审批后再执行。")
+        else:
+            actions.append("如果需要由 Agent 自动执行回滚、扩缩容或重启，需要先注册对应 action tool，并进入人工审批。")
         return list(dict.fromkeys(action for action in actions if action))
 
     @staticmethod
@@ -1525,14 +1723,28 @@ class ReactSupervisor:
     @staticmethod
     def _observation_has_anomaly(result: dict[str, Any]) -> bool:
         payload = dict(result.get("payload") or {})
-        evidence = [str(entry).lower() for entry in list(result.get("evidence") or [])]
-        if any(
-            token in entry
-            for entry in evidence
-            for token in ("degraded", "blocked", "saturated", "oom", "failed", "error", "unhealthy", "timeout")
-        ):
+        current = dict(payload.get("current") or {})
+        argocd = dict(payload.get("argocd") or {})
+        parsed_error_counts = dict(payload.get("parsed_error_counts") or {})
+        if float(current.get("http_5xx_rate_percent") or payload.get("error_rate_percent") or 0.0) > 1.0:
+            return True
+        if int(current.get("p99_latency_ms") or payload.get("p99_latency_ms") or 0) > 1000:
+            return True
+        if any(int(count or 0) > 0 for count in parsed_error_counts.values()):
+            return True
+        if str(argocd.get("health_status") or "").lower() in {"degraded", "failed", "unhealthy"}:
             return True
         if payload.get("oom_detected") is True:
+            return True
+        if payload.get("has_recent_deploy") is True:
+            return True
+        if int(payload.get("change_count") or 0) > 0:
+            return True
+        if str(payload.get("rollout_status") or "").lower() in {"degraded", "failed", "unhealthy", "partial", "mismatch"}:
+            return True
+        if str(payload.get("health_status") or "").lower() in {"degraded", "unhealthy", "failed"}:
+            return True
+        if str(payload.get("pipeline_status") or "").lower() in {"failed", "error", "degraded"}:
             return True
         if payload.get("dependency_status") == "degraded":
             return True
@@ -1616,13 +1828,14 @@ class ReactSupervisor:
         if cache_key in tool_cache:
             payload = dict(tool_cache[cache_key])
             self._emit_tool_activity("tool.cached", activity_context=activity_context, tool_name=tool_name)
+            model_payload = self._model_visible_tool_result(payload)
             return {
                 "observation": {"tool_name": tool_name, "arguments": arguments, "result": payload, "cached": True},
                 "tool_message": {
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or f"{tool_name}-{uuid4().hex[:8]}"),
                     "name": tool_name,
-                    "content": json.dumps(payload, ensure_ascii=False),
+                    "content": json.dumps(model_payload, ensure_ascii=False),
                 },
             }
         task = TaskEnvelope(
@@ -1661,13 +1874,14 @@ class ReactSupervisor:
             payload={"status": payload.get("status"), "latency_ms": payload.get("latency_ms")},
         )
         tool_cache[cache_key] = payload
+        model_payload = self._model_visible_tool_result(payload)
         return {
             "observation": {"tool_name": tool_name, "arguments": arguments, "result": payload},
             "tool_message": {
                 "role": "tool",
                 "tool_call_id": str(call.get("id") or f"{tool_name}-{uuid4().hex[:8]}"),
                 "name": tool_name,
-                "content": json.dumps(payload, ensure_ascii=False),
+                "content": json.dumps(model_payload, ensure_ascii=False),
             },
         }
 
@@ -1928,7 +2142,7 @@ class ReactSupervisor:
             )
             return hypotheses
 
-        if explicit_deploy_signal or "cicd" in matched_domains:
+        if explicit_deploy_signal or ("cicd" in matched_domains and not explicit_k8s_signal and not explicit_network_signal and not explicit_db_signal):
             action = ""
             action_risk = "low"
             action_params: dict[str, Any] = {}
@@ -1949,9 +2163,19 @@ class ReactSupervisor:
                     confidence_prior=0.84 if action else 0.76,
                     verification_plan=[
                         VerificationStep(
+                            tool_name="check_service_health",
+                            params={"service": service},
+                            purpose="确认服务错误率、延迟和影响接口是否异常",
+                        ),
+                        VerificationStep(
                             tool_name="check_recent_deployments",
                             params={"service": service},
                             purpose="确认是否存在近期发布窗口",
+                        ),
+                        VerificationStep(
+                            tool_name="get_deployment_status",
+                            params={"service": service},
+                            purpose="确认当前发布版本 rollout 是否退化",
                         ),
                         VerificationStep(
                             tool_name="check_pipeline_status",
@@ -1961,7 +2185,12 @@ class ReactSupervisor:
                         VerificationStep(
                             tool_name="get_change_records",
                             params={"service": service},
-                            purpose="确认最近变更记录是否指向当前故障窗口",
+                            purpose="确认最近 commit / 配置变更是否指向当前故障窗口",
+                        ),
+                        VerificationStep(
+                            tool_name="get_rollback_history",
+                            params={"service": service},
+                            purpose="确认可回滚的上一稳定版本",
                         ),
                     ],
                     expected_evidence="最近存在部署、回滚或变更异常信号。",
@@ -1998,7 +2227,7 @@ class ReactSupervisor:
                 )
             )
 
-        if explicit_db_signal or ("db" in matched_domains and not explicit_deploy_signal):
+        if explicit_db_signal or ("db" in matched_domains and not explicit_deploy_signal and not explicit_k8s_signal and not explicit_network_signal):
             hypotheses.append(
                 Hypothesis(
                     hypothesis_id="H-DB",
@@ -2100,14 +2329,13 @@ class ReactSupervisor:
         for item in evidence_items:
             envelope = item.result
             status = str(envelope.get("status") or "")
-            summary = str(envelope.get("summary") or "")
-            tool_evidence = [str(entry) for entry in list(envelope.get("evidence") or []) if entry]
+            tool_evidence = self._derive_payload_evidence(item.skill, dict(envelope.get("payload") or {}))
             evidence.extend(entry for entry in tool_evidence if entry not in evidence)
             if self._matches_expected_signal(envelope):
                 strong_signals += 1
-                checks_passed.append(summary or item.skill)
+                checks_passed.append(item.skill)
             elif status == "completed":
-                checks_failed.append(summary or item.skill)
+                checks_failed.append(item.skill)
 
         evidence_strength = min(1.0, max(len(evidence), strong_signals * 2) / 6)
         confidence = min(0.95, hypothesis.confidence_prior + strong_signals * 0.08)
@@ -2116,15 +2344,20 @@ class ReactSupervisor:
             item.skill: item.result.get("payload") or {}
             for item in evidence_items
         }
+        root_cause = self._derive_rule_based_root_cause(hypothesis=hypothesis, payload=payload)
+        recommended_action, action_risk, action_params = self._derive_rule_based_action(
+            hypothesis=hypothesis,
+            payload=payload,
+        )
         return VerificationResult(
             hypothesis_id=hypothesis.hypothesis_id,
-            root_cause=hypothesis.root_cause,
+            root_cause=root_cause,
             confidence=round(confidence, 3),
             evidence_strength=round(evidence_strength, 3),
             evidence_items=evidence_items,
-            recommended_action=hypothesis.recommended_action,
-            action_risk=hypothesis.action_risk,
-            action_params=dict(hypothesis.action_params),
+            recommended_action=recommended_action,
+            action_risk=action_risk,
+            action_params=action_params,
             status=status,
             summary=f"已基于 {len(observations)} 个检查项完成规则诊断。",
             checks_passed=checks_passed[:5],
@@ -2134,12 +2367,112 @@ class ReactSupervisor:
             metadata={"verification_mode": "rule_based_react_fallback", "react_rounds": 1},
         )
 
+    def _derive_rule_based_root_cause(self, *, hypothesis: Hypothesis, payload: dict[str, Any]) -> str:
+        if hypothesis.hypothesis_id == "H-CICD" and self._has_deploy_regression_evidence(payload):
+            change = self._select_suspect_change(payload)
+            recent = dict(payload.get("check_recent_deployments") or {})
+            latest_revision = str(recent.get("latest_revision") or "当前发布版本").strip() or "当前发布版本"
+            commit_id = str(change.get("commit_id") or change.get("change_id") or "").strip()
+            change_summary = str(
+                change.get("summary")
+                or change.get("diff_summary")
+                or change.get("title")
+                or change.get("file")
+                or "变更内容"
+            ).strip()
+            if commit_id:
+                return f"近期发布 {latest_revision} 中的 commit {commit_id}（{change_summary}）与故障窗口重合，属于发布回归。"
+            return f"近期发布 {latest_revision} 与故障窗口重合，属于发布或配置变更回归。"
+        if hypothesis.hypothesis_id == "H-K8S":
+            pod_logs = dict(payload.get("inspect_pod_logs") or {})
+            pod_events = dict(payload.get("inspect_pod_events") or {})
+            reason = str(pod_events.get("last_termination_reason") or "").lower()
+            if reason == "oomkilled" or bool(pod_logs.get("oom_detected")):
+                return "Pod 内存不足/OOMKilled 导致容器反复重启，服务可用副本不足。"
+        return hypothesis.root_cause
+
+    def _derive_rule_based_action(self, *, hypothesis: Hypothesis, payload: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        action = str(hypothesis.recommended_action or "")
+        risk = str(hypothesis.action_risk or "low")
+        params = dict(hypothesis.action_params or {})
+        if action:
+            return action, risk, params
+
+        if hypothesis.hypothesis_id == "H-CICD" and self._has_deploy_regression_evidence(payload):
+            recent = dict(payload.get("check_recent_deployments") or {})
+            rollback = dict(payload.get("get_rollback_history") or {})
+            change = self._select_suspect_change(payload)
+            service = str(
+                recent.get("service")
+                or rollback.get("service")
+                or dict(payload.get("get_change_records") or {}).get("service")
+                or ""
+            )
+            target_revision = str(
+                rollback.get("last_known_stable_revision")
+                or recent.get("previous_revision")
+                or "last-known-stable"
+            )
+            reason = "deploy_regression_detected_by_tools"
+            commit_id = str(change.get("commit_id") or change.get("change_id") or "").strip()
+            if commit_id:
+                reason = f"deploy_regression_detected_by_tools:{commit_id}"
+            return "cicd.rollback_release", "high", {
+                "service": service,
+                "environment": str(recent.get("environment") or ""),
+                "cluster": str(recent.get("environment") or ""),
+                "namespace": str(recent.get("namespace") or "default"),
+                "target_revision": target_revision,
+                "reason": reason,
+            }
+
+        if hypothesis.hypothesis_id == "H-K8S":
+            pod_logs = dict(payload.get("inspect_pod_logs") or {})
+            pod_events = dict(payload.get("inspect_pod_events") or {})
+            pod_status = dict(payload.get("check_pod_status") or {})
+            reason = str(pod_events.get("last_termination_reason") or "").lower()
+            if reason == "oomkilled" or bool(pod_logs.get("oom_detected")):
+                return "restart_pods", "high", {
+                    "service": str(pod_status.get("service") or pod_logs.get("service") or ""),
+                    "namespace": str(pod_status.get("namespace") or pod_logs.get("namespace") or "default"),
+                }
+        return action, risk, params
+
+    @staticmethod
+    def _select_suspect_change(payload: dict[str, Any]) -> dict[str, Any]:
+        changes = [item for item in list(dict(payload.get("get_change_records") or {}).get("changes") or []) if isinstance(item, dict)]
+        for change in changes:
+            if bool(change.get("suspect") or change.get("correlates_with_incident") or change.get("is_suspect")):
+                return dict(change)
+        return dict(changes[0]) if changes else {}
+
+    def _has_deploy_regression_evidence(self, payload: dict[str, Any]) -> bool:
+        recent = dict(payload.get("check_recent_deployments") or {})
+        deployment = dict(payload.get("get_deployment_status") or {})
+        health = dict(payload.get("check_service_health") or {})
+        change_payload = dict(payload.get("get_change_records") or {})
+        changes = [item for item in list(change_payload.get("changes") or []) if isinstance(item, dict)]
+        has_recent_deploy = bool(recent.get("has_recent_deploy")) or bool(changes)
+        rollout_status = str(deployment.get("rollout_status") or "").lower()
+        health_status = str(health.get("health_status") or "").lower()
+        has_correlated_change = bool(self._select_suspect_change(payload)) or int(change_payload.get("change_count") or 0) > 0
+        rollout_bad = rollout_status in {"degraded", "failed", "unhealthy", "partial", "mismatch"}
+        health_bad = health_status in {"degraded", "unhealthy", "failed"}
+        return bool(has_recent_deploy and (has_correlated_change or rollout_bad or health_bad))
+
     @staticmethod
     def _matches_expected_signal(envelope: dict[str, Any]) -> bool:
         payload = dict(envelope.get("payload") or {})
-        evidence = [str(entry).lower() for entry in list(envelope.get("evidence") or [])]
-        signal_terms = ("degraded", "blocked", "saturated", "mismatch_or_unhealthy", "oom", "failed", "error", "unhealthy")
-        if any(any(term in entry for term in signal_terms) for entry in evidence):
+        current = dict(payload.get("current") or {})
+        argocd = dict(payload.get("argocd") or {})
+        parsed_error_counts = dict(payload.get("parsed_error_counts") or {})
+        if float(current.get("http_5xx_rate_percent") or payload.get("error_rate_percent") or 0.0) > 1.0:
+            return True
+        if int(current.get("p99_latency_ms") or payload.get("p99_latency_ms") or 0) > 1000:
+            return True
+        if any(int(count or 0) > 0 for count in parsed_error_counts.values()):
+            return True
+        if str(argocd.get("health_status") or "").lower() in {"degraded", "failed", "unhealthy"}:
             return True
         if payload.get("oom_detected") is True:
             return True

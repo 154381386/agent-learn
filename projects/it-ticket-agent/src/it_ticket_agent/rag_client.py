@@ -74,7 +74,7 @@ class RAGServiceClient:
         path: str,
         json: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.settings.rag_service_timeout_sec) as client:
+        async with httpx.AsyncClient(timeout=self.settings.rag_service_timeout_sec, trust_env=False) as client:
             response = await client.request(method, f"{self.base_url}{path}", json=json)
             response.raise_for_status()
             return response.json()

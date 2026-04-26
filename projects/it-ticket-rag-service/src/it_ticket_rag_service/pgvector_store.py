@@ -22,6 +22,7 @@ class PgVectorStore:
         self.schema = self._safe_identifier(settings.pgvector_schema)
         self.documents_table = self._safe_identifier(settings.pgvector_documents_table)
         self.chunks_table = self._safe_identifier(settings.pgvector_chunks_table)
+        self.parents_table = self._safe_identifier(settings.pgvector_parents_table)
 
     @property
     def enabled(self) -> bool:
@@ -68,8 +69,31 @@ class PgVectorStore:
             async with conn.cursor() as cur:
                 await cur.execute(
                     f"""
+                    CREATE TABLE IF NOT EXISTS {self.schema}.{self.parents_table} (
+                        parent_id TEXT PRIMARY KEY,
+                        doc_id TEXT NOT NULL REFERENCES {self.schema}.{self.documents_table}(doc_id) ON DELETE CASCADE,
+                        collection_id TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        section TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        token_count INTEGER NOT NULL,
+                        parent_order INTEGER NOT NULL,
+                        parent_checksum TEXT NOT NULL,
+                        indexed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                await cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {self.parents_table}_collection_doc_idx "
+                    f"ON {self.schema}.{self.parents_table} (collection_id, doc_id, parent_order)"
+                )
+                await cur.execute(
+                    f"""
                     CREATE TABLE IF NOT EXISTS {self.schema}.{self.chunks_table} (
                         chunk_id TEXT PRIMARY KEY,
+                        parent_id TEXT NOT NULL DEFAULT '',
                         doc_id TEXT NOT NULL REFERENCES {self.schema}.{self.documents_table}(doc_id) ON DELETE CASCADE,
                         collection_id TEXT NOT NULL,
                         path TEXT NOT NULL,
@@ -87,8 +111,15 @@ class PgVectorStore:
                     """
                 )
                 await cur.execute(
+                    f"ALTER TABLE {self.schema}.{self.chunks_table} ADD COLUMN IF NOT EXISTS parent_id TEXT NOT NULL DEFAULT ''"
+                )
+                await cur.execute(
                     f"CREATE INDEX IF NOT EXISTS {self.chunks_table}_collection_doc_idx "
                     f"ON {self.schema}.{self.chunks_table} (collection_id, doc_id, chunk_order)"
+                )
+                await cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {self.chunks_table}_collection_parent_idx "
+                    f"ON {self.schema}.{self.chunks_table} (collection_id, parent_id)"
                 )
                 await cur.execute(
                     f"CREATE INDEX IF NOT EXISTS {self.chunks_table}_embedding_hnsw_idx "
@@ -118,20 +149,46 @@ class PgVectorStore:
         if not self.enabled:
             return []
 
-        sql = (
-            f"SELECT chunk_id, doc_id, path, title, section, category, content, token_count, chunk_order "
-            f"FROM {self.schema}.{self.chunks_table} WHERE collection_id = %s"
-        )
+        def build_sql(include_parent: bool) -> str:
+            parent_expr = "parent_id" if include_parent else "'' AS parent_id"
+            sql_text = (
+                f"SELECT chunk_id, {parent_expr}, doc_id, path, title, section, category, content, token_count, chunk_order "
+                f"FROM {self.schema}.{self.chunks_table} WHERE collection_id = %s"
+            )
+            if embedding_model:
+                sql_text += " AND embedding_model = %s"
+            sql_text += " ORDER BY path, chunk_order"
+            return sql_text
+
         params: List[Any] = [collection_id]
         if embedding_model:
-            sql += " AND embedding_model = %s"
             params.append(embedding_model)
-        sql += " ORDER BY path, chunk_order"
 
         try:
             async with await psycopg.AsyncConnection.connect(self.settings.pgvector_dsn, row_factory=dict_row) as conn:
                 async with conn.cursor() as cur:
-                    await cur.execute(sql, tuple(params))
+                    try:
+                        await cur.execute(build_sql(include_parent=True), tuple(params))
+                    except psycopg.errors.UndefinedColumn:
+                        await conn.rollback()
+                        await cur.execute(build_sql(include_parent=False), tuple(params))
+                    rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+        except psycopg.errors.UndefinedTable:
+            return []
+
+    async def load_parent_blocks(self, collection_id: str) -> List[Dict[str, Any]]:
+        if not self.enabled:
+            return []
+
+        sql = (
+            f"SELECT parent_id, doc_id, path, title, section, category, content, token_count, parent_order "
+            f"FROM {self.schema}.{self.parents_table} WHERE collection_id = %s ORDER BY path, parent_order"
+        )
+        try:
+            async with await psycopg.AsyncConnection.connect(self.settings.pgvector_dsn, row_factory=dict_row) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(sql, (collection_id,))
                     rows = await cur.fetchall()
             return [dict(row) for row in rows]
         except psycopg.errors.UndefinedTable:
@@ -148,20 +205,27 @@ class PgVectorStore:
             return []
 
         vector_literal = self._vector_literal(query_vector)
-        try:
-            async with await psycopg.AsyncConnection.connect(self.settings.pgvector_dsn, row_factory=dict_row) as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        f"""
-                        SELECT chunk_id, path, title, section, category, content,
+
+        def build_sql(include_parent: bool) -> str:
+            parent_expr = "parent_id" if include_parent else "'' AS parent_id"
+            return f"""
+                        SELECT chunk_id, {parent_expr}, path, title, section, category, content,
                                1 - (embedding <=> %s::vector) AS similarity
                         FROM {self.schema}.{self.chunks_table}
                         WHERE collection_id = %s AND embedding_model = %s
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
-                        """,
-                        (vector_literal, collection_id, embedding_model, vector_literal, limit),
-                    )
+                        """
+
+        params = (vector_literal, collection_id, embedding_model, vector_literal, limit)
+        try:
+            async with await psycopg.AsyncConnection.connect(self.settings.pgvector_dsn, row_factory=dict_row) as conn:
+                async with conn.cursor() as cur:
+                    try:
+                        await cur.execute(build_sql(include_parent=True), params)
+                    except psycopg.errors.UndefinedColumn:
+                        await conn.rollback()
+                        await cur.execute(build_sql(include_parent=False), params)
                     rows = await cur.fetchall()
             return [dict(row) for row in rows]
         except psycopg.errors.UndefinedTable:
@@ -172,6 +236,7 @@ class PgVectorStore:
         *,
         collection_id: str,
         document: Dict[str, Any],
+        parents: Sequence[Dict[str, Any]],
         chunks: Sequence[Dict[str, Any]],
         embeddings: Sequence[Sequence[float]],
         embedding_model: str,
@@ -215,15 +280,41 @@ class PgVectorStore:
                     f"DELETE FROM {self.schema}.{self.chunks_table} WHERE collection_id = %s AND doc_id = %s",
                     (collection_id, document["doc_id"]),
                 )
+                await cur.execute(
+                    f"DELETE FROM {self.schema}.{self.parents_table} WHERE collection_id = %s AND doc_id = %s",
+                    (collection_id, document["doc_id"]),
+                )
+                for parent in parents:
+                    await cur.execute(
+                        f"""
+                        INSERT INTO {self.schema}.{self.parents_table}
+                        (parent_id, doc_id, collection_id, path, title, section, category, content, token_count, parent_order, parent_checksum)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            parent["parent_id"],
+                            document["doc_id"],
+                            collection_id,
+                            parent["path"],
+                            parent["title"],
+                            parent["section"],
+                            parent["category"],
+                            parent["text"],
+                            parent["token_count"],
+                            parent["parent_order"],
+                            parent["parent_checksum"],
+                        ),
+                    )
                 for chunk, embedding in zip(chunks, embeddings):
                     await cur.execute(
                         f"""
                         INSERT INTO {self.schema}.{self.chunks_table}
-                        (chunk_id, doc_id, collection_id, path, title, section, category, content, token_count, chunk_order, chunk_checksum, embedding_model, embedding)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                        (chunk_id, parent_id, doc_id, collection_id, path, title, section, category, content, token_count, chunk_order, chunk_checksum, embedding_model, embedding)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
                         """,
                         (
                             chunk["chunk_id"],
+                            chunk.get("parent_id") or document["doc_id"],
                             document["doc_id"],
                             collection_id,
                             chunk["path"],

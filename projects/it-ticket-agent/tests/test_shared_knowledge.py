@@ -29,12 +29,17 @@ class KnowledgeServiceTest(unittest.IsolatedAsyncioTestCase):
                 "hits": [
                     {
                         "chunk_id": "chunk-1",
+                        "parent_id": "parent-1",
                         "title": "支付服务发布手册",
                         "section": "回滚步骤 / 第 2 段",
+                        "parent_section": "回滚步骤",
                         "path": "runbooks/payment-deploy.md",
                         "category": "runbook",
                         "score": 0.92,
                         "snippet": "如果 readiness probe 连续失败，优先回滚上一稳定版本。",
+                        "child_snippet": "readiness probe 连续失败",
+                        "parent_snippet": "回滚步骤：如果 readiness probe 连续失败，优先回滚上一稳定版本。",
+                        "retrieval_granularity": "parent",
                     }
                 ],
                 "context": [],
@@ -52,6 +57,11 @@ class KnowledgeServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bundle.hits[0].title, "支付服务发布手册")
         self.assertEqual(bundle.hits[0].section, "回滚步骤 / 第 2 段")
         self.assertEqual(bundle.hits[0].path, "runbooks/payment-deploy.md")
+        self.assertEqual(bundle.hits[0].parent_id, "parent-1")
+        self.assertEqual(bundle.hits[0].parent_section, "回滚步骤")
+        self.assertEqual(bundle.hits[0].retrieval_granularity, "parent")
+        self.assertIn("readiness probe", bundle.hits[0].child_snippet)
+        self.assertIn("回滚步骤", bundle.hits[0].parent_snippet)
         self.assertIn("支付服务发布手册", bundle.citations[0])
         self.assertIn("回滚步骤 / 第 2 段", bundle.citations[0])
 

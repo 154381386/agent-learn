@@ -2039,9 +2039,9 @@ class AgentEvalRunnerIntegrationTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(result.summary, "forced override")
+        self.assertEqual(result.summary, "")
         self.assertEqual(result.payload["pool_state"], "healthy")
-        self.assertEqual(result.evidence, ["forced override evidence"])
+        self.assertEqual(result.evidence, [])
 
 
 class SessionFlowDatasetLoadTest(unittest.TestCase):

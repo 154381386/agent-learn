@@ -95,6 +95,17 @@ P1 后 `working_memory` 不再只有结构化槽位，还包含 `narrative_summa
 - `POST /api/v1/bad-case-candidates/{candidate_id}/export-eval-skeleton`：导出单个候选到 generated eval skeleton 文件，并可自动标记 `exported`
 - `POST /api/v1/bad-case-candidates/merge-curated-eval-skeletons`：扫描或指定 curated skeleton，dry-run 或合并到正式 eval dataset，并可标记 `merged`
 
+## 知识 RAG 召回
+
+知识文档检索由 `projects/it-ticket-rag-service` 提供，当前已经改成 parent-child retrieval：
+
+- 子块负责召回：按章节内小块做 sparse/dense/rerank/MMR，保证检索精度。
+- 父块负责上下文：命中子块后通过 `parent_id` 回填章节级上下文，避免只返回孤立片段。
+- Agent 侧 `KnowledgeHit` 保留 `parent_id / parent_section / child_snippet / parent_snippet / retrieval_granularity`，所以前端和诊断工作台可以同时展示“命中点”和“给模型的上下文”。
+- pgvector 后端使用 `parent_blocks + chunks(parent_id)`；本地索引使用 `index.json.parents + chunks(parent_id)`，旧索引没有 parents 时会退化为 chunk 级父块。
+
+这和历史案例召回是两条链路：知识 RAG 解决 SOP/手册/运行规范，历史案例解决已人工确认的事故经验。
+
 ## 历史案例召回
 
 当前项目里的历史案例召回不是“把工单全文当普通文档再搜一遍”，而是单独的 `case-memory recall`。

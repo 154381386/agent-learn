@@ -80,6 +80,26 @@ def load_case_profiles() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+
+def structured_mock_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    candidate = raw.get("payload")
+    if isinstance(candidate, dict):
+        return dict(candidate)
+    return {
+        key: value
+        for key, value in raw.items()
+        if key not in {"status", "risk", "summary", "evidence"}
+    }
+
+
+def mock_tool_result(tool_name: str, raw: dict[str, Any]) -> ToolExecutionResult:
+    return ToolExecutionResult(
+        tool_name=tool_name,
+        status=str(raw.get("status") or "completed"),
+        payload=structured_mock_payload(raw),
+        risk=str(raw.get("risk") or "low"),
+    )
+
 def normalize_scenario_name(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if not normalized:
@@ -151,14 +171,7 @@ def resolve_case_mock(
         payload = default_tools.get(tool_name)
     if not isinstance(payload, dict):
         return None
-    return ToolExecutionResult(
-        tool_name=tool_name,
-        status=str(payload.get("status") or "completed"),
-        summary=str(payload.get("summary") or f"{target_name} 已命中 {case_name}：{tool_name}"),
-        payload=dict(payload.get("payload") or {}),
-        evidence=[str(item) for item in payload.get("evidence", []) if item],
-        risk=str(payload.get("risk") or "low"),
-    )
+    return mock_tool_result(tool_name, payload)
 
 
 def _load_env_mock_scenarios() -> dict[str, str]:
@@ -223,14 +236,7 @@ def resolve_inline_or_shared_mock(
     if not isinstance(payload, dict):
         return None
 
-    return ToolExecutionResult(
-        tool_name=tool_name,
-        status=str(payload.get("status") or "completed"),
-        summary=str(payload.get("summary") or f"已返回 mock 响应：{tool_name}"),
-        payload=dict(payload.get("payload") or {}),
-        evidence=[str(item) for item in payload.get("evidence", []) if item],
-        risk=str(payload.get("risk") or "low"),
-    )
+    return mock_tool_result(tool_name, payload)
 
 
 def resolve_world_state_mock(
@@ -313,11 +319,4 @@ def resolve_profile_mock(
     if not isinstance(payload, dict):
         return None
 
-    return ToolExecutionResult(
-        tool_name=tool_name,
-        status=str(payload.get("status") or "completed"),
-        summary=str(payload.get("summary") or f"{target_name} 已命中 {scenario} mock：{tool_name}"),
-        payload=dict(payload.get("payload") or {}),
-        evidence=[str(item) for item in payload.get("evidence", []) if item],
-        risk=str(payload.get("risk") or "low"),
-    )
+    return mock_tool_result(tool_name, payload)

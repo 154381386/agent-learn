@@ -54,36 +54,30 @@ default_generated_eval_dir = project_root / "data" / "evals" / "generated"
 default_mock_worlds_path = project_root / "data" / "mock_case_profiles.json"
 
 
+
+def _normalize_mock_tool_response(value: dict) -> dict:
+    payload = value.get("payload") if isinstance(value.get("payload"), dict) else {
+        key: item
+        for key, item in value.items()
+        if key not in {"status", "risk", "summary", "evidence"}
+    }
+    normalized = {"status": str(value.get("status") or "completed"), "payload": dict(payload)}
+    if value.get("risk"):
+        normalized["risk"] = str(value.get("risk"))
+    return normalized
+
 def _describe_mock_world(case_id: str, service: str, tool_payloads: dict[str, dict]) -> str:
-    snippets: list[str] = []
-    preferred_tools = (
-        "inspect_pod_logs",
-        "inspect_pod_events",
-        "inspect_vpc_connectivity",
-        "inspect_upstream_dependency",
-        "inspect_connection_pool",
-        "inspect_slow_queries",
-        "check_recent_deployments",
-        "get_change_records",
-    )
-    for tool_name in preferred_tools:
-        payload = tool_payloads.get(tool_name)
-        if not isinstance(payload, dict):
-            continue
-        summary = str(payload.get("summary") or "").strip()
-        if summary:
-            snippets.append(summary)
-        if len(snippets) >= 2:
-            break
-    if not snippets:
-        for payload in tool_payloads.values():
-            if isinstance(payload, dict) and payload.get("summary"):
-                snippets.append(str(payload.get("summary")))
-            if len(snippets) >= 2:
-                break
-    if snippets:
-        return "；".join(snippets)
-    return f"{service} / {case_id} mock 世界，包含 {len(tool_payloads)} 个工具返回。"
+    domain_tools = {
+        "发布/变更": {"check_recent_deployments", "check_pipeline_status", "get_deployment_status", "get_change_records", "get_rollback_history"},
+        "K8s": {"check_pod_status", "inspect_pod_logs", "inspect_pod_events", "inspect_jvm_memory", "inspect_cpu_saturation", "inspect_thread_pool_status"},
+        "网络": {"inspect_dns_resolution", "inspect_ingress_route", "inspect_vpc_connectivity", "inspect_load_balancer_status", "inspect_upstream_dependency", "inspect_egress_policy"},
+        "数据库": {"inspect_db_instance_health", "inspect_connection_pool", "inspect_slow_queries", "inspect_replication_status", "inspect_deadlock_signals"},
+        "监控": {"check_service_health", "check_recent_alerts", "inspect_error_budget_burn"},
+    }
+    tool_names = set(tool_payloads.keys())
+    domains = [label for label, names in domain_tools.items() if tool_names.intersection(names)]
+    domain_text = "、".join(domains[:5]) if domains else "通用诊断"
+    return f"{service} / {case_id} mock 世界，包含 {len(tool_payloads)} 个工具返回，覆盖 {domain_text}。"
 
 
 def _load_mock_worlds() -> list[MockWorldResponse]:
@@ -102,7 +96,7 @@ def _load_mock_worlds() -> list[MockWorldResponse]:
         for service, tool_payloads in sorted(services.items()):
             if not isinstance(tool_payloads, dict):
                 continue
-            normalized_tools = {str(name): dict(value) for name, value in tool_payloads.items() if isinstance(value, dict)}
+            normalized_tools = {str(name): _normalize_mock_tool_response(value) for name, value in tool_payloads.items() if isinstance(value, dict)}
             world_id = f"{case_id}::{service}"
             worlds.append(
                 MockWorldResponse(

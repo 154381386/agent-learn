@@ -7,7 +7,7 @@ import logging
 import math
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -38,6 +38,7 @@ class KnowledgeChunk:
     token_freq: Dict[str, int]
     header_tokens: List[str]
     length: int
+    parent_id: str = ""
     embedding: Optional[List[float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -45,7 +46,33 @@ class KnowledgeChunk:
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "KnowledgeChunk":
-        return cls(**payload)
+        data = dict(payload)
+        data.setdefault("parent_id", data.get("doc_id", ""))
+        return cls(**data)
+
+
+@dataclass
+class KnowledgeParentBlock:
+    parent_id: str
+    doc_id: str
+    path: str
+    title: str
+    section: str
+    category: str
+    text: str
+    tokens: List[str]
+    token_freq: Dict[str, int]
+    header_tokens: List[str]
+    length: int
+    parent_order: int = 0
+    child_chunk_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "KnowledgeParentBlock":
+        return cls(**dict(payload))
 
 
 @dataclass
@@ -58,6 +85,10 @@ class RetrievedChunk:
     score: float
     snippet: str
     text: str = field(repr=False)
+    parent_id: str = ""
+    parent_section: str = ""
+    parent_snippet: str = ""
+    child_snippet: str = ""
     sparse_rank: Optional[int] = None
     dense_rank: Optional[int] = None
     rerank_rank: Optional[int] = None
@@ -68,12 +99,17 @@ class RetrievedChunk:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "chunk_id": self.chunk_id,
+            "parent_id": self.parent_id,
             "title": self.title,
             "section": self.section,
+            "parent_section": self.parent_section or self.section,
             "path": self.path,
             "category": self.category,
             "score": round(self.score, 4),
             "snippet": self.snippet,
+            "child_snippet": self.child_snippet or self.snippet,
+            "parent_snippet": self.parent_snippet or self.snippet,
+            "retrieval_granularity": "parent" if self.parent_snippet else "chunk",
         }
 
 
@@ -201,7 +237,9 @@ class KnowledgeBase:
         self.pgvector = PgVectorStore(settings)
         self._lock = asyncio.Lock()
         self._chunks: List[KnowledgeChunk] = []
+        self._parents: List[KnowledgeParentBlock] = []
         self._chunk_map: Dict[str, KnowledgeChunk] = {}
+        self._parent_map: Dict[str, KnowledgeParentBlock] = {}
         self._chunk_index_by_id: Dict[str, int] = {}
         self._idf: Dict[str, float] = {}
         self._avgdl: float = 1.0
@@ -340,6 +378,7 @@ class KnowledgeBase:
             candidates=reranked_candidates,
             top_k=target_top_k,
         )
+        final_hits = self._hydrate_parent_context(final_hits)
 
         top_score = final_hits[0].score if final_hits else 0.0
         score_margin = top_score - final_hits[1].score if len(final_hits) > 1 else top_score
@@ -400,6 +439,9 @@ class KnowledgeBase:
             "docs_path": str(self.docs_path),
             "documents": len(self._documents),
             "chunks": len(self._chunks),
+            "parent_blocks": len(self._parents),
+            "parent_child_retrieval": True,
+            "parent_context_max_chars": self.settings.rag_parent_context_max_chars,
             "embedding_enabled": bool(self._manifest.get("embedding_enabled")),
             "embedding_dimension": self._manifest.get("embedding_dimension") or (len(first_embedding) if first_embedding else 0),
             "embedding_model": self.settings.embedding_model,
@@ -477,15 +519,20 @@ class KnowledgeBase:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
     def _chunking_signature(self) -> str:
-        return f"size={self.settings.rag_chunk_size};overlap={self.settings.rag_chunk_overlap}"
+        return (
+            "strategy=section-parent-child-v1;"
+            f"size={self.settings.rag_chunk_size};overlap={self.settings.rag_chunk_overlap}"
+        )
 
     def _index_is_stale(self) -> bool:
         current_signature = self._source_signature()
         return current_signature != self._manifest.get("source_signature")
 
     async def _load_pgvector_snapshot(self) -> Dict[str, Any]:
+        parent_rows = await self.pgvector.load_parent_blocks(self._collection_id())
         rows = await self.pgvector.load_chunks(self._collection_id(), self.settings.embedding_model)
         counts = await self.pgvector.count(self._collection_id(), self.settings.embedding_model)
+        self._load_parents_into_memory(parent_rows)
         self._load_chunks_into_memory(rows)
         self._documents = [{"path": chunk.path, "title": chunk.title, "category": chunk.category} for chunk in self._chunks]
         self._manifest = {
@@ -543,16 +590,36 @@ class KnowledgeBase:
             title, sections = self._parse_markdown(raw_text, relative_path)
             doc_id = hashlib.sha256(f"{collection_id}:{relative_path}".encode("utf-8")).hexdigest()[:20]
             category = file_path.parent.name
+            parent_rows: List[Dict[str, Any]] = []
             chunk_rows: List[Dict[str, Any]] = []
             texts_to_embed: List[str] = []
             chunk_total = 0
-            for section_name, section_text in sections:
-                section_chunks = self._chunk_text(section_text)
+            for section_index, (section_name, section_text) in enumerate(sections):
+                parent_text = section_text.strip()
+                if not parent_text:
+                    continue
+                parent_id = f"{doc_id}-p{section_index:04d}"
+                parent_rows.append(
+                    {
+                        "parent_id": parent_id,
+                        "doc_id": doc_id,
+                        "path": relative_path,
+                        "title": title,
+                        "section": section_name,
+                        "category": category,
+                        "text": parent_text,
+                        "token_count": max(1, len(self._tokenize(parent_text))),
+                        "parent_order": section_index,
+                        "parent_checksum": hashlib.sha256(parent_text.encode("utf-8")).hexdigest(),
+                    }
+                )
+                section_chunks = self._chunk_text(parent_text)
                 for index, chunk_text in enumerate(section_chunks):
                     chunk_id = f"{doc_id}-{chunk_total + index:04d}"
                     chunk_rows.append(
                         {
                             "chunk_id": chunk_id,
+                            "parent_id": parent_id,
                             "doc_id": doc_id,
                             "path": relative_path,
                             "title": title,
@@ -581,6 +648,7 @@ class KnowledgeBase:
             await self.pgvector.upsert_document(
                 collection_id=collection_id,
                 document=document_row,
+                parents=parent_rows,
                 chunks=chunk_rows,
                 embeddings=embeddings,
                 embedding_model=self.settings.embedding_model,
@@ -596,8 +664,10 @@ class KnowledgeBase:
             [path for path in existing_documents.keys() if path not in set(current_paths)],
         )
 
+        parent_rows = await self.pgvector.load_parent_blocks(collection_id)
         rows = await self.pgvector.load_chunks(collection_id, self.settings.embedding_model)
         counts = await self.pgvector.count(collection_id, self.settings.embedding_model)
+        self._load_parents_into_memory(parent_rows)
         self._load_chunks_into_memory(rows)
         self._documents = [
             {
@@ -633,6 +703,7 @@ class KnowledgeBase:
             raise FileNotFoundError(f"knowledge base path not found: {self.docs_path}")
 
         documents: List[Dict[str, Any]] = []
+        parents: List[KnowledgeParentBlock] = []
         chunks: List[KnowledgeChunk] = []
         source_files = self._source_files()
         for file_path in source_files:
@@ -642,10 +713,18 @@ class KnowledgeBase:
             doc_id = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:16]
             category = file_path.parent.name
             chunk_total = 0
-            for section_name, section_text in sections:
-                section_chunks = self._chunk_text(section_text)
+            for section_index, (section_name, section_text) in enumerate(sections):
+                parent_text = section_text.strip()
+                if not parent_text:
+                    continue
+                parent_id = f"{doc_id}-p{section_index:04d}"
+                parent_tokens = self._tokenize(parent_text)
+                parent_header_tokens = self._tokenize(f"{title} {section_name} {relative_path}")
+                child_chunk_ids: List[str] = []
+                section_chunks = self._chunk_text(parent_text)
                 for index, chunk_text in enumerate(section_chunks):
                     chunk_id = f"{doc_id}-{chunk_total + index:04d}"
+                    child_chunk_ids.append(chunk_id)
                     tokens = self._tokenize(chunk_text)
                     header_tokens = self._tokenize(f"{title} {section_name} {relative_path}")
                     chunks.append(
@@ -661,8 +740,26 @@ class KnowledgeBase:
                             token_freq=dict(Counter(tokens)),
                             header_tokens=header_tokens,
                             length=max(1, len(tokens)),
+                            parent_id=parent_id,
                         )
                     )
+                parents.append(
+                    KnowledgeParentBlock(
+                        parent_id=parent_id,
+                        doc_id=doc_id,
+                        path=relative_path,
+                        title=title,
+                        section=section_name,
+                        category=category,
+                        text=parent_text,
+                        tokens=parent_tokens,
+                        token_freq=dict(Counter(parent_tokens)),
+                        header_tokens=parent_header_tokens,
+                        length=max(1, len(parent_tokens)),
+                        parent_order=section_index,
+                        child_chunk_ids=child_chunk_ids,
+                    )
+                )
                 chunk_total += len(section_chunks)
             documents.append(
                 {
@@ -694,6 +791,7 @@ class KnowledgeBase:
             "built_at": datetime.now(timezone.utc).isoformat(),
             "source_signature": self._source_signature(source_files),
             "documents": documents,
+            "parents": [parent.to_dict() for parent in parents],
             "avgdl": self._avgdl,
             "idf": self._idf,
             "embedding_enabled": embedding_enabled,
@@ -709,7 +807,9 @@ class KnowledgeBase:
         self.index_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         self._documents = documents
+        self._parents = parents
         self._chunks = chunks
+        self._parent_map = {parent.parent_id: parent for parent in parents}
         self._chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
         self._chunk_index_by_id = {chunk.chunk_id: index for index, chunk in enumerate(chunks)}
         self._manifest = payload
@@ -730,12 +830,66 @@ class KnowledgeBase:
     def _load_index_local(self) -> None:
         payload = json.loads(self.index_file.read_text(encoding="utf-8"))
         self._documents = payload.get("documents", [])
+        self._parents = [KnowledgeParentBlock.from_dict(item) for item in payload.get("parents", [])]
         self._chunks = [KnowledgeChunk.from_dict(item) for item in payload.get("chunks", [])]
+        if not self._parents:
+            self._parents = self._parents_from_legacy_chunks(self._chunks)
+        self._parent_map = {parent.parent_id: parent for parent in self._parents}
         self._chunk_map = {chunk.chunk_id: chunk for chunk in self._chunks}
         self._chunk_index_by_id = {chunk.chunk_id: index for index, chunk in enumerate(self._chunks)}
         self._idf = {key: float(value) for key, value in payload.get("idf", {}).items()}
         self._avgdl = float(payload.get("avgdl", 1.0))
         self._manifest = payload
+
+    def _load_parents_into_memory(self, rows: Sequence[Dict[str, Any]]) -> None:
+        parents: List[KnowledgeParentBlock] = []
+        for row in rows:
+            text = str(row.get("content") or row.get("text") or "")
+            tokens = self._tokenize(text)
+            header_tokens = self._tokenize(f"{row.get('title', '')} {row.get('section', '')} {row.get('path', '')}")
+            parents.append(
+                KnowledgeParentBlock(
+                    parent_id=str(row.get("parent_id") or ""),
+                    doc_id=str(row.get("doc_id") or ""),
+                    path=str(row.get("path") or ""),
+                    title=str(row.get("title") or ""),
+                    section=str(row.get("section") or ""),
+                    category=str(row.get("category") or ""),
+                    text=text,
+                    tokens=tokens,
+                    token_freq=dict(Counter(tokens)),
+                    header_tokens=header_tokens,
+                    length=max(1, len(tokens)),
+                    parent_order=int(row.get("parent_order") or 0),
+                    child_chunk_ids=[],
+                )
+            )
+        self._parents = parents
+        self._parent_map = {parent.parent_id: parent for parent in parents}
+
+    def _parents_from_legacy_chunks(self, chunks: Sequence[KnowledgeChunk]) -> List[KnowledgeParentBlock]:
+        parents: List[KnowledgeParentBlock] = []
+        for chunk in chunks:
+            parent_id = chunk.parent_id or chunk.doc_id or chunk.chunk_id
+            chunk.parent_id = parent_id
+            tokens = self._tokenize(chunk.text)
+            parents.append(
+                KnowledgeParentBlock(
+                    parent_id=parent_id,
+                    doc_id=chunk.doc_id,
+                    path=chunk.path,
+                    title=chunk.title,
+                    section=chunk.section,
+                    category=chunk.category,
+                    text=chunk.text,
+                    tokens=tokens,
+                    token_freq=dict(Counter(tokens)),
+                    header_tokens=chunk.header_tokens,
+                    length=max(1, len(tokens)),
+                    child_chunk_ids=[chunk.chunk_id],
+                )
+            )
+        return parents
 
     def _load_chunks_into_memory(self, rows: Sequence[Dict[str, Any]]) -> None:
         chunks: List[KnowledgeChunk] = []
@@ -755,9 +909,13 @@ class KnowledgeBase:
                 token_freq=dict(Counter(tokens)),
                 header_tokens=header_tokens,
                 length=max(1, len(tokens)),
+                parent_id=str(row.get("parent_id") or row.get("doc_id") or ""),
                 embedding=None,
             )
             chunks.append(chunk)
+            parent = self._parent_map.get(chunk.parent_id)
+            if parent is not None and chunk.chunk_id not in parent.child_chunk_ids:
+                parent.child_chunk_ids.append(chunk.chunk_id)
             documents[row["path"]] = {
                 "doc_id": row["doc_id"],
                 "path": row["path"],
@@ -765,6 +923,9 @@ class KnowledgeBase:
                 "category": row["category"],
             }
         self._chunks = chunks
+        if not self._parents:
+            self._parents = self._parents_from_legacy_chunks(chunks)
+            self._parent_map = {parent.parent_id: parent for parent in self._parents}
         self._chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
         self._chunk_index_by_id = {chunk.chunk_id: index for index, chunk in enumerate(chunks)}
         self._documents = list(documents.values())
@@ -832,6 +993,9 @@ class KnowledgeBase:
                     score=min(fused_score, 1.0),
                     snippet=self._snippet(chunk.text),
                     text=chunk.text,
+                    parent_id=chunk.parent_id,
+                    parent_section=chunk.section,
+                    child_snippet=self._snippet(chunk.text),
                     sparse_rank=sparse_rank,
                     dense_rank=dense_rank,
                     sparse_score=sparse_scores[index],
@@ -870,6 +1034,10 @@ class KnowledgeBase:
                     score=final_score,
                     snippet=candidate.snippet,
                     text=candidate.text,
+                    parent_id=candidate.parent_id,
+                    parent_section=candidate.parent_section,
+                    parent_snippet=candidate.parent_snippet,
+                    child_snippet=candidate.child_snippet,
                     sparse_rank=candidate.sparse_rank,
                     dense_rank=candidate.dense_rank,
                     rerank_rank=rank,
@@ -946,6 +1114,7 @@ class KnowledgeBase:
 
     def _source_signature(self, source_files: Optional[Sequence[Path]] = None) -> str:
         hasher = hashlib.sha256()
+        hasher.update(self._chunking_signature().encode("utf-8"))
         for file_path in source_files or self._source_files():
             relative_path = str(file_path.relative_to(self.project_root))
             content = file_path.read_bytes()
@@ -1112,6 +1281,52 @@ class KnowledgeBase:
             pieces.append(buffer)
         return pieces
 
+    def _hydrate_parent_context(self, hits: Sequence[RetrievedChunk]) -> List[RetrievedChunk]:
+        hydrated: List[RetrievedChunk] = []
+        for hit in hits:
+            parent = self._parent_map.get(hit.parent_id) if hit.parent_id else None
+            if parent is None:
+                hydrated.append(hit)
+                continue
+            parent_snippet = self._parent_window(parent.text, hit.text)
+            hydrated.append(
+                replace(
+                    hit,
+                    snippet=parent_snippet or hit.snippet,
+                    text=parent_snippet or hit.text,
+                    parent_id=parent.parent_id,
+                    parent_section=parent.section,
+                    parent_snippet=parent_snippet,
+                    child_snippet=hit.child_snippet or hit.snippet,
+                )
+            )
+        return hydrated
+
+    def _parent_window(self, parent_text: str, child_text: str) -> str:
+        parent_text = str(parent_text or "").strip()
+        if not parent_text:
+            return ""
+        limit = max(200, int(self.settings.rag_parent_context_max_chars or 2400))
+        if len(parent_text) <= limit:
+            return parent_text
+        child_anchor = str(child_text or "").strip()[:120]
+        position = parent_text.find(child_anchor) if child_anchor else -1
+        if position < 0 and child_anchor:
+            compact_anchor = re.sub(r"\s+", " ", child_anchor).strip()[:80]
+            compact_parent = re.sub(r"\s+", " ", parent_text)
+            position = compact_parent.find(compact_anchor)
+        if position < 0:
+            return parent_text[: limit - 1].rstrip() + "…"
+        start = max(0, position - limit // 3)
+        end = min(len(parent_text), start + limit)
+        start = max(0, end - limit)
+        window = parent_text[start:end].strip()
+        if start > 0:
+            window = "…" + window
+        if end < len(parent_text):
+            window = window.rstrip() + "…"
+        return window
+
     def _build_direct_answer(self, hits: Sequence[RetrievedChunk]) -> str:
         if not hits:
             return ""
@@ -1119,7 +1334,7 @@ class KnowledgeBase:
         references = "、".join(
             f"《{hit.title}》{(' / ' + hit.section) if hit.section else ''}" for hit in top_hits
         )
-        snippets = "；".join(hit.snippet for hit in top_hits)
+        snippets = "；".join(self._snippet(hit.snippet, limit=360) for hit in top_hits)
         return f"根据知识库，建议优先参考 {references}。{snippets}"
 
     @staticmethod

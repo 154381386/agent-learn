@@ -1038,8 +1038,10 @@ function formatDiagnosis(diagnosis) {
     diagnosis.tool_results.forEach((toolResult) => {
       lines.push(`- ${toolResult.tool_name} [${toolResult.status}]`);
       if (toolResult.summary) lines.push(`  · ${toolResult.summary}`);
-      if (Array.isArray(toolResult.evidence)) {
+      if (Array.isArray(toolResult.evidence) && toolResult.evidence.length > 0) {
         toolResult.evidence.slice(0, 2).forEach((item) => lines.push(`  · ${item}`));
+      } else if (toolResult.payload) {
+        lines.push(`  · ${JSON.stringify(toolResult.payload).slice(0, 240)}`);
       }
     });
   }
@@ -1658,7 +1660,7 @@ function collectDiagnosisTimeline(detail, events = latestSystemEvents) {
     items.push({
       title: `工具调用：${toolResult.tool_name || toolResult.action || '-'}`,
       subtitle: toolResult.status || '',
-      body: toolResult.summary || toolResult.result_summary || toolResult.evidence || toolResult,
+      body: toolResult.summary || toolResult.result_summary || (Array.isArray(toolResult.evidence) && toolResult.evidence.length > 0 ? toolResult.evidence : (toolResult.payload || toolResult)),
       tone: pillToneForStatus(toolResult.status),
     });
   });

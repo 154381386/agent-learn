@@ -73,11 +73,32 @@ class RuleBasedReactRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(result["status"], {"completed", "awaiting_approval"})
         verification_results = list(result["diagnosis"]["verification_results"])
-        k8s_result = next(item for item in verification_results if "Pod 健康异常" in str(item.get("root_cause") or ""))
+        k8s_result = next(item for item in verification_results if item.get("hypothesis_id") == "H-K8S")
         log_item = next(item for item in k8s_result["evidence_items"] if item.get("skill") == "inspect_pod_logs")
         event_item = next(item for item in k8s_result["evidence_items"] if item.get("skill") == "inspect_pod_events")
         self.assertTrue(log_item["result"]["payload"]["oom_detected"])
         self.assertEqual(event_item["result"]["payload"]["last_termination_reason"], "OOMKilled")
+
+    async def test_explicit_oom_with_timeout_still_runs_k8s_checks(self) -> None:
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-oom-timeout",
+                message="checkout-service pod OOMKilled，日志 Java heap space，接口 timeout 和 5xx 升高，帮我排查",
+                service="checkout-service",
+                environment="prod",
+                mock_scenario="oom",
+            )
+        )
+
+        self.assertIn(result["status"], {"completed", "awaiting_approval"})
+        verification_results = list(result["diagnosis"]["verification_results"])
+        k8s_result = next(item for item in verification_results if item.get("hypothesis_id") == "H-K8S")
+        skills = [item.get("skill") for item in k8s_result["evidence_items"]]
+        self.assertIn("check_pod_status", skills)
+        self.assertIn("inspect_pod_logs", skills)
+        self.assertIn("inspect_pod_events", skills)
+        ranked_primary = result["diagnosis"]["ranked_result"]["primary"]
+        self.assertEqual(ranked_primary["hypothesis_id"], "H-K8S")
 
     async def test_case2_prefers_network_instability(self) -> None:
         with patch.dict(os.environ, {"IT_TICKET_AGENT_CASE": "case2"}, clear=False):
@@ -99,6 +120,37 @@ class RuleBasedReactRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         dependency = next(item for item in network_result["evidence_items"] if item.get("skill") == "inspect_upstream_dependency")
         self.assertEqual(connectivity["result"]["payload"]["connectivity_status"], "blocked")
         self.assertEqual(dependency["result"]["payload"]["dependency_status"], "degraded")
+
+    async def test_case3_infers_deploy_regression_and_requests_rollback_from_tool_evidence(self) -> None:
+        with patch.dict(os.environ, {"IT_TICKET_AGENT_CASE": "case3"}, clear=False):
+            result = await self.orchestrator.start_conversation(
+                ConversationCreateRequest(
+                    user_id="u-case3",
+                    message="order-service 创建订单接口错误率突然升高，用户反馈下单失败，帮我排查根因",
+                    service="order-service",
+                    environment="prod",
+                )
+            )
+
+        self.assertEqual(result["status"], "awaiting_approval")
+        ranked_primary = result["diagnosis"]["ranked_result"]["primary"]
+        self.assertEqual(ranked_primary["hypothesis_id"], "H-CICD")
+        self.assertEqual(ranked_primary["recommended_action"], "cicd.rollback_release")
+        self.assertEqual(ranked_primary["action_risk"], "high")
+        self.assertIn("8f31c2a", ranked_primary["root_cause"])
+        self.assertIn("8f31c2a", ranked_primary["action_params"]["reason"])
+        self.assertEqual(
+            ranked_primary["action_params"]["target_revision"],
+            "order-service:2026.04.26.0915-3d91ab7",
+        )
+        approval = result["approval_request"]
+        self.assertEqual(approval["action"], "cicd.rollback_release")
+        self.assertEqual(approval["risk"], "high")
+        cicd_result = next(
+            item for item in result["diagnosis"]["verification_results"] if item.get("hypothesis_id") == "H-CICD"
+        )
+        change_item = next(item for item in cicd_result["evidence_items"] if item.get("skill") == "get_change_records")
+        self.assertEqual(change_item["result"]["payload"]["changes"][0]["commit_id"], "8f31c2a")
 
 
 class ToolInventoryTest(unittest.TestCase):

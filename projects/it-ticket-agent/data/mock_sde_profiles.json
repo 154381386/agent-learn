@@ -2,138 +2,110 @@
   "车云服务": {
     "error": {
       "investigate_resource_provisioning": {
-        "summary": "车云服务资源开通申请失败，卡在审批与配额环节。",
         "payload": {
           "service": "车云服务",
           "failure_stage": "approval_or_quota",
           "request_status": "rejected",
           "request_id": "REQ-SDE-1001"
-        },
-        "evidence": ["资源申请 REQ-SDE-1001 被拒绝", "GPU quota 不足"]
+        }
       },
       "inspect_cluster_bootstrap": {
-        "summary": "车云服务 K8s 集群拉起失败，疑似 CNI 初始化异常。",
         "payload": {
           "service": "车云服务",
           "bootstrap_status": "failed",
           "suspected_blocker": "cni_init_failed"
-        },
-        "evidence": ["bootstrap stuck at node-ready phase"]
+        }
       },
       "inspect_machine_provisioning": {
-        "summary": "车云服务机器开通失败，镜像与库存校验未通过。",
         "payload": {
           "service": "车云服务",
           "provisioning_status": "failed",
           "failure_reason": "image_or_inventory"
-        },
-        "evidence": ["inventory mismatch", "image validation failed"]
+        }
       },
       "get_quota_status": {
-        "summary": "车云服务配额状态紧张。",
         "payload": {
           "service": "车云服务",
           "quota_state": "tight"
-        },
-        "evidence": ["CPU quota 92% used"]
+        }
       }
     },
     "health": {
       "investigate_resource_provisioning": {
-        "summary": "车云服务资源开通记录正常。",
         "payload": {
           "service": "车云服务",
           "failure_stage": "none",
           "request_status": "approved",
           "request_id": "REQ-SDE-1002"
-        },
-        "evidence": ["request approved successfully"]
+        }
       },
       "inspect_cluster_bootstrap": {
-        "summary": "车云服务集群拉起正常。",
         "payload": {
           "service": "车云服务",
           "bootstrap_status": "healthy",
           "suspected_blocker": "none"
-        },
-        "evidence": ["control plane healthy"]
+        }
       },
       "inspect_machine_provisioning": {
-        "summary": "车云服务机器开通成功。",
         "payload": {
           "service": "车云服务",
           "provisioning_status": "completed",
           "failure_reason": "none"
-        },
-        "evidence": ["machine provisioned successfully"]
+        }
       },
       "get_quota_status": {
-        "summary": "车云服务配额充足。",
         "payload": {
           "service": "车云服务",
           "quota_state": "sufficient"
-        },
-        "evidence": ["quota usage under 50%"]
+        }
       }
     }
   },
   "支付服务": {
     "error": {
       "investigate_resource_provisioning": {
-        "summary": "支付服务资源开通失败，卡在工单审批。",
         "payload": {
           "service": "支付服务",
           "failure_stage": "approval_or_quota",
           "request_status": "pending",
           "request_id": "REQ-SDE-2001"
-        },
-        "evidence": ["approval timeout"]
+        }
       },
       "inspect_cluster_bootstrap": {
-        "summary": "支付服务集群控制面拉起缓慢。",
         "payload": {
           "service": "支付服务",
           "bootstrap_status": "failed",
           "suspected_blocker": "control_plane_or_cni"
-        },
-        "evidence": ["api-server health check failed"]
+        }
       },
       "inspect_machine_provisioning": {
-        "summary": "支付服务机器开通失败，库存不足。",
         "payload": {
           "service": "支付服务",
           "provisioning_status": "failed",
           "failure_reason": "image_or_inventory"
-        },
-        "evidence": ["zone inventory insufficient"]
+        }
       },
       "get_quota_status": {
-        "summary": "支付服务配额处于告警状态。",
         "payload": {
           "service": "支付服务",
           "quota_state": "tight"
-        },
-        "evidence": ["memory quota 88% used"]
+        }
       }
     },
     "health": {
       "investigate_resource_provisioning": {
-        "summary": "支付服务资源开通记录正常。",
         "payload": {
           "service": "支付服务",
           "failure_stage": "none",
           "request_status": "approved",
           "request_id": "REQ-SDE-2002"
-        },
-        "evidence": ["request approved"]
+        }
       },
       "get_quota_status": {
-        "summary": "支付服务配额正常。",
         "payload": {
           "service": "支付服务",
           "quota_state": "sufficient"
-        },
-        "evidence": ["quota usage under threshold"]
+        }
       }
     }
   }

@@ -21,12 +21,14 @@ class Settings:
     pgvector_schema: str = os.getenv("PGVECTOR_SCHEMA", "rag")
     pgvector_documents_table: str = os.getenv("PGVECTOR_DOCUMENTS_TABLE", "documents")
     pgvector_chunks_table: str = os.getenv("PGVECTOR_CHUNKS_TABLE", "chunks")
+    pgvector_parents_table: str = os.getenv("PGVECTOR_PARENTS_TABLE", "parent_blocks")
 
     rag_docs_path: str = os.getenv("RAG_DOCS_PATH", "./mock_kb")
     rag_index_dir: str = os.getenv("RAG_INDEX_DIR", "./data/rag")
     rag_auto_reindex_on_boot: bool = os.getenv("RAG_AUTO_REINDEX_ON_BOOT", "true").lower() == "true"
     rag_chunk_size: int = int(os.getenv("RAG_CHUNK_SIZE", "900"))
     rag_chunk_overlap: int = int(os.getenv("RAG_CHUNK_OVERLAP", "160"))
+    rag_parent_context_max_chars: int = int(os.getenv("RAG_PARENT_CONTEXT_MAX_CHARS", "2400"))
     rag_top_k: int = int(os.getenv("RAG_TOP_K", "5"))
     rag_direct_answer_min_score: float = float(os.getenv("RAG_DIRECT_ANSWER_MIN_SCORE", "0.58"))
     rag_direct_answer_min_margin: float = float(os.getenv("RAG_DIRECT_ANSWER_MIN_MARGIN", "0.10"))

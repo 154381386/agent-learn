@@ -106,10 +106,16 @@ class LocalToolRuntime:
                         "status": "completed",
                         "action": action,
                         "service": service,
-                        "target_revision": params.get("version") or "last-known-stable",
+                        "target_revision": params.get("target_revision") or params.get("version") or "last-known-stable",
                     }
                 },
-                "structuredContent": {"status": "completed", "action": action, "service": service, "job_id": f"local-{uuid4().hex[:8]}"},
+                "structuredContent": {
+                    "status": "completed",
+                    "action": action,
+                    "service": service,
+                    "target_revision": params.get("target_revision") or params.get("version") or "last-known-stable",
+                    "job_id": f"local-{uuid4().hex[:8]}",
+                },
                 "content": [{"text": f"{service} 的回滚动作已完成。"}],
             }
         if action == "restart_pods":

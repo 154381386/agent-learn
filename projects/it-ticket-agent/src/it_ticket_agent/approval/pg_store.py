@@ -59,6 +59,15 @@ class PostgresApprovalStoreV2:
                 on approval_audit_event (approval_id, created_at, event_id)
                 """
             )
+            conn.execute(
+                """
+                select setval(
+                    pg_get_serial_sequence('approval_audit_event', 'event_id'),
+                    greatest(coalesce((select max(event_id) from approval_audit_event), 0), 1),
+                    coalesce((select max(event_id) from approval_audit_event), 0) > 0
+                )
+                """
+            )
 
     def create_request(self, request: ApprovalRequest) -> ApprovalRequest:
         now = utc_now()
