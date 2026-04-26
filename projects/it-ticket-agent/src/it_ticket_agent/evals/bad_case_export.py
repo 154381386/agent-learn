@@ -137,14 +137,19 @@ def export_bad_case_candidates(
         }
         results.append(result)
         if mark_exported:
+            export_metadata = dict(candidate.get("export_metadata") or {})
+            export_metadata.update(
+                {
+                    "output_path": str(output_path),
+                    "target_dataset": payload.get("target_dataset"),
+                    "export_format": "eval_skeleton",
+                    "exported_at": utc_now(),
+                }
+            )
             store.update_export_status(
                 str(candidate.get("candidate_id") or ""),
                 export_status="exported",
-                export_metadata={
-                    "output_path": str(output_path),
-                    "target_dataset": payload.get("target_dataset"),
-                    "exported_at": utc_now(),
-                },
+                export_metadata=export_metadata,
             )
     return results
 

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -11,6 +12,12 @@ from .schemas import (
     ApprovalDecisionRequest,
     ApprovalEventResponse,
     ApprovalResolutionRequest,
+    BadCaseCandidateExportStatusRequest,
+    BadCaseCandidateResponse,
+    BadCaseCuratedMergeRequest,
+    BadCaseCuratedMergeResponse,
+    BadCaseEvalSkeletonExportRequest,
+    BadCaseEvalSkeletonExportResponse,
     ConversationCreateRequest,
     ConversationDetailResponse,
     ConversationMessageRequest,
@@ -19,16 +26,22 @@ from .schemas import (
     DiagnosisPlaybookReviewRequest,
     DiagnosisPlaybookUpsertRequest,
     ConversationResumeRequest,
+    PlaybookExtractionRequest,
+    PlaybookExtractionResponse,
     ExecutionPlanResponse,
     ExecutionRecoveryResponse,
     IncidentCaseResponse,
+    IncidentCaseReviewRequest,
+    IncidentCaseReviewResponse,
     InterruptResponse,
+    MockWorldResponse,
     RuntimeSnapshotResponse,
     SessionResponse,
     SystemEventResponse,
     TicketRequest,
     TicketResponse,
 )
+from .evals import export_bad_case_candidates, merge_curated_bad_case_files
 from .session import SessionService
 from .settings import get_settings
 from .storage import StoreProvider
@@ -36,6 +49,74 @@ from .storage import StoreProvider
 
 settings = get_settings()
 static_dir = Path(__file__).parent / "static"
+project_root = Path(__file__).resolve().parents[2]
+default_generated_eval_dir = project_root / "data" / "evals" / "generated"
+default_mock_worlds_path = project_root / "data" / "mock_case_profiles.json"
+
+
+def _describe_mock_world(case_id: str, service: str, tool_payloads: dict[str, dict]) -> str:
+    snippets: list[str] = []
+    preferred_tools = (
+        "inspect_pod_logs",
+        "inspect_pod_events",
+        "inspect_vpc_connectivity",
+        "inspect_upstream_dependency",
+        "inspect_connection_pool",
+        "inspect_slow_queries",
+        "check_recent_deployments",
+        "get_change_records",
+    )
+    for tool_name in preferred_tools:
+        payload = tool_payloads.get(tool_name)
+        if not isinstance(payload, dict):
+            continue
+        summary = str(payload.get("summary") or "").strip()
+        if summary:
+            snippets.append(summary)
+        if len(snippets) >= 2:
+            break
+    if not snippets:
+        for payload in tool_payloads.values():
+            if isinstance(payload, dict) and payload.get("summary"):
+                snippets.append(str(payload.get("summary")))
+            if len(snippets) >= 2:
+                break
+    if snippets:
+        return "；".join(snippets)
+    return f"{service} / {case_id} mock 世界，包含 {len(tool_payloads)} 个工具返回。"
+
+
+def _load_mock_worlds() -> list[MockWorldResponse]:
+    if not default_mock_worlds_path.exists():
+        return []
+    payload = json.loads(default_mock_worlds_path.read_text(encoding="utf-8"))
+    worlds: list[MockWorldResponse] = []
+    if not isinstance(payload, dict):
+        return worlds
+    for case_id, case_payload in sorted(payload.items()):
+        if not isinstance(case_payload, dict):
+            continue
+        services = case_payload.get("services")
+        if not isinstance(services, dict):
+            continue
+        for service, tool_payloads in sorted(services.items()):
+            if not isinstance(tool_payloads, dict):
+                continue
+            normalized_tools = {str(name): dict(value) for name, value in tool_payloads.items() if isinstance(value, dict)}
+            world_id = f"{case_id}::{service}"
+            worlds.append(
+                MockWorldResponse(
+                    world_id=world_id,
+                    case_id=str(case_id),
+                    service=str(service),
+                    label=f"{case_id} / {service}",
+                    description=_describe_mock_world(str(case_id), str(service), normalized_tools),
+                    tool_count=len(normalized_tools),
+                    tool_names=sorted(normalized_tools.keys()),
+                    mock_tool_responses=normalized_tools,
+                )
+            )
+    return worlds
 
 
 @asynccontextmanager
@@ -98,6 +179,11 @@ async def index():
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "observability": {"langfuse_enabled": bool(settings.langfuse_public_key and settings.langfuse_secret_key)}}
+
+
+@app.get("/api/v1/mock-worlds", response_model=list[MockWorldResponse])
+async def list_mock_worlds():
+    return _load_mock_worlds()
 
 
 @app.post("/api/v1/tickets", response_model=TicketResponse)
@@ -211,6 +297,20 @@ async def list_approval_events(approval_id: str, http_request: Request):
     if approval is None:
         raise HTTPException(status_code=404, detail="approval not found")
     return [ApprovalEventResponse(**event) for event in approval_store.list_events(approval_id)]
+
+
+
+@app.get("/api/v1/sessions", response_model=list[SessionResponse])
+async def list_sessions(
+    http_request: Request,
+    user_id: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+):
+    session_service = http_request.app.state.session_service
+    bounded_limit = max(1, min(int(limit or 20), 50))
+    sessions = session_service.list_sessions(limit=bounded_limit, user_id=user_id, status=status)
+    return [SessionResponse(**session) for session in sessions]
 
 
 @app.get("/api/v1/sessions/{session_id}/events", response_model=list[SystemEventResponse])
@@ -373,6 +473,55 @@ async def list_cases(
     return [IncidentCaseResponse(**case) for case in cases]
 
 
+@app.post("/api/v1/cases/{case_id}/review", response_model=IncidentCaseReviewResponse)
+async def review_case(case_id: str, payload: IncidentCaseReviewRequest, http_request: Request):
+    supervisor_orchestrator = http_request.app.state.supervisor_orchestrator
+    result = supervisor_orchestrator.review_incident_case(
+        case_id,
+        human_verified=payload.human_verified,
+        hypothesis_accuracy=payload.hypothesis_accuracy,
+        actual_root_cause_hypothesis=payload.actual_root_cause_hypothesis,
+        reviewed_by=payload.reviewed_by,
+        review_note=payload.review_note,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    playbook_candidate = result.get("playbook_candidate")
+    return IncidentCaseReviewResponse(
+        incident_case=IncidentCaseResponse(**result["incident_case"]),
+        playbook_candidate=(
+            DiagnosisPlaybookResponse(**playbook_candidate)
+            if isinstance(playbook_candidate, dict)
+            else None
+        ),
+        playbook_extraction=dict(result.get("playbook_extraction") or {}),
+    )
+
+
+@app.post("/api/v1/cases/{case_id}/extract-playbook", response_model=PlaybookExtractionResponse)
+async def extract_case_playbook(case_id: str, payload: PlaybookExtractionRequest, http_request: Request):
+    supervisor_orchestrator = http_request.app.state.supervisor_orchestrator
+    result = supervisor_orchestrator.extract_playbook_candidate_from_case(
+        case_id,
+        allow_single_case=payload.allow_single_case,
+        min_cases=payload.min_cases,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    playbook_candidate = result.get("playbook_candidate")
+    return PlaybookExtractionResponse(
+        incident_case=IncidentCaseResponse(**result["incident_case"]),
+        playbook_candidate=(
+            DiagnosisPlaybookResponse(**playbook_candidate)
+            if isinstance(playbook_candidate, dict)
+            else None
+        ),
+        extracted=bool(result.get("extracted")),
+        reason=str(result.get("reason") or ""),
+        related_case_count=int(result.get("related_case_count") or 0),
+    )
+
+
 @app.get("/api/v1/cases/{case_id}", response_model=IncidentCaseResponse)
 async def get_case(case_id: str, http_request: Request):
     incident_case_store = http_request.app.state.incident_case_store
@@ -380,3 +529,107 @@ async def get_case(case_id: str, http_request: Request):
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
     return IncidentCaseResponse(**case)
+
+
+@app.get("/api/v1/bad-case-candidates", response_model=list[BadCaseCandidateResponse])
+async def list_bad_case_candidates(
+    http_request: Request,
+    session_id: str | None = None,
+    source: str | None = None,
+    export_status: str | None = None,
+    limit: int = 50,
+):
+    bad_case_candidate_store = http_request.app.state.bad_case_candidate_store
+    candidates = bad_case_candidate_store.list_candidates(
+        session_id=session_id,
+        source=source,
+        export_status=export_status,
+        limit=limit,
+    )
+    return [BadCaseCandidateResponse(**candidate) for candidate in candidates]
+
+
+
+@app.post("/api/v1/bad-case-candidates/{candidate_id}/export-eval-skeleton", response_model=BadCaseEvalSkeletonExportResponse)
+async def export_bad_case_eval_skeleton(
+    candidate_id: str,
+    payload: BadCaseEvalSkeletonExportRequest,
+    http_request: Request,
+):
+    bad_case_candidate_store = http_request.app.state.bad_case_candidate_store
+    candidate = bad_case_candidate_store.get(candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="bad case candidate not found")
+    output_dir = payload.output_dir or str(default_generated_eval_dir)
+    results = export_bad_case_candidates(
+        bad_case_candidate_store,
+        output_dir=output_dir,
+        candidate_ids=[candidate_id],
+        export_status=None,
+        limit=1,
+        mark_exported=payload.mark_exported,
+    )
+    if not results:
+        raise HTTPException(status_code=404, detail="bad case candidate not found")
+    result = results[0]
+    output_path = Path(str(result.get("output_path") or ""))
+    export_payload: dict = {}
+    if output_path.exists():
+        export_payload = json.loads(output_path.read_text(encoding="utf-8"))
+    updated_candidate = bad_case_candidate_store.get(candidate_id)
+    return BadCaseEvalSkeletonExportResponse(
+        candidate_id=str(result.get("candidate_id") or candidate_id),
+        target_dataset=str(result.get("target_dataset") or export_payload.get("target_dataset") or ""),
+        output_path=str(output_path),
+        export_payload=export_payload,
+        candidate=BadCaseCandidateResponse(**updated_candidate) if updated_candidate is not None else None,
+    )
+
+
+@app.post("/api/v1/bad-case-candidates/merge-curated-eval-skeletons", response_model=BadCaseCuratedMergeResponse)
+async def merge_curated_bad_case_eval_skeletons(payload: BadCaseCuratedMergeRequest, http_request: Request):
+    generated_dir = Path(payload.generated_dir or default_generated_eval_dir)
+    input_paths = [Path(path) for path in payload.input_paths]
+    if not input_paths:
+        input_paths = sorted(generated_dir.glob("*.json"))
+    if not input_paths:
+        return BadCaseCuratedMergeResponse(count=0, results=[])
+    bad_case_candidate_store = http_request.app.state.bad_case_candidate_store
+    try:
+        results = merge_curated_bad_case_files(
+            input_paths=input_paths,
+            project_root=project_root,
+            store=bad_case_candidate_store,
+            mark_merged=payload.mark_merged,
+            allow_placeholders=payload.allow_placeholders,
+            dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return BadCaseCuratedMergeResponse(count=len(results), results=results)
+
+
+@app.get("/api/v1/bad-case-candidates/{candidate_id}", response_model=BadCaseCandidateResponse)
+async def get_bad_case_candidate(candidate_id: str, http_request: Request):
+    bad_case_candidate_store = http_request.app.state.bad_case_candidate_store
+    candidate = bad_case_candidate_store.get(candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="bad case candidate not found")
+    return BadCaseCandidateResponse(**candidate)
+
+
+@app.post("/api/v1/bad-case-candidates/{candidate_id}/export-status", response_model=BadCaseCandidateResponse)
+async def update_bad_case_export_status(
+    candidate_id: str,
+    payload: BadCaseCandidateExportStatusRequest,
+    http_request: Request,
+):
+    bad_case_candidate_store = http_request.app.state.bad_case_candidate_store
+    candidate = bad_case_candidate_store.update_export_status(
+        candidate_id,
+        export_status=payload.export_status,
+        export_metadata=payload.export_metadata,
+    )
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="bad case candidate not found")
+    return BadCaseCandidateResponse(**candidate)

@@ -61,6 +61,40 @@ P1 后 `working_memory` 不再只有结构化槽位，还包含 `narrative_summa
 - `POST /api/v1/playbooks`：创建或更新 Playbook
 - `POST /api/v1/playbooks/{playbook_id}/review`：人工审核，通过后才可在线召回
 
+## 前端诊断工作台
+
+当前 `/` 控制台仍是静态 HTML/CSS/vanilla JS，但 UI 已从“一个聊天长页”拆成两个页面：
+
+- 会话页：用表单化工单入口发起/继续工单，支持用户、服务、环境、集群、命名空间和问题描述；提交澄清、审批和人工反馈，顶部和侧边栏都提供“新会话”入口
+- 诊断工作台：独立查看会话详情、诊断时间线、Playbook、案例审核和 bad case 候选，不再挤在聊天页下面
+
+会话状态卡现在同时展示当前会话和最近会话列表，前端通过 `GET /api/v1/sessions` 拉取最近会话，点击后恢复对应 `conversation_turn / session / pending interrupt`。这解决了本地只能靠 `localStorage` 恢复单个会话、无法清晰新开/切换会话的问题。
+
+运行中反馈不是 token 级 SSE 流式输出，而是轻量进度提示：前端在请求进行中轮询 `GET /api/v1/sessions/{session_id}/events`，展示 `knowledge.retrieved / context.collected / tool.started / tool.completed / tool.cached / tool.failed` 等高层事件，例如“正在调用 check_pod_status”。首轮新会话会先用本地生成的 `ticket_id` 预绑定 `session_id`，因此请求还没返回时也可以轮询事件；完成后会保留一块诊断过程日志，避免只看到最终结论。工具参数、原始返回和内部推理不会展示在聊天流里，细节仍在诊断工作台查看。
+
+会话页新增 Mock 世界沙盒：前端通过 `GET /api/v1/mock-worlds` 加载 `data/mock_case_profiles.json` 中的世界，用户可选择某个 `case_id / service` 世界后多轮对话。首轮请求会携带该世界的一组 `mock_tool_responses`，后续消息由 session 的 `shared_context` 继承同一组工具返回，保证多轮都发生在同一个模拟世界里。选中 Mock 世界时，Agent 回复按普通聊天气泡展示，不强制渲染诊断报告卡片；会话完成后仍会生成 `incident_case(pending_review)`，可在工作台人工确认入库，并进一步抽取 `pending_review` Playbook candidate。
+
+最终回答会以用户态诊断报告卡片展示，而不是直接暴露 ReAct 摘要或原始证据字段。报告按“根因判断 / 置信度 / 工具调用 / 关键证据 / 排除项 / 建议下一步 / 审批说明”分区展示，避免把长文本堆进聊天气泡。当前如果只调用了只读诊断工具、没有生成已注册的高风险执行动作，就不会弹出审批卡片，并会在回答里明确说明原因。报告生成会保留高质量模型根因句，同时用工具 payload 补充面向用户的网络、依赖、数据库、Pod 证据。
+
+工作台包含 5 个面板：
+
+- 会话详情：用表单区块展示 `working_memory`、事件和 `context_snapshot` 摘要，默认不把整段 JSON 直接铺开
+- 诊断时间线：串起 routing、RAG、Playbook recall、case recall、tool calls、approval 和 pending interrupt，方便回放为什么走到当前结论
+- Playbook 管理：用表单和步骤卡查看 `pending_review / verified / rejected / retired` 方法卡，审核通过后才会被在线召回
+- 案例审核：查看 `incident_case`，通过 `POST /api/v1/cases/{case_id}/review` 完成 `pending_review -> verified / rejected` 流转；确认后可用 `POST /api/v1/cases/{case_id}/extract-playbook` 抽取待审 Playbook 候选
+- Bad Case 候选：用摘要表单展示归因、反馈和关键观察，可展开原始 eval skeleton，并可一键导出到 `data/evals/generated`、标记 `exported / ignored`
+
+新增 API：
+
+- `GET /api/v1/sessions`：按最近活跃时间查询会话，支持 `user_id / status / limit`
+- `POST /api/v1/cases/{case_id}/review`：人工确认或拒绝案例入库；确认时会尝试按同类 verified case 聚合生成 Playbook candidate
+- `POST /api/v1/cases/{case_id}/extract-playbook`：从已确认案例显式抽取 Playbook 候选，Mock 世界演示可允许单案例抽取但仍需人工审核后才上线
+- `GET /api/v1/bad-case-candidates`：查询 bad case 候选
+- `GET /api/v1/bad-case-candidates/{candidate_id}`：查看候选详情
+- `POST /api/v1/bad-case-candidates/{candidate_id}/export-status`：更新候选导出状态
+- `POST /api/v1/bad-case-candidates/{candidate_id}/export-eval-skeleton`：导出单个候选到 generated eval skeleton 文件，并可自动标记 `exported`
+- `POST /api/v1/bad-case-candidates/merge-curated-eval-skeletons`：扫描或指定 curated skeleton，dry-run 或合并到正式 eval dataset，并可标记 `merged`
+
 ## 历史案例召回
 
 当前项目里的历史案例召回不是“把工单全文当普通文档再搜一遍”，而是单独的 `case-memory recall`。
@@ -293,7 +327,7 @@ cd projects/it-ticket-agent
 uv run python scripts/export_bad_case_candidates.py
 ```
 
-只导某个候选并更新导出状态：
+只导某个候选并更新导出状态。也可以在前端 Bad Case 面板点击“导出 eval skeleton”，底层调用 `POST /api/v1/bad-case-candidates/{candidate_id}/export-eval-skeleton`：
 
 ```bash
 cd projects/it-ticket-agent
@@ -310,7 +344,7 @@ uv run python scripts/merge_curated_bad_cases.py \
   --input ./data/evals/generated/<curated-file>.json
 ```
 
-如果不传 `--input`，脚本会默认扫描 `data/evals/generated/*.json`。
+如果不传 `--input`，脚本会默认扫描 `data/evals/generated/*.json`。前端/API 侧也提供 `POST /api/v1/bad-case-candidates/merge-curated-eval-skeletons`，适合先 `dry_run=true` 校验 curated skeleton，再执行真实合并。
 
 当前 curated merge 会做两件事：
 

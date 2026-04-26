@@ -2228,3 +2228,383 @@ uv run python -m unittest discover -s tests -q
 
 - 可以补一个轻量 Playbook review UI，把 `pending_review` candidate 的审核流程做成值班人可操作入口。
 - 后续可把 Playbook recall scoring 的命中特征写入 eval report，用于观察哪些方法卡长期有效。
+
+
+## 2026-04-25 前端诊断工作台 v1
+
+### 问题
+
+- 后端已经有 working memory、Playbook、case review 和 bad case 候选闭环，但前端仍主要是聊天和审批入口。
+- 值班人无法直接在 UI 中查看上下文组装结果、诊断时间线、待审核 Playbook、待审核案例和 bad case 候选。
+
+### 原因
+
+- 记忆系统先完成了存储、召回和审核状态机，但缺少面向人工复核的工作台。
+- `incident_case` 已有 `pending_review / verified / rejected` 生命周期，但只暴露了查询接口，没有按 case_id 审核入口。
+- bad case candidate 已经落库，但没有在线查看、归因确认和导出状态管理入口。
+
+### 改动
+
+- 在现有静态控制台中新增 5 个工作台面板：会话详情、诊断时间线、Playbook 管理、案例审核、Bad Case 候选。
+- 会话详情展示 `working_memory / agent events / context_snapshot`；诊断时间线展示 RAG、Playbook recall、case recall、tool calls、approval 和 interrupt。
+- 新增 `POST /api/v1/cases/{case_id}/review`，支持值班人将案例审核为 `verified` 或 `rejected`。
+- 新增 bad case candidate 列表、详情和导出状态 API，前端可展示 eval skeleton 并标记 `exported / ignored`。
+
+### 影响
+
+- 记忆系统从“后端可用”推进到“人工可审、过程可见”。
+- Playbook 和历史案例都保持人工审核边界，不会因为 UI 操作绕过 `verified + human_verified` 的召回条件。
+- bad case 候选可以先在 UI 中查看归因和上下文，再决定是否导出为正式 eval 样本。
+
+### 测试
+
+- Targeted：`uv run python -m unittest tests/test_frontend_smoke.py -q`，5 tests OK。
+- Full：`uv run python -m unittest discover -s tests -q`，133 tests OK，skipped=1。
+
+### 下一步
+
+- 可以继续补运行时筛选、搜索和分页，避免长期运行后列表过长。
+- 可以给 bad case eval skeleton 增加文件导出接口，减少人工复制。
+
+
+## 2026-04-25 Bad Case 候选一键导出与回归闭环 API
+
+### 问题
+
+- 前端 Bad Case 面板只能展示 eval skeleton 和手动标记 `exported`，没有真正把候选写成 `data/evals/generated/*.json` 文件。
+- existing script 已经支持导出和 curated merge，但值班人需要离开工作台手动执行脚本，闭环入口不统一。
+
+### 原因
+
+- bad case candidate 的运行时存储、导出脚本、merge 脚本已经存在，但 FastAPI 和前端还没有把这些能力串起来。
+- 只改状态不写文件，会让 `exported` 语义不够真实，后续无法直接进入人工补齐和回归资产整理。
+
+### 改动
+
+- 新增 `POST /api/v1/bad-case-candidates/{candidate_id}/export-eval-skeleton`，复用 `export_bad_case_candidates(...)` 导出单个候选到 generated 目录，并写回 `output_path / target_dataset / export_format / exported_at`。
+- 新增 `POST /api/v1/bad-case-candidates/merge-curated-eval-skeletons`，复用 curated merge 逻辑，支持指定文件或扫描 generated 目录，支持 `dry_run`。
+- 前端 Bad Case 面板的“导出 eval skeleton”改为真实调用导出 API，并在详情中展示导出文件、目标数据集和合并 case。
+- 导出状态更新会保留已有 `export_metadata`，避免覆盖人工备注或历史导出信息。
+
+### 影响
+
+- Bad Case 面板从“查看候选 + 标记状态”推进到“候选 -> generated skeleton 文件”的真实闭环。
+- 值班人可以先在 UI 导出，再人工编辑 generated skeleton，最后用脚本或 API dry-run/merge 到正式 eval dataset。
+- `exported` 状态和本地文件路径一致，后续排查和合并更可追踪。
+
+### 测试
+
+- Targeted：`uv run python -m unittest tests/test_frontend_smoke.py -q`，5 tests OK。
+- Targeted：`uv run python -m unittest tests/test_bad_case_export.py -q`，6 tests OK。
+- Targeted：`uv run python -m unittest tests/test_frontend_smoke.py tests/test_bad_case_export.py -q`，11 tests OK。
+- Full：`uv run python -m unittest discover -s tests -q`，133 tests OK，skipped=1。
+
+### 下一步
+
+- 可以给 generated skeleton 增加 UI 文件打开/复制入口。
+- 可以继续补分页、搜索和批量导出，适配长期运行后候选增多的场景。
+
+## 2026-04-25 澄清节点主输入框自动 resume 修复
+
+### 问题
+
+- 前端进入 `awaiting_clarification` 后，如果用户在主输入框继续补充信息，请求仍然走 `/api/v1/conversations/{session_id}/messages`。
+- 后端正确拒绝并返回 `conversation is awaiting resume; use the resume endpoint`，导致用户以为系统卡住。
+
+### 原因
+
+- UI 有单独的左侧澄清表单会调用 `/resume`，但主输入框不知道当前会话处于 pending interrupt。
+- `message_mode=supplement` 只改变 `/messages` 的语义，不等于 resume interrupt。
+
+### 改动
+
+- 新增 `resumeClarificationAnswer(...)` 前端 helper。
+- `handleUserMessage(...)` 在检测到 `currentPendingInterrupt.type === 'clarification'` 时，自动把主输入框内容提交到 `/api/v1/conversations/{session_id}/resume`。
+- 左侧澄清表单复用同一个 helper，避免两套逻辑漂移。
+
+### 影响
+
+- 用户在待澄清状态下可以直接在主输入框补充信息，不再触发 awaiting resume 错误。
+- 保留左侧澄清表单，两种入口都会走同一个 resume 协议。
+
+### 测试
+
+- Targeted：`uv run python -m unittest tests/test_frontend_smoke.py -q`，5 tests OK。
+
+### 下一步
+
+- 可以进一步优化 router，把“服务 + 5xx + 延迟升高 + 最近发布 + 请诊断”直接识别为诊断请求，减少不必要澄清。
+
+
+## 2026-04-25 前端会话管理、页面拆分与工具进度提示
+
+### 问题
+
+- 前端只有一个长页面，聊天、诊断工作台和审核面板混在一起，用户不容易区分“发起诊断”和“复盘/治理”。
+- 会话恢复主要依赖本地 `localStorage` 的单个 session id，没有最近会话列表，也缺少明确的新会话入口。
+- 运行中缺少过程反馈，用户只能等待最终回答，不知道系统是否正在检索、收集上下文或调用工具。
+
+### 原因
+
+- 早期前端定位是工程控制台，优先把后端闭环能力暴露出来，没有独立抽象会话生命周期。
+- system event 已经记录诊断过程，但前端只在工作台里静态展示，没有在请求执行期间轮询最新事件。
+- ReAct supervisor 的真实工具调用没有写入 `tool.started / tool.completed` 这类专门给 UI 消费的高层事件。
+
+### 改动
+
+- 前端拆成 `chatPage` 和 `workspacePage`，通过 `pageNav` 在“会话”和“诊断工作台”之间切换。
+- 新增顶部/侧边栏“新会话”入口，`startNewConversation()` 会清空本地当前会话、重置 pending interrupt 和工作台状态。
+- 新增 `GET /api/v1/sessions`，SessionStore SQLite/PG 都支持按 `user_id / status / limit` 查询最近会话；前端侧边栏展示最近会话并支持点击恢复。
+- 新增运行中 `agentActivityPanel`，请求进行时轮询 `/api/v1/sessions/{session_id}/events`，展示知识检索、上下文收集和工具调用的高层状态。
+- `ReactSupervisor` 在工具执行边界写入 `tool.started / tool.completed / tool.cached / tool.failed` system events；payload 只放 `tool_name / status / latency_ms / error_type` 等摘要，不把工具参数展示到聊天流。
+
+### 影响
+
+- 用户可以明确新开一个工单会话，也可以从最近会话列表恢复已有会话。
+- 聊天页只承担交互，诊断工作台只承担复盘、审核和治理，UI 职责更清晰。
+- 用户等待诊断时能看到“正在调用 xxx”这类进度提示，降低黑盒感；同时不泄露工具细节。
+- 工具活动事件也进入 system event，后续 bad case 回放和诊断时间线可以复用。
+
+### 测试
+
+- Targeted：`node --check src/it_ticket_agent/static/app.js`，通过。
+- Targeted：`uv run python -m unittest tests/test_frontend_smoke.py -q`，6 tests OK。
+- Targeted：`uv run python -m unittest tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_tool_activity_events_record_frontend_progress_signal -q`，1 test OK。
+
+### 下一步
+
+- 当前是事件轮询式进度提示，不是 token 级 SSE；如果后续要展示模型输出增量，可以再补 SSE/WebSocket。
+- 最近会话后续可以继续加搜索、分页和按状态筛选，适配长期运行后的会话量。
+
+
+## 2026-04-25 生产环境文本槽位识别修复
+
+### 问题
+
+- 用户输入 `order-service 生产环境 Pod 频繁重启...` 后，系统没有进入诊断，而是返回 `awaiting_clarification`。
+- 前端表现为机器人提示“已识别为知识咨询，但当前知识库没有足够命中”，并要求确认环境。
+
+### 原因
+
+- 前端会传 `service / cluster / namespace`，但没有单独的 `environment` 输入。
+- 后端 `resolve_slots(...)` 只读取 request.environment，没有从用户文本中识别 `生产环境`。
+- `order-service` 命中 CMDB 后把环境推测为 `prod`，而当前规则把 inferred fields 也当作需要澄清，导致已明确的诊断问题被澄清门槛拦截。
+- 澄清提示复用了 generic guidance，RAG 不足时会出现“知识咨询”文案，进一步误导用户。
+
+### 改动
+
+- 新增环境文本识别：`生产环境 / 生产 / 线上 / prod / production / prod-*` -> `prod`，并支持 `staging / test / dev` 常见别名。
+- `resolve_slots(...)` 优先使用用户文本中的环境信号；只有文本和 request 都没有环境时，才使用 CMDB 推测并触发确认。
+- 新增回归用例，覆盖用户在主输入框输入完整诊断问题时必须直接进入工具诊断，不应进入 clarification。
+
+### 影响
+
+- 用户给出“生产环境 + 服务 + 集群 + 命名空间 + 症状”的诊断问题会直接进入 ReAct supervisor。
+- 仍保留安全边界：如果用户没有明确环境，且只有 CMDB 推测值，系统仍可要求确认。
+- 前端工具进度提示可以正常出现 `tool.started / tool.completed`。
+
+### 验证
+
+- API 实测同款输入返回 `status=completed`，`pending_interrupt=null`，`environment=prod`。
+- 事件流包含 `tool.started` 和 `tool.completed`，例如 `check_pod_status / inspect_pod_events / inspect_pod_logs`。
+- Targeted：`uv run python -m unittest tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_diagnostic_message_with_environment_text_enters_tool_diagnosis tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_missing_environment_triggers_clarification_before_diagnosis -q`，2 tests OK。
+
+### 下一步
+
+- 可以继续把澄清提示的 generic guidance 和 direct-answer 文案解耦，避免真正需要澄清时出现“知识咨询”这种误导性表达。
+
+
+## 2026-04-25 首轮诊断事件流前端可见性修复
+
+### 问题
+
+- 后端已经写入 `tool.started / tool.completed` system events，但前端截图里仍然只看到最终诊断结论，看不到“正在调用 xxx 工具”。
+
+### 原因
+
+- 首轮新会话时，前端只有请求返回后才拿到 `session_id`；请求执行期间 `pollAgentActivity()` 没有 session id，只能显示泛化等待状态，无法拉取事件。
+- 工具调用在本地 mock/轻量工具下执行很快，完成后 `agentActivityPanel` 又会自动隐藏，所以用户最终只看到最后答案。
+
+### 改动
+
+- 首轮新会话在发送前先用 `ticket_id` 预绑定 `currentSessionId/currentTicketId`，因为后端创建会话时也使用该 `ticket_id` 作为 session id。
+- 前端轮询时不再只看最新事件，而是把 `knowledge.retrieved / context.collected / tool.started / tool.completed / tool.cached / tool.failed / conversation.closed` 增量渲染到 `agentActivityLog`。
+- 诊断完成后不再自动隐藏活动状态，保留过程日志，直到用户点击“新会话”或清空当前会话。
+
+### 影响
+
+- 首轮诊断也能看到工具调用过程。
+- 即使工具执行很快，完成后页面仍会保留“正在调用/已完成 xxx”的诊断过程记录。
+- 工具参数和原始 payload 仍不展示在聊天页，只展示工具名级别的高层过程。
+
+### 验证
+
+- Targeted：`node --check src/it_ticket_agent/static/app.js`，通过。
+- Targeted：`uv run python -m unittest tests/test_frontend_smoke.py -q`，6 tests OK。
+
+### 下一步
+
+- 如果后续需要真正逐 token 输出模型回答，可以在现有事件轮询基础上升级为 SSE/WebSocket。
+
+## 2026-04-25 最终回答用户态诊断报告优化
+
+### 问题
+
+- 最终回复直接展示 `当前证据已经足够...ready 1/2...` 这类内部摘要，不像面向用户的根因判断。
+- 聊天页会把 message 和 diagnosis.conclusion 再拼一遍，导致内容重复且偏调试。
+- 没有解释为什么没有弹出执行审批，也没有明确展示关键证据、排除项和建议动作边界。
+
+### 原因
+
+- ReAct supervisor 的早停/最终出口直接使用模型 final_answer 或 `_build_early_stop_answer(...)` 的事实拼接结果。
+- 前端 `buildAssistantBody(...)` 默认把 `message + formatDiagnosis(diagnosis)` 拼接展示，没有区分用户态报告和调试态诊断结构。
+- 当前动作执行审批只会在生成已注册高风险 action proposal 时触发；纯只读诊断没有 action，自然不会弹审批，但之前没有把这个边界告诉用户。
+
+### 改动
+
+- 在 `ReactSupervisor` 出口新增用户态诊断报告生成：
+  - 初步根因判断
+  - 关键证据
+  - 已初步排除/弱化项
+  - 建议下一步
+  - 为什么没有弹出执行审批
+  - 置信度和停止原因
+- `diagnosis` 增加 `display_mode=user_report / user_report / approval_explanation / recommended_actions / raw_evidence`。
+- 前端检测 `diagnosis.display_mode === 'user_report'` 时只展示报告正文，不再重复追加内部调试字段。
+- 对只读诊断工具场景明确说明：没有生成已注册高风险执行动作，所以不会弹审批；回滚、扩容、重启需要人工确认或接入 action tool 后再进入审批。
+
+### 影响
+
+- 聊天页最终输出更像值班人能读懂的诊断报告，而不是内部 tracing 摘要。
+- 用户能看到根因判断、证据、排除项和下一步建议。
+- 用户能理解“为什么没审批”：不是审批坏了，而是本轮没有可执行动作。
+
+### 验证
+
+- API 实测同款输入返回 `display_mode=user_report`，正文包含“初步根因判断 / 关键证据 / 建议下一步 / 为什么没有弹出执行审批”。
+- Targeted：`uv run python -m unittest tests.test_runtime_smoke.ConversationRuntimeSmokeTest.test_diagnostic_message_with_environment_text_enters_tool_diagnosis tests/test_frontend_smoke.py -q`，7 tests OK。
+
+### 下一步
+
+- 可以把建议动作进一步结构化成 `read_only_next_steps / manual_action_candidates / executable_action_candidates`，方便后续接入真正的 action tool 和审批链。
+
+## 2026-04-25 用户态报告根因保真与证据增强
+
+### Problem
+- 用户态报告不能只靠固定规则生成，否则会覆盖 fake/real LLM 已经给出的高质量根因句。
+- 网络、上游依赖、数据库连接池等工具证据如果只展示 `connectivity=blocked / pool=saturated`，仍偏内部字段。
+
+### Cause
+- `_build_final_response(...)` 解析出 `final_answer` 后，报告生成阶段重新推断 root cause，导致 `diagnosis.conclusion` 丢失模型结论。
+- 用户证据抽取最初主要覆盖 Pod / 事件 / 日志 / 变更，对 network/db payload 的用户态翻译不足。
+
+### Change
+- `_build_user_diagnosis_report(...)` 新增 `model_root_cause` 参数：保留高质量模型根因句，但过滤“当前证据已经足够”“已完成诊断”等过程化句子。
+- `_infer_user_root_cause(...)` 补充网络链路、上游依赖、数据库连接池、慢查询的根因推断。
+- `_user_facing_evidence(...)` 补充 `inspect_vpc_connectivity / inspect_upstream_dependency / inspect_connection_pool / inspect_slow_queries` 的用户可读证据。
+
+### Impact
+- 最终回答继续保持用户态报告结构，同时不会把模型已经判断出的“网络链路或上游依赖退化”等结论覆盖成泛化服务异常。
+- 评测里的 `conclusion_contains` 可以稳定命中，前端用户也能看到更像诊断报告的证据句。
+
+### Next Direction
+- 后续可以把用户态报告生成从规则函数演进为 schema 化 LLM summary，但仍保留工具证据白名单和审批边界校验。
+
+## 2026-04-25 前端产品化表单与报告卡片优化
+
+### Problem
+- 会话页仍像工程调试控制台：用户需要在侧栏填写服务/集群，再到底部输入问题，信息路径分散。
+- 最终诊断虽然已经是用户态文本，但仍以 `pre` 长文本气泡展示，关键证据、建议动作和审批说明不够醒目。
+
+### Cause
+- 早期前端优先暴露后端能力，输入和输出都按“工程字段 + 文本日志”组织，没有按值班人发起工单和阅读诊断的任务流设计。
+- 前端 `addMessage(...)` 只有纯文本渲染能力，无法针对 `diagnosis.display_mode=user_report` 做结构化展示。
+
+### Change
+- 会话页新增表单化工单入口：用户、服务、环境、集群、命名空间、问题描述和快速示例集中在主区域。
+- 新增 `environmentName` 前端字段，首轮创建会话时随 `ConversationCreateRequest` 一起提交。
+- 新增 `buildDiagnosisReportCard(...) / addAssistantMessage(...)`，把用户态诊断渲染成卡片：根因、置信度、工具调用、关键证据、排除项、建议动作、审批说明。
+- 新增 `addTicketMessage(...)`，用户首轮请求也按工单摘要卡展示，避免只看到一行长文本。
+
+### Impact
+- 用户发起诊断时先填表，再提交，路径更接近真实工单产品。
+- 用户阅读结果时能快速定位根因、证据和下一步，不需要在长文本里找重点。
+- 前端仍不展示工具参数、原始 payload 和内部推理，调试细节保留在诊断工作台。
+
+### Next Direction
+- 可以继续做“诊断结果确认区”：把接受建议、拒绝并重查、转人工、创建 action 审批做成更明确的底部操作栏。
+
+## 2026-04-25 诊断报告已查证据与待补动作边界修复
+
+### Problem
+- 用户问“为什么不能直接调用工具查看 Pod 日志和最近变更”，实际 system events 显示 `inspect_pod_logs / get_change_records` 已经执行。
+- 最终报告仍建议“先查看失败 Pod 日志、最近变更”，导致用户以为 Agent 没有调用工具。
+- `ready 2/2` 被渲染成“存在副本不可用”，正常证据被误读为异常。
+
+### Cause
+- 用户态报告的建议动作是固定 Pod/CrashLoopBackOff 模板，没有根据已执行工具集合区分“已检查”和“待补充”。
+- 证据转换逻辑没有判断 `ready_replicas >= desired_replicas`，也没有过滤 `dependency=healthy / connectivity=healthy` 这类原始健康字段。
+- 应用日志出现 `application_error` 时，根因推断没有优先使用日志异常，只给出泛化“证据不足”。
+
+### Change
+- 用户态证据中区分 `Pod 副本数正常` 和 `副本不可用`，并过滤低价值健康原始字段。
+- 建议动作改为基于已执行工具生成：如果日志、事件、Pod 状态、变更已经查过，就明确写“已检查/已查询到”，不再建议重复查看。
+- 日志出现应用错误时，根因判断升级为“应用运行时错误 + 变更相关性”，建议下一步核对异常堆栈、变更 diff 和受影响接口。
+- 增加回归测试，防止 `ready 2/2` 被误报为不可用，防止已查 Pod 日志后仍建议“先查看失败 Pod”。
+
+### Impact
+- 报告会明确告诉用户哪些工具已经查过、哪些证据还缺，不再把已完成的诊断动作当作下一步建议。
+- 对“查最近变更 + 运行时异常”这类问题，真实接口现在会输出：已查询变更、已发现日志 `application_error`、上游/VPC healthy，因此优先核对变更 diff 和异常堆栈。
+
+### Next Direction
+- 下一步可继续把“已查证据 / 待补证据 / 可执行动作”拆成独立 schema 字段，让前端报告卡片更精准地展示诊断闭环。
+
+## 2026-04-25 Mock 世界前端沙盒
+
+### Problem
+- 现有前端只能填写单个问题和少量字段，不方便用户自由选择一个稳定的模拟世界进行多轮对话。
+- `data/mock_case_profiles.json` 已经有 case/world 级工具返回，但前端没有入口，用户无法直观看到“当前在什么世界里问 Agent”。
+- Mock 演示场景下，诊断报告卡片过于正式，用户更希望像普通聊天一样连续追问。
+
+### Cause
+- Mock profile 原本主要服务 eval runner，通过 `tool_profile` 转成 `mock_tool_responses`，没有产品化暴露给控制台。
+- 前端只知道发起真实/默认请求，不知道如何携带整组工具 mock。
+
+### Change
+- 新增 `GET /api/v1/mock-worlds`，将 `mock_case_profiles.json` 转成可选世界：`world_id / case_id / service / description / tool_names / mock_tool_responses`。
+- 会话表单新增“Mock 世界”选择器和世界摘要，选择后自动填充 service，并在首轮请求中携带该世界的 `mock_tool_responses`。
+- 多轮续聊复用 session `shared_context.mock_tool_responses`，不用每轮前端重复发送。
+- Mock 世界模式下，Agent 回复走普通聊天气泡，不渲染诊断报告卡片；恢复历史会话时会自动识别自定义 Mock 世界。
+
+### Impact
+- 用户可以自由选择 `case1 / case2` 等模拟世界，并在同一个世界里多轮追问 Agent。
+- 演示、调试和面试讲解更直观：世界负责稳定工具返回，Agent 仍真实执行工具选择和诊断。
+
+### Next Direction
+- 可以继续给每个世界补充可读名称、故障类型、推荐开场问题和工具返回预览，而不是只显示 `case_id / service`。
+
+## 2026-04-26 工作台表单化与 Mock 世界记忆闭环
+
+**问题**
+- 诊断工作台里 session memory、context snapshot、Playbook steps、case detail、bad case detail 仍大量直接展示 JSON，值班人需要读字段结构才能理解状态。
+- Mock 世界可以多轮对话，但从演示视角还缺少明确的“对话完成 -> 历史案例审核 -> Playbook 候选抽取 -> Playbook 审核启用”闭环入口。
+
+**原因**
+- 前端早期优先验证 API 可见性，直接复用 `appendJsonBlock` 展示复杂对象，没有把运行态数据转成面向值班人的摘要表单。
+- `POST /api/v1/cases/{case_id}/review` 只更新 case 审核状态，Playbook 抽取主要发生在反馈链路里，工作台手动审核 case 时没有显式串起候选生成。
+
+**改动**
+- 前端新增 `appendFormSection / appendCardList / appendRawJsonDetails`，把工作台详情改成表单区块、列表和步骤卡；原始 JSON 只作为可展开调试信息保留。
+- 案例审核新增“抽取 Playbook 候选”按钮，调用 `POST /api/v1/cases/{case_id}/extract-playbook`。
+- 后端新增 `PlaybookExtractionResponse`，并把 `review_case` 改为返回 `incident_case + playbook_extraction + playbook_candidate`。
+- `SupervisorOrchestrator` 增加公开的 case review / playbook extraction 方法：默认仍按同类 verified case 聚合，Mock 演示可显式允许单案例生成 `pending_review` candidate，但不会自动上线。
+- 反馈确认链路会把生成的 `playbook_candidate` 放回 response diagnosis，方便前端或回放查看。
+
+**影响**
+- 工作台默认可读性更接近产品表单，不需要先理解后端 JSON 结构。
+- Mock 世界对话完成后，可以在同一套工作台里跑通案例入库和 Playbook 候选生成，再通过 Playbook 审核进入在线召回。
+- 记忆发布安全边界不变：case 必须人工确认，Playbook candidate 也必须人工审核为 `verified + human_verified` 才能在线召回。
+
+**下一步**
+- 给 Mock 世界增加推荐起始问题和预期根因，方便一键跑演示。
+- 在 case / playbook 列表增加来源标记，如 `mock_world_id`、`source_session`，让演示样本和真实生产样本更容易区分。

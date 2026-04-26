@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from uuid import uuid4
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from ..execution.tool_middleware import ToolExecutionMiddleware
 from ..graph.nodes import OrchestratorGraphNodes
@@ -116,6 +116,7 @@ class ReactSupervisor:
         max_parallel_branches: int = 4,
         summary_after_n_steps: int = 3,
         max_context_tokens: int = 6000,
+        activity_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.legacy_nodes = legacy_nodes
         self.settings = settings
@@ -130,6 +131,7 @@ class ReactSupervisor:
         self.tools = self.tool_runtime.tools
         self.tool_middleware = ToolExecutionMiddleware(self.tools)
         self.ranker = Ranker()
+        self.activity_callback = activity_callback
 
     async def run_loop(self, state: ReactTicketGraphState) -> Dict[str, Any]:
         next_state: dict[str, Any] = dict(state)
@@ -146,6 +148,7 @@ class ReactSupervisor:
         incident_state = next_state["incident_state"]
         context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
         request = next_state["request"]
+        activity_context = self._activity_context_from_state(next_state, request)
         observations: list[dict[str, Any]] = list(next_state.get("observation_ledger") or [])
         tool_calls_used = int(next_state.get("tool_calls_used") or 0)
         tool_cache: dict[str, Any] = dict(next_state.get("tool_cache") or {})
@@ -214,6 +217,7 @@ class ReactSupervisor:
                                     context_snapshot=next_state.get("context_snapshot") or incident_state.context_snapshot,
                                     incident_state=incident_state,
                                 ),
+                                activity_context=activity_context,
                             )
                             for tool_name in probe_tool_names
                         ]
@@ -320,6 +324,7 @@ class ReactSupervisor:
                             context_snapshot=next_state.get("context_snapshot") or incident_state.context_snapshot,
                             incident_state=incident_state,
                         ),
+                        activity_context=activity_context,
                     )
                     for call in valid_calls
                 ]
@@ -357,32 +362,38 @@ class ReactSupervisor:
         context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
         next_state["stop_reason"] = next_state.get("stop_reason") or "iteration_guardrail_reached"
         incident_state.status = "completed"
-        incident_state.final_summary = "react supervisor stopped by iteration or tool budget guardrail"
-        if evidence_evaluation.get("enough_for_output"):
-            incident_state.final_message = (
-                "已达到当前轮次或工具预算上限，但当前证据已相对充分，可先基于以下事实做判断：\n\n"
-                + (working_memory_summary or "；".join(self._flatten_evidence(observations)[:4]))
-            )
-        else:
-            incident_state.final_message = "已达到当前轮次或工具预算上限，请根据已收集证据决定是否继续。"
+        incident_state.final_summary = "已达到当前轮次或工具预算上限。"
         react_runtime = self._build_react_runtime(next_state=next_state, observations=observations)
+        confidence = float(next_state.get("confidence") or 0.0)
+        user_report = self._build_user_diagnosis_report(
+            request=request,
+            observations=observations,
+            confidence=confidence,
+            stop_reason=str(next_state.get("stop_reason") or ""),
+        )
+        incident_state.final_message = user_report["message"]
         incident_state.metadata["react_runtime"] = react_runtime
         next_state["response"] = {
             "ticket_id": request.ticket_id,
             "status": "completed",
             "message": incident_state.final_message,
             "diagnosis": {
+                "display_mode": "user_report",
                 "summary": incident_state.final_summary,
-                "conclusion": incident_state.final_message,
+                "conclusion": user_report["root_cause"],
+                "user_report": user_report,
+                "recommended_actions": user_report["recommended_actions"],
+                "approval_explanation": user_report["approval_explanation"],
                 "route": "react_tool_first",
                 "sources": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
                 "context_snapshot": context_snapshot.model_dump() if context_snapshot is not None else None,
                 "observations": observations,
-                "evidence": self._flatten_evidence(observations),
+                "evidence": user_report["evidence"],
+                "raw_evidence": self._flatten_evidence(observations),
                 "working_memory_summary": working_memory_summary,
                 "pinned_findings": pinned_findings,
                 "tool_calls_used": tool_calls_used,
-                "confidence": next_state.get("confidence", 0.0),
+                "confidence": confidence,
                 "stop_reason": next_state.get("stop_reason"),
                 "evidence_evaluation": react_runtime["evidence_evaluation"],
                 "react_runtime": react_runtime,
@@ -546,33 +557,42 @@ class ReactSupervisor:
         confidence = parsed_answer["confidence"]
         evidence_evaluation = self._evaluate_evidence(observations)
         incident_state.status = "completed"
-        incident_state.final_summary = "react supervisor completed tool-first reasoning loop"
-        incident_state.final_message = final_message
+        incident_state.final_summary = "已完成工具优先诊断。"
         next_state["confidence"] = confidence
         if confidence >= self.confidence_threshold:
             next_state["stop_reason"] = "model_answered"
         elif evidence_evaluation.get("enough_for_output"):
             next_state["stop_reason"] = "evidence_sufficient_low_model_confidence"
-            final_message = f"模型置信度仅为 {confidence:.2f}，但当前证据已相对充分，先给出阶段性结论。\n\n{final_message}"
-            incident_state.final_message = final_message
         else:
             next_state["stop_reason"] = "low_confidence"
-            final_message = f"当前结论置信度仅为 {confidence:.2f}，建议继续补充线索或人工确认。\n\n{final_message}"
-            incident_state.final_message = final_message
         react_runtime = self._build_react_runtime(next_state=next_state, observations=observations)
+        user_report = self._build_user_diagnosis_report(
+            request=request,
+            observations=observations,
+            confidence=confidence,
+            stop_reason=str(next_state.get("stop_reason") or ""),
+            model_root_cause=final_message,
+        )
+        final_message = user_report["message"]
+        incident_state.final_message = final_message
         incident_state.metadata["react_runtime"] = react_runtime
         next_state["response"] = {
             "ticket_id": request.ticket_id,
             "status": "completed",
             "message": final_message,
             "diagnosis": {
+                "display_mode": "user_report",
                 "summary": incident_state.final_summary,
-                "conclusion": final_message,
+                "conclusion": user_report["root_cause"],
+                "user_report": user_report,
+                "recommended_actions": user_report["recommended_actions"],
+                "approval_explanation": user_report["approval_explanation"],
                 "route": "react_tool_first",
                 "sources": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
                 "context_snapshot": context_snapshot.model_dump() if context_snapshot is not None else None,
                 "observations": observations,
-                "evidence": self._flatten_evidence(observations),
+                "evidence": user_report["evidence"],
+                "raw_evidence": self._flatten_evidence(observations),
                 "working_memory_summary": react_runtime["working_memory_summary"],
                 "pinned_findings": react_runtime["pinned_findings"],
                 "tool_calls_used": react_runtime["tool_calls_used"],
@@ -659,6 +679,308 @@ class ReactSupervisor:
                 if len(evidence) >= 8:
                     return evidence
         return evidence
+
+    def _build_user_diagnosis_report(
+        self,
+        *,
+        request,
+        observations: list[dict[str, Any]],
+        confidence: float,
+        stop_reason: str | None,
+        model_root_cause: str | None = None,
+    ) -> dict[str, Any]:
+        evidence = self._user_facing_evidence(observations)
+        inferred_root_cause = self._infer_user_root_cause(request=request, observations=observations)
+        model_root_cause_text = str(model_root_cause or "").strip()
+        root_cause = (
+            model_root_cause_text
+            if model_root_cause_text and not self._is_low_value_model_root_cause(model_root_cause_text)
+            else inferred_root_cause
+        )
+        ruled_out = self._infer_ruled_out_findings(observations)
+        recommended_actions = self._build_user_recommended_actions(request=request, observations=observations)
+        approval_explanation = self._build_approval_explanation(observations)
+        confidence_text = f"{confidence:.2f}" if isinstance(confidence, (float, int)) else "-"
+        lines = [f"初步根因判断：{root_cause}", "", "关键证据："]
+        if evidence:
+            lines.extend([f"- {item}" for item in evidence[:6]])
+        else:
+            lines.append("- 当前还没有收集到足够强的异常证据。")
+        if ruled_out:
+            lines.extend(["", "已初步排除/弱化："])
+            lines.extend([f"- {item}" for item in ruled_out[:4]])
+        lines.extend(["", "建议下一步："])
+        lines.extend([f"- {item}" for item in recommended_actions[:5]])
+        lines.extend([
+            "",
+            f"为什么没有弹出执行审批：{approval_explanation}",
+            f"置信度：{confidence_text}",
+        ])
+        if stop_reason:
+            lines.append(f"停止原因：{stop_reason}")
+        return {
+            "message": "\n".join(lines).strip(),
+            "root_cause": root_cause,
+            "evidence": evidence,
+            "ruled_out": ruled_out,
+            "recommended_actions": recommended_actions,
+            "approval_explanation": approval_explanation,
+            "confidence": float(confidence or 0.0),
+            "stop_reason": stop_reason or "",
+        }
+
+    def _user_facing_evidence(self, observations: list[dict[str, Any]]) -> list[str]:
+        evidence: list[str] = []
+        for item in observations:
+            tool_name = str(item.get("tool_name") or "")
+            result = dict(item.get("result") or {})
+            payload = dict(result.get("payload") or {})
+            if tool_name == "check_pod_status":
+                ready = payload.get("ready_replicas")
+                desired = payload.get("desired_replicas")
+                if ready is not None and desired is not None:
+                    try:
+                        ready_count = int(ready)
+                        desired_count = int(desired)
+                    except (TypeError, ValueError):
+                        ready_count = desired_count = -1
+                    if desired_count >= 0 and ready_count >= desired_count:
+                        evidence.append(f"Pod 就绪副本 {ready}/{desired}，副本数正常。")
+                    else:
+                        evidence.append(f"Pod 就绪副本 {ready}/{desired}，存在副本不可用。")
+                for pod in list(payload.get("pods") or [])[:3]:
+                    status = str(pod.get("status") or "")
+                    restarts = pod.get("restarts")
+                    if status and status.lower() != "running":
+                        evidence.append(f"{pod.get('name') or 'pod'} 当前状态为 {status}，restarts={restarts}。")
+                    elif restarts and int(restarts or 0) > 0:
+                        evidence.append(f"{pod.get('name') or 'pod'} 发生过重启，restarts={restarts}。")
+            elif tool_name == "inspect_pod_events":
+                reason = str(payload.get("last_termination_reason") or "")
+                event_count = payload.get("event_count")
+                if reason and reason.lower() not in {"none", "healthy", "running"}:
+                    evidence.append(f"Pod 事件显示最近终止/重启原因：{reason}。")
+                elif reason.lower() in {"none", "healthy", "running"}:
+                    evidence.append("Pod 事件未显示异常终止原因。")
+                if event_count is not None:
+                    evidence.append(f"Pod 事件数：{event_count}。")
+            elif tool_name == "inspect_pod_logs":
+                if payload.get("oom_detected"):
+                    evidence.append("Pod 日志中检测到 OOM/内存不足信号。")
+                error_pattern = str(payload.get("error_pattern") or "")
+                if error_pattern and error_pattern.lower() not in {"none", "healthy"}:
+                    evidence.append(f"Pod 日志错误模式：{error_pattern}。")
+                elif not payload.get("oom_detected"):
+                    evidence.append("Pod 日志未发现明显 OOM 或应用异常模式。")
+            elif tool_name == "get_change_records":
+                changes = list(payload.get("changes") or [])
+                change_ids = ", ".join(str(change.get("change_id") or "") for change in changes[:3] if change.get("change_id"))
+                if change_ids:
+                    evidence.append(f"故障窗口附近存在变更记录：{change_ids}。")
+            elif tool_name == "inspect_vpc_connectivity":
+                connectivity_status = str(payload.get("connectivity_status") or "")
+                if connectivity_status and connectivity_status.lower() != "healthy":
+                    evidence.append(f"VPC 连通性检查结果为 {connectivity_status}。")
+            elif tool_name == "inspect_upstream_dependency":
+                dependency_status = str(payload.get("dependency_status") or "")
+                timeout_ratio = payload.get("timeout_ratio")
+                if dependency_status and dependency_status.lower() != "healthy":
+                    suffix = f"，timeout_ratio={timeout_ratio}" if timeout_ratio is not None else ""
+                    evidence.append(f"上游依赖状态为 {dependency_status}{suffix}。")
+            elif tool_name == "inspect_connection_pool":
+                pool_state = str(payload.get("pool_state") or "")
+                active = payload.get("active_connections")
+                maximum = payload.get("max_connections")
+                if pool_state and pool_state.lower() != "healthy":
+                    suffix = f"，连接数 {active}/{maximum}" if active is not None and maximum is not None else ""
+                    evidence.append(f"数据库连接池状态为 {pool_state}{suffix}。")
+            elif tool_name == "inspect_slow_queries":
+                slow_query_count = payload.get("slow_query_count")
+                max_latency_ms = payload.get("max_latency_ms")
+                if slow_query_count is not None:
+                    suffix = f"，最大延迟 {max_latency_ms}ms" if max_latency_ms is not None else ""
+                    evidence.append(f"慢查询数量为 {slow_query_count}{suffix}。")
+            elif tool_name == "check_recent_deployments":
+                for signal in list(payload.get("signals") or [])[:2]:
+                    evidence.append(str(signal))
+            for entry in list(result.get("evidence") or []):
+                text = str(entry).strip()
+                if text and text not in evidence and not self._is_low_value_evidence(text):
+                    evidence.append(text)
+            if len(evidence) >= 8:
+                break
+        deduped: list[str] = []
+        for item in evidence:
+            if item and item not in deduped:
+                deduped.append(item)
+        return deduped[:8]
+
+    @staticmethod
+    def _is_low_value_evidence(text: str) -> bool:
+        lowered = text.lower()
+        low_value_tokens = (
+            "request completed",
+            "latency within baseline",
+            "dependency=healthy",
+            "timeout_ratio=0.0",
+            "connectivity=healthy",
+            "pool=healthy",
+        )
+        if any(token in lowered for token in low_value_tokens):
+            return True
+        return lowered.startswith(("ready ", "last_termination_reason=", "event_count="))
+
+    @staticmethod
+    def _is_low_value_model_root_cause(text: str) -> bool:
+        lowered = text.lower().strip()
+        if lowered in {"", "none", "unknown", "n/a"}:
+            return True
+        low_value_tokens = (
+            "当前证据已经足够",
+            "基于以下事实给出诊断结论",
+            "已完成诊断",
+            "模型未返回明确结论",
+        )
+        return any(token in text for token in low_value_tokens)
+
+    def _infer_user_root_cause(self, *, request, observations: list[dict[str, Any]]) -> str:
+        payloads = {str(item.get("tool_name") or ""): dict(dict(item.get("result") or {}).get("payload") or {}) for item in observations}
+        pod_events = payloads.get("inspect_pod_events") or {}
+        pod_logs = payloads.get("inspect_pod_logs") or {}
+        pod_status = payloads.get("check_pod_status") or {}
+        vpc = payloads.get("inspect_vpc_connectivity") or {}
+        upstream = payloads.get("inspect_upstream_dependency") or {}
+        pool = payloads.get("inspect_connection_pool") or {}
+        slow_queries = payloads.get("inspect_slow_queries") or {}
+        changes = list((payloads.get("get_change_records") or {}).get("changes") or [])
+        reason = str(pod_events.get("last_termination_reason") or "")
+        has_unready = any(str(pod.get("status") or "").lower() not in {"", "running"} for pod in list(pod_status.get("pods") or []))
+        has_restarts = any(int(pod.get("restarts") or 0) > 0 for pod in list(pod_status.get("pods") or []))
+        message = str(getattr(request, "message", "") or "")
+        has_recent_change = bool(changes) or "发布" in message or "变更" in message
+        connectivity_status = str(vpc.get("connectivity_status") or "").lower()
+        dependency_status = str(upstream.get("dependency_status") or "").lower()
+        pool_state = str(pool.get("pool_state") or "").lower()
+        slow_query_count = int(slow_queries.get("slow_query_count") or 0)
+        if connectivity_status in {"blocked", "degraded", "unstable"} or dependency_status in {"degraded", "timeout", "unhealthy"}:
+            return "高概率是网络链路或上游依赖退化导致请求超时，需要优先核对 VPC 连通性、依赖状态和超时比例。"
+        if pool_state in {"saturated", "degraded", "exhausted"}:
+            return "高概率是数据库连接池饱和导致请求排队或超时，需要优先核对连接数、慢查询和连接释放情况。"
+        if slow_query_count > 0:
+            return "高概率是数据库慢查询或实例退化拖慢请求链路，需要结合慢查询和连接池状态继续确认。"
+        error_pattern = str(pod_logs.get("error_pattern") or "").lower()
+        if error_pattern and error_pattern not in {"none", "healthy"}:
+            suffix = "；故障窗口附近存在变更，需要优先核对本次发布/配置是否引入该错误。" if has_recent_change else "。"
+            return f"高概率是应用运行时错误导致请求失败或超时，日志错误模式为 {error_pattern}{suffix}"
+        if reason.lower() == "oomkilled" or bool(pod_logs.get("oom_detected")):
+            suffix = "；且故障窗口附近存在变更，需重点核对本次发布/配置是否改变了内存占用或资源限制。" if has_recent_change else "。"
+            return f"高概率是 Pod 内存不足/OOMKilled 导致容器反复重启{suffix}"
+        if reason and reason.lower() not in {"", "none", "running"}:
+            suffix = "；近期变更与故障现象存在时间相关性，需要优先核对发布和配置差异。" if has_recent_change else "。"
+            return f"高概率是部分 Pod 容器异常退出导致服务副本不可用，当前事件原因为 {reason}{suffix}"
+        if has_unready or has_restarts:
+            suffix = "；近期发布/配置变更是当前最可疑的触发因素。" if has_recent_change else "。"
+            return f"高概率是 Pod 健康状态异常或重启导致可用副本不足{suffix}"
+        if has_recent_change:
+            return "当前已发现故障窗口附近存在变更，但 Pod、日志、事件或依赖检查尚未形成异常闭环；需要继续核对变更 diff、指标拐点和错误样本后再确认是否为发布回归。"
+        return "当前证据还不足以确认单一根因；已完成的只读检查未形成强异常信号，需要补充更具体的错误样本、指标和变更内容。"
+
+    @staticmethod
+    def _infer_ruled_out_findings(observations: list[dict[str, Any]]) -> list[str]:
+        ruled_out: list[str] = []
+        for item in observations:
+            tool_name = str(item.get("tool_name") or "")
+            payload = dict(dict(item.get("result") or {}).get("payload") or {})
+            if tool_name == "inspect_upstream_dependency" and str(payload.get("dependency_status") or "").lower() == "healthy":
+                ruled_out.append("上游依赖当前为 healthy，暂不优先作为主因。")
+            if tool_name == "inspect_vpc_connectivity" and str(payload.get("connectivity_status") or "").lower() == "healthy":
+                ruled_out.append("VPC 连通性当前为 healthy，网络链路故障优先级降低。")
+            if tool_name == "check_pipeline_status" and str(payload.get("pipeline_status") or "").lower() == "healthy":
+                ruled_out.append("流水线状态为 healthy，单纯流水线失败不是当前主因。")
+        return list(dict.fromkeys(ruled_out))
+
+    def _build_user_recommended_actions(self, *, request, observations: list[dict[str, Any]]) -> list[str]:
+        payloads = {str(item.get("tool_name") or ""): dict(dict(item.get("result") or {}).get("payload") or {}) for item in observations}
+        observed_tools = set(payloads.keys())
+        pod_status = payloads.get("check_pod_status") or {}
+        pod_events = payloads.get("inspect_pod_events") or {}
+        pod_logs = payloads.get("inspect_pod_logs") or {}
+        vpc = payloads.get("inspect_vpc_connectivity") or {}
+        upstream = payloads.get("inspect_upstream_dependency") or {}
+        pool = payloads.get("inspect_connection_pool") or {}
+        changes = list((payloads.get("get_change_records") or {}).get("changes") or [])
+        reason = str(pod_events.get("last_termination_reason") or "")
+        error_pattern = str(pod_logs.get("error_pattern") or "")
+        message = str(getattr(request, "message", "") or "").lower()
+        mentions_db = any(token in message for token in ("数据库", "db", "连接池", "慢查询"))
+        mentions_latency = any(token in message for token in ("超时", "timeout", "延迟", "p95", "502"))
+
+        def ready_is_normal() -> bool:
+            ready = pod_status.get("ready_replicas")
+            desired = pod_status.get("desired_replicas")
+            if ready is None or desired is None:
+                return False
+            try:
+                return int(ready) >= int(desired)
+            except (TypeError, ValueError):
+                return False
+
+        pod_logs_checked = "inspect_pod_logs" in observed_tools
+        pod_events_checked = "inspect_pod_events" in observed_tools
+        pod_status_checked = "check_pod_status" in observed_tools
+        pod_logs_clean = pod_logs_checked and not bool(pod_logs.get("oom_detected")) and error_pattern.lower() in {"", "none", "healthy"}
+        pod_events_clean = pod_events_checked and reason.lower() in {"", "none", "healthy", "running"}
+        pod_status_normal = pod_status_checked and ready_is_normal()
+        upstream_healthy = str(upstream.get("dependency_status") or "").lower() == "healthy"
+        vpc_healthy = str(vpc.get("connectivity_status") or "").lower() == "healthy"
+        pool_state = str(pool.get("pool_state") or "").lower()
+
+        actions: list[str] = []
+        if changes:
+            change_ids = ", ".join(str(change.get("change_id") or "") for change in changes[:3] if change.get("change_id"))
+            actions.append(f"已查询到变更记录 {change_ids}，下一步应打开变更 diff、部署版本和配置项，和故障时间线逐项对齐。")
+        elif "get_change_records" not in observed_tools:
+            actions.append("先查询最近变更记录，再判断发布/配置变更是否和故障时间窗口重合。")
+
+        if reason.lower() == "oomkilled" or bool(pod_logs.get("oom_detected")):
+            actions.append("已发现 OOM/内存不足信号，下一步核对 memory request/limit、JVM heap 参数和本次发布的内存占用变化。")
+        elif error_pattern and error_pattern.lower() not in {"none", "healthy"}:
+            actions.append(f"已在 Pod 日志发现 {error_pattern}，下一步应核对对应异常堆栈、变更 diff 和受影响接口。")
+        elif pod_status_normal and pod_logs_clean and pod_events_clean:
+            actions.append("Pod 状态、日志和事件已检查且未见明显容器异常，当前不应继续把 Pod 重启作为主方向。")
+        elif not (pod_status_checked and pod_logs_checked and pod_events_checked):
+            actions.append("补齐 Pod 状态、上一轮容器日志和事件检查后，再判断是否存在容器退出或探针失败。")
+
+        if pool_state in {"saturated", "degraded", "exhausted"}:
+            actions.append("已发现数据库连接池异常，下一步核对活跃连接数、慢查询和连接释放路径。")
+        elif mentions_db and "inspect_connection_pool" not in observed_tools:
+            actions.append("问题描述提到数据库/连接池，但本轮还没有连接池证据；需要补查连接池和慢查询后才能排除 DB 方向。")
+        elif mentions_latency and "inspect_connection_pool" not in observed_tools and "inspect_slow_queries" not in observed_tools:
+            actions.append("请求延迟/502 场景建议补查数据库连接池和慢查询，避免只凭 Pod 与变更证据下结论。")
+
+        if upstream_healthy and vpc_healthy:
+            actions.append("上游依赖和 VPC 已检查为 healthy，除非出现新的错误样本，否则网络/依赖方向优先级降低。")
+        elif "inspect_upstream_dependency" not in observed_tools and mentions_latency:
+            actions.append("补查上游依赖超时比例和 VPC 连通性，确认 502/超时是否来自依赖或网络链路。")
+
+        actions.append("在确认影响范围和证据闭环前，不建议直接自动重启、扩容或回滚生产服务。")
+        actions.append("如果需要由 Agent 自动执行回滚、扩缩容或重启，需要先注册对应 action tool，并进入人工审批。")
+        return list(dict.fromkeys(action for action in actions if action))
+
+    @staticmethod
+    def _build_approval_explanation(observations: list[dict[str, Any]]) -> str:
+        approval_required_tools = [
+            str(item.get("tool_name") or "")
+            for item in observations
+            if bool(dict(item.get("result") or {}).get("approval_required"))
+        ]
+        if approval_required_tools:
+            return f"工具 {', '.join(approval_required_tools)} 返回需要审批，但本轮尚未形成可执行的审批动作。"
+        return (
+            "本轮只调用了只读诊断工具，并没有生成已注册的高风险执行动作；"
+            "因此不会弹出审批卡片。建议中的回滚、扩容或重启仍需人工确认，"
+            "或先接入对应 action tool 后再由 Agent 发起审批。"
+        )
 
     def _parse_final_answer(self, content: str) -> dict[str, Any]:
         try:
@@ -1238,6 +1560,42 @@ class ReactSupervisor:
             return True
         return False
 
+    def _activity_context_from_state(self, state: dict[str, Any], request) -> dict[str, str]:
+        session_id = str(state.get("session_id") or getattr(request, "ticket_id", "") or "")
+        thread_id = str(state.get("thread_id") or session_id)
+        ticket_id = str(getattr(request, "ticket_id", "") or session_id)
+        return {"session_id": session_id, "thread_id": thread_id, "ticket_id": ticket_id}
+
+    def _emit_tool_activity(
+        self,
+        event_type: str,
+        *,
+        activity_context: dict[str, Any] | None,
+        tool_name: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if self.activity_callback is None:
+            return
+        context = dict(activity_context or {})
+        session_id = str(context.get("session_id") or "")
+        thread_id = str(context.get("thread_id") or session_id)
+        ticket_id = str(context.get("ticket_id") or session_id)
+        if not session_id:
+            return
+        try:
+            self.activity_callback(
+                {
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                    "ticket_id": ticket_id,
+                    "event_type": event_type,
+                    "payload": {"tool_name": tool_name, **dict(payload or {})},
+                    "metadata": {"source": "react_supervisor"},
+                }
+            )
+        except Exception as exc:  # pragma: no cover - activity events must not break diagnosis
+            logger.warning("failed to emit tool activity event: %s", exc)
+
     async def _run_tool_call(
         self,
         *,
@@ -1245,6 +1603,7 @@ class ReactSupervisor:
         call: dict[str, Any],
         tool_cache: dict[str, Any],
         extra_shared_context: dict[str, Any] | None = None,
+        activity_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         function = call.get("function") or {}
         tool_name = str(function.get("name") or "")
@@ -1256,6 +1615,7 @@ class ReactSupervisor:
         cache_key = json.dumps({"tool_name": tool_name, "arguments": arguments}, ensure_ascii=False, sort_keys=True)
         if cache_key in tool_cache:
             payload = dict(tool_cache[cache_key])
+            self._emit_tool_activity("tool.cached", activity_context=activity_context, tool_name=tool_name)
             return {
                 "observation": {"tool_name": tool_name, "arguments": arguments, "result": payload, "cached": True},
                 "tool_message": {
@@ -1282,8 +1642,24 @@ class ReactSupervisor:
             },
             allowed_actions=["run_tool"],
         )
-        result = await self.tool_middleware.run(tool_name, task=task, arguments=arguments)
+        self._emit_tool_activity("tool.started", activity_context=activity_context, tool_name=tool_name)
+        try:
+            result = await self.tool_middleware.run(tool_name, task=task, arguments=arguments)
+        except Exception as exc:
+            self._emit_tool_activity(
+                "tool.failed",
+                activity_context=activity_context,
+                tool_name=tool_name,
+                payload={"error_type": exc.__class__.__name__},
+            )
+            raise
         payload = result.model_dump()
+        self._emit_tool_activity(
+            "tool.completed",
+            activity_context=activity_context,
+            tool_name=tool_name,
+            payload={"status": payload.get("status"), "latency_ms": payload.get("latency_ms")},
+        )
         tool_cache[cache_key] = payload
         return {
             "observation": {"tool_name": tool_name, "arguments": arguments, "result": payload},
@@ -1298,6 +1674,7 @@ class ReactSupervisor:
     async def _run_rule_based_loop(self, next_state: dict[str, Any]) -> Dict[str, Any]:
         incident_state = next_state["incident_state"]
         request = next_state["request"]
+        activity_context = self._activity_context_from_state(next_state, request)
         context_snapshot = next_state.get("context_snapshot") or incident_state.context_snapshot
         hypotheses = self._build_rule_based_hypotheses(request=request, context_snapshot=context_snapshot)
         observations: list[dict[str, Any]] = []
@@ -1317,6 +1694,7 @@ class ReactSupervisor:
                         context_snapshot=context_snapshot,
                         incident_state=incident_state,
                     ),
+                    activity_context=activity_context,
                 )
                 observation = result["observation"]
                 observations.append(observation)
@@ -1382,6 +1760,14 @@ class ReactSupervisor:
                 return next_state
 
         incident_state.status = "completed"
+        confidence = float(next_state.get("confidence") or 0.0)
+        user_report = self._build_user_diagnosis_report(
+            request=request,
+            observations=observations,
+            confidence=confidence,
+            stop_reason="rule_based_no_llm",
+        )
+        incident_state.final_message = user_report["message"]
         next_state["response"] = {
             "ticket_id": request.ticket_id,
             "status": "completed",
@@ -1393,15 +1779,20 @@ class ReactSupervisor:
                     transition_notes=list(next_state.get("transition_notes") or []),
                     ranked_result=ranked_result,
                 ),
-                "conclusion": incident_state.final_message or "",
+                "display_mode": "user_report",
+                "conclusion": user_report["root_cause"],
+                "user_report": user_report,
+                "recommended_actions": user_report["recommended_actions"],
+                "approval_explanation": user_report["approval_explanation"],
                 "route": "react_tool_first",
                 "sources": list(incident_state.rag_context.citations if incident_state.rag_context is not None else []),
                 "observations": observations,
-                "evidence": self._flatten_evidence(observations),
+                "evidence": user_report["evidence"],
+                "raw_evidence": self._flatten_evidence(observations),
                 "working_memory_summary": working_memory_summary,
                 "pinned_findings": pinned_findings,
                 "tool_calls_used": len(observations),
-                "confidence": float(next_state.get("confidence") or 0.0),
+                "confidence": confidence,
                 "stop_reason": "rule_based_no_llm",
                 "evidence_evaluation": evidence_evaluation,
                 "react_runtime": react_runtime,
@@ -1418,6 +1809,7 @@ class ReactSupervisor:
         arguments: dict[str, Any],
         tool_cache: dict[str, Any],
         extra_shared_context: dict[str, Any] | None = None,
+        activity_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         call = {
             "id": f"rule-{tool_name}-{uuid4().hex[:8]}",
@@ -1431,6 +1823,7 @@ class ReactSupervisor:
             call=call,
             tool_cache=tool_cache,
             extra_shared_context=extra_shared_context,
+            activity_context=activity_context,
         )
 
     @staticmethod

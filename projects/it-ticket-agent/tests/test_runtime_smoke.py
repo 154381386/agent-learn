@@ -192,6 +192,160 @@ class ConversationRuntimeSmokeTest(unittest.IsolatedAsyncioTestCase):
         )
         return approval, interrupt
 
+
+
+    async def test_diagnostic_message_with_environment_text_enters_tool_diagnosis(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="order-service Pod 频繁重启",
+                query_type="search",
+                should_respond_directly=False,
+                citations=[],
+                index_info={"ready": True},
+            )
+        )
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-ui-diagnosis",
+                message="order-service 生产环境 Pod 频繁重启，最近 2 小时内刚发过版，集群 prod-shanghai-1，命名空间 default。帮我诊断根因并给出处理建议。",
+                service="order-service",
+                cluster="prod-shanghai-1",
+                namespace="default",
+                mock_scenario="oom",
+            )
+        )
+
+        self.assertNotEqual(result["status"], "awaiting_clarification")
+        self.assertIsNone(result["pending_interrupt"])
+        self.assertNotIn("已识别为知识咨询", result["message"])
+        self.assertIn("初步根因判断", result["message"])
+        self.assertIn("关键证据", result["message"])
+        self.assertIn("建议下一步", result["message"])
+        self.assertIn("为什么没有弹出执行审批", result["message"])
+        diagnosis = dict(result.get("diagnosis") or {})
+        self.assertEqual(diagnosis.get("display_mode"), "user_report")
+        self.assertTrue(diagnosis.get("evidence"))
+        self.assertTrue(diagnosis.get("recommended_actions"))
+        self.assertIn("只读诊断工具", str(diagnosis.get("approval_explanation") or ""))
+        session = result["session"]
+        self.assertEqual(session["incident_state"]["environment"], "prod")
+        events = self.orchestrator.list_system_events(session["session_id"], limit=200)
+        self.assertIn("tool.started", [event["event_type"] for event in events])
+
+    def test_user_report_marks_completed_clean_checks_as_checked(self) -> None:
+        request = ConversationCreateRequest(
+            user_id="u-report",
+            message="order-service 最近变更后偶发超时，帮我查最近变更和运行时状态",
+            service="order-service",
+            environment="prod",
+            cluster="prod-shanghai-1",
+            namespace="default",
+        )
+        observations = [
+            {
+                "tool_name": "get_change_records",
+                "result": {
+                    "payload": {
+                        "changes": [
+                            {"change_id": "CHG-LOCAL-01"},
+                            {"change_id": "CHG-LOCAL-02"},
+                        ]
+                    },
+                    "evidence": ["最近变更 CHG-LOCAL-01", "最近变更 CHG-LOCAL-02"],
+                },
+            },
+            {
+                "tool_name": "check_pod_status",
+                "result": {
+                    "payload": {
+                        "ready_replicas": 2,
+                        "desired_replicas": 2,
+                        "pods": [{"name": "order-service-pod-1", "status": "Running", "restarts": 0}],
+                    },
+                    "evidence": ["ready 2/2"],
+                },
+            },
+            {
+                "tool_name": "inspect_pod_logs",
+                "result": {
+                    "payload": {"oom_detected": False, "error_pattern": "none"},
+                    "evidence": ["order-service log: request completed", "order-service log: latency within baseline"],
+                },
+            },
+            {
+                "tool_name": "inspect_pod_events",
+                "result": {
+                    "payload": {"last_termination_reason": "none", "event_count": 1},
+                    "evidence": ["last_termination_reason=none", "event_count=1"],
+                },
+            },
+            {
+                "tool_name": "inspect_upstream_dependency",
+                "result": {
+                    "payload": {"dependency_status": "healthy", "timeout_ratio": 0.0},
+                    "evidence": ["dependency=healthy", "timeout_ratio=0.0"],
+                },
+            },
+            {
+                "tool_name": "inspect_vpc_connectivity",
+                "result": {
+                    "payload": {"connectivity_status": "healthy"},
+                    "evidence": ["connectivity=healthy"],
+                },
+            },
+        ]
+
+        report = self.orchestrator.react_supervisor._build_user_diagnosis_report(
+            request=request,
+            observations=observations,
+            confidence=0.4,
+            stop_reason="test",
+        )
+
+        message = report["message"]
+        actions = "\n".join(report["recommended_actions"])
+        evidence = "\n".join(report["evidence"])
+        self.assertIn("Pod 就绪副本 2/2，副本数正常", evidence)
+        self.assertNotIn("Pod 就绪副本 2/2，存在副本不可用", evidence)
+        self.assertNotIn("dependency=healthy", evidence)
+        self.assertIn("已查询到变更记录 CHG-LOCAL-01, CHG-LOCAL-02", actions)
+        self.assertIn("Pod 状态、日志和事件已检查且未见明显容器异常", actions)
+        self.assertIn("上游依赖和 VPC 已检查为 healthy", actions)
+        self.assertNotIn("先查看失败 Pod", actions)
+        self.assertNotIn("CrashLoopBackOff", actions)
+        self.assertIn("为什么没有弹出执行审批", message)
+
+    async def test_tool_activity_events_record_frontend_progress_signal(self) -> None:
+        self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
+            return_value=RAGContextBundle(
+                query="checkout-service Pod 频繁重启",
+                query_type="search",
+                should_respond_directly=False,
+                citations=[],
+                index_info={"ready": True},
+            )
+        )
+        result = await self.orchestrator.start_conversation(
+            ConversationCreateRequest(
+                user_id="u-tool-progress",
+                message="checkout-service 生产环境 Pod 频繁重启，集群 prod-shanghai-1，命名空间 default",
+                service="checkout-service",
+                environment="prod",
+                cluster="prod-shanghai-1",
+                namespace="default",
+                mock_scenario="oom",
+            )
+        )
+
+        session_id = result["session"]["session_id"]
+        events = self.orchestrator.list_system_events(session_id, limit=200)
+        event_types = [event["event_type"] for event in events]
+        self.assertIn("tool.started", event_types)
+        self.assertIn("tool.completed", event_types)
+        tool_events = [event for event in events if event["event_type"] == "tool.started"]
+        self.assertTrue(any(event["payload"].get("tool_name") for event in tool_events))
+        self.assertFalse(any("arguments" in event["payload"] for event in tool_events))
+
     async def test_s1_faq_request_is_answered_via_direct_answer_path(self) -> None:
         self.orchestrator.knowledge_service.retrieve_for_request = AsyncMock(
             return_value=RAGContextBundle(

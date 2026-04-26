@@ -127,6 +127,7 @@ class SupervisorOrchestrator:
             max_parallel_branches=settings.react_max_parallel_branches,
             summary_after_n_steps=settings.react_summary_after_n_steps,
             max_context_tokens=settings.react_max_context_tokens,
+            activity_callback=self._append_react_activity_event,
         )
         self.react_graph_nodes = ReactGraphNodes(
             smart_router=self.smart_router,
@@ -165,6 +166,16 @@ class SupervisorOrchestrator:
                 "payload": dict(payload or {}),
                 "refs": dict(refs or {}),
             }
+        )
+
+    def _append_react_activity_event(self, event: dict[str, Any]) -> None:
+        self._append_system_event(
+            session_id=str(event.get("session_id") or ""),
+            thread_id=str(event.get("thread_id") or event.get("session_id") or ""),
+            ticket_id=str(event.get("ticket_id") or event.get("session_id") or ""),
+            event_type=str(event.get("event_type") or "tool.activity"),
+            payload=dict(event.get("payload") or {}),
+            metadata=dict(event.get("metadata") or {"source": "react_supervisor"}),
         )
 
     def _append_system_event(
@@ -508,12 +519,10 @@ class SupervisorOrchestrator:
         return saved_case
 
 
-    def _maybe_extract_playbook_candidate_from_case(self, case: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not case or not bool(case.get("human_verified")):
-            return None
+    def _collect_related_verified_cases_for_playbook(self, case: dict[str, Any]) -> list[dict[str, Any]]:
         failure_mode = str(case.get("failure_mode") or "").strip()
         if not failure_mode:
-            return None
+            return []
         signal_pattern = str(case.get("signal_pattern") or "").strip()
         related_cases = self.incident_case_store.list_cases(
             failure_mode=failure_mode,
@@ -526,13 +535,128 @@ class SupervisorOrchestrator:
                 item for item in related_cases
                 if str(item.get("signal_pattern") or "").strip() == signal_pattern
             ]
-        candidate = build_playbook_candidate_from_cases(related_cases)
+        return related_cases
+
+    def _extract_playbook_candidate_from_cases(
+        self,
+        cases: list[dict[str, Any]],
+        *,
+        min_cases: int = 3,
+    ) -> dict[str, Any] | None:
+        candidate = build_playbook_candidate_from_cases(cases, min_cases=max(1, min_cases))
         if candidate is None:
             return None
         existing = self.playbook_store.get(str(candidate["playbook_id"]))
         if existing is not None and existing.get("status") == "verified" and existing.get("human_verified"):
-            return None
+            return existing
         return self.playbook_store.upsert(candidate)
+
+    def _maybe_extract_playbook_candidate_from_case(
+        self,
+        case: dict[str, Any] | None,
+        *,
+        min_cases: int = 3,
+    ) -> dict[str, Any] | None:
+        if not case or not bool(case.get("human_verified")):
+            return None
+        related_cases = self._collect_related_verified_cases_for_playbook(case)
+        return self._extract_playbook_candidate_from_cases(related_cases, min_cases=min_cases)
+
+    def extract_playbook_candidate_from_case(
+        self,
+        case_id: str,
+        *,
+        allow_single_case: bool = False,
+        min_cases: int = 3,
+    ) -> dict[str, Any] | None:
+        case = self.incident_case_store.get(case_id)
+        if case is None:
+            return None
+        if not bool(case.get("human_verified")) or str(case.get("case_status") or "") != "verified":
+            return {
+                "incident_case": case,
+                "playbook_candidate": None,
+                "extracted": False,
+                "reason": "案例需要先由人工确认进入历史案例库。",
+                "related_case_count": 0,
+            }
+        related_cases = self._collect_related_verified_cases_for_playbook(case)
+        effective_min_cases = 1 if allow_single_case else max(1, min_cases)
+        if len(related_cases) < effective_min_cases:
+            return {
+                "incident_case": case,
+                "playbook_candidate": None,
+                "extracted": False,
+                "reason": f"同类已确认案例不足：当前 {len(related_cases)} 个，需要 {effective_min_cases} 个。",
+                "related_case_count": len(related_cases),
+            }
+        playbook_candidate = self._extract_playbook_candidate_from_cases(
+            related_cases,
+            min_cases=effective_min_cases,
+        )
+        if playbook_candidate is None:
+            return {
+                "incident_case": case,
+                "playbook_candidate": None,
+                "extracted": False,
+                "reason": "当前案例信息不足，无法抽取 Playbook 候选。",
+                "related_case_count": len(related_cases),
+            }
+        return {
+            "incident_case": case,
+            "playbook_candidate": playbook_candidate,
+            "extracted": True,
+            "reason": "已生成或更新 Playbook 候选，需人工审核后才进入在线召回。",
+            "related_case_count": len(related_cases),
+        }
+
+    def review_incident_case(
+        self,
+        case_id: str,
+        *,
+        human_verified: bool,
+        hypothesis_accuracy: dict[str, float] | None = None,
+        actual_root_cause_hypothesis: str | None = None,
+        reviewed_by: str | None = None,
+        review_note: str | None = None,
+    ) -> dict[str, Any] | None:
+        case = self.incident_case_store.get(case_id)
+        if case is None:
+            return None
+        updated_case = self.incident_case_store.update_feedback(
+            case["session_id"],
+            human_verified=human_verified,
+            hypothesis_accuracy=hypothesis_accuracy,
+            actual_root_cause_hypothesis=actual_root_cause_hypothesis,
+            reviewed_by=reviewed_by,
+            review_note=review_note,
+        )
+        if updated_case is None:
+            return None
+        playbook_extraction = {
+            "extracted": False,
+            "reason": "案例未通过人工确认，不抽取 Playbook。",
+            "related_case_count": 0,
+        }
+        playbook_candidate = None
+        if human_verified:
+            extraction = self.extract_playbook_candidate_from_case(
+                updated_case["case_id"],
+                allow_single_case=False,
+                min_cases=3,
+            )
+            if isinstance(extraction, dict):
+                playbook_candidate = extraction.get("playbook_candidate")
+                playbook_extraction = {
+                    "extracted": bool(extraction.get("extracted")),
+                    "reason": str(extraction.get("reason") or ""),
+                    "related_case_count": int(extraction.get("related_case_count") or 0),
+                }
+        return {
+            "incident_case": updated_case,
+            "playbook_candidate": playbook_candidate,
+            "playbook_extraction": playbook_extraction,
+        }
 
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:
@@ -1527,15 +1651,18 @@ class SupervisorOrchestrator:
             ),
         )
         message = "已记录人工反馈，本次诊断结果已补充到案例库。"
+        feedback_diagnosis = {"feedback": updated_case}
+        if playbook_candidate is not None:
+            feedback_diagnosis["playbook_candidate"] = playbook_candidate
         assistant_turn = self._append_assistant_turn(
             session_id,
-            response={"status": "completed", "message": message, "diagnosis": {"feedback": updated_case}},
+            response={"status": "completed", "message": message, "diagnosis": feedback_diagnosis},
         )
         return {
             "session": updated_session,
             "status": "completed",
             "message": message,
-            "diagnosis": {"feedback": updated_case},
+            "diagnosis": feedback_diagnosis,
             "approval_request": None,
             "pending_interrupt": None,
             "assistant_turn": assistant_turn,

@@ -10,6 +10,12 @@ from .service_names import infer_service_name
 IPV4_PATTERN = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
 HOST_KEYWORDS = ("机器", "主机", "服务器", "host", "ecs", "vm", "实例")
 DATABASE_KEYWORDS = ("数据库", "database", "db", "mysql", "postgres", "redis")
+ENVIRONMENT_ALIASES = (
+    ("prod", ("生产环境", "生产", "线上", "prod", "production", "prod-")),
+    ("staging", ("预发环境", "预发", "灰度", "staging", "stage", "preprod")),
+    ("test", ("测试环境", "测试", "test", "testing")),
+    ("dev", ("开发环境", "开发", "dev", "development")),
+)
 
 SERVICE_CONTEXT_REGISTRY = {
     "order-service": {"environment": "prod", "cluster": "prod-shanghai-1", "namespace": "default"},
@@ -39,6 +45,15 @@ class SlotResolution:
     @property
     def needs_clarification(self) -> bool:
         return bool(self.missing_fields or self.inferred_fields)
+
+
+
+def infer_environment(message: str | None) -> str:
+    text = str(message or "").lower()
+    for environment, aliases in ENVIRONMENT_ALIASES:
+        if any(alias in text for alias in aliases):
+            return environment
+    return ""
 
 
 def infer_host_identifier(message: str | None) -> str:
@@ -87,7 +102,7 @@ def resolve_slots(
     resolved_host = str(host_identifier or infer_host_identifier(message) or "")
     resolved_db_type = str(db_type or infer_db_type(message) or "")
     resolved_db_name = str(db_name or infer_db_name(message) or "")
-    resolved_environment = str(environment or "").strip()
+    resolved_environment = str(environment or infer_environment(message) or "").strip()
     resolved_cluster = str(cluster or "").strip()
     resolved_namespace = str(namespace or "").strip()
 

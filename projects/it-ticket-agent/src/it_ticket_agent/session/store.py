@@ -149,6 +149,37 @@ class SessionStoreV2:
             ).fetchone()
         return self._row_to_session(row)
 
+
+    def list_sessions(
+        self,
+        *,
+        limit: int = 20,
+        user_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> list[ConversationSession]:
+        conditions = []
+        params: list[Any] = []
+        if user_id:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        where_clause = f"where {' and '.join(conditions)}" if conditions else ""
+        query = f"""
+            select session_id, thread_id, ticket_id, user_id, status, current_stage, current_agent,
+                   incident_state_json, latest_approval_id, pending_interrupt_id, last_checkpoint_id, session_memory_json, metadata_json,
+                   created_at, updated_at, last_active_at, closed_at
+            from conversation_session
+            {where_clause}
+            order by last_active_at desc, created_at desc, session_id desc
+            limit ?
+        """
+        params.append(max(1, min(int(limit or 20), 50)))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [session for row in rows if (session := self._row_to_session(row)) is not None]
+
     def update_session_state(
         self,
         session_id: str,

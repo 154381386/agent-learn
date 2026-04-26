@@ -24,6 +24,19 @@ class SessionStore:
         record = self.v2_store.get_session_by_thread_id(thread_id)
         return None if record is None else record.model_dump()
 
+
+    def list_sessions(
+        self,
+        *,
+        limit: int = 20,
+        user_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            record.model_dump()
+            for record in self.v2_store.list_sessions(limit=limit, user_id=user_id, status=status)
+        ]
+
     def update_state(
         self,
         session_id: str,

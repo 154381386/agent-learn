@@ -144,6 +144,17 @@ class ConversationMessageRequest(BaseModel):
     mock_world_state: Dict[str, Any] = Field(default_factory=dict)
 
 
+class MockWorldResponse(BaseModel):
+    world_id: str
+    case_id: str
+    service: str
+    label: str
+    description: str = ""
+    tool_count: int = 0
+    tool_names: List[str] = Field(default_factory=list)
+    mock_tool_responses: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+
 class ConversationResumeRequest(BaseModel):
     interrupt_id: Optional[str] = None
     answer_payload: Dict[str, Any] = Field(default_factory=dict)
@@ -242,6 +253,10 @@ class IncidentCaseResponse(BaseModel):
     namespace: str = ""
     current_agent: str = ""
     case_status: str = "pending_review"
+    failure_mode: str = ""
+    root_cause_taxonomy: str = ""
+    signal_pattern: str = ""
+    action_pattern: str = ""
     symptom: str = ""
     root_cause: str = ""
     key_evidence: List[str] = Field(default_factory=list)
@@ -260,6 +275,89 @@ class IncidentCaseResponse(BaseModel):
     created_at: str
     updated_at: str
     closed_at: Optional[str] = None
+
+
+class IncidentCaseReviewRequest(BaseModel):
+    human_verified: bool
+    hypothesis_accuracy: Dict[str, float] = Field(default_factory=dict)
+    actual_root_cause_hypothesis: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    review_note: Optional[str] = None
+
+
+class PlaybookExtractionRequest(BaseModel):
+    allow_single_case: bool = False
+    min_cases: int = 3
+    reviewed_by: Optional[str] = None
+    review_note: Optional[str] = None
+
+
+class PlaybookExtractionResponse(BaseModel):
+    incident_case: IncidentCaseResponse
+    playbook_candidate: Optional["DiagnosisPlaybookResponse"] = None
+    extracted: bool = False
+    reason: str = ""
+    related_case_count: int = 0
+
+
+class IncidentCaseReviewResponse(BaseModel):
+    incident_case: IncidentCaseResponse
+    playbook_candidate: Optional["DiagnosisPlaybookResponse"] = None
+    playbook_extraction: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BadCaseCandidateResponse(BaseModel):
+    candidate_id: str
+    session_id: str
+    thread_id: str
+    ticket_id: str
+    source: str = ""
+    reason_codes: List[str] = Field(default_factory=list)
+    severity: str = "low"
+    request_payload: Dict[str, Any] = Field(default_factory=dict)
+    response_payload: Dict[str, Any] = Field(default_factory=dict)
+    incident_state_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    context_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    observations: List[Dict[str, Any]] = Field(default_factory=list)
+    retrieval_expansion: Dict[str, Any] = Field(default_factory=dict)
+    human_feedback: Dict[str, Any] = Field(default_factory=dict)
+    conversation_turns: List[Dict[str, Any]] = Field(default_factory=list)
+    system_events: List[Dict[str, Any]] = Field(default_factory=list)
+    export_status: str = "pending"
+    export_metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class BadCaseCandidateExportStatusRequest(BaseModel):
+    export_status: str
+    export_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BadCaseEvalSkeletonExportRequest(BaseModel):
+    output_dir: Optional[str] = None
+    mark_exported: bool = True
+
+
+class BadCaseEvalSkeletonExportResponse(BaseModel):
+    candidate_id: str
+    target_dataset: str
+    output_path: str
+    export_payload: Dict[str, Any] = Field(default_factory=dict)
+    candidate: Optional[BadCaseCandidateResponse] = None
+
+
+class BadCaseCuratedMergeRequest(BaseModel):
+    input_paths: List[str] = Field(default_factory=list)
+    generated_dir: Optional[str] = None
+    mark_merged: bool = True
+    allow_placeholders: bool = False
+    dry_run: bool = False
+
+
+class BadCaseCuratedMergeResponse(BaseModel):
+    count: int
+    results: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class DiagnosisPlaybookResponse(BaseModel):
